@@ -1,0 +1,7 @@
+[package]
+name = "fractic-aws-dynamo"
+version = "0.1.0"
+authors = ["Mart van Buren <mart@fractic.io>"]
+edition = "2021"
+
+[dependencies]

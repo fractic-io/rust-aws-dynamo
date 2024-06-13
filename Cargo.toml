@@ -5,3 +5,16 @@ authors = ["Mart van Buren <mart@fractic.io>"]
 edition = "2021"
 
 [dependencies]
+async-trait = "0.1.72"
+aws-config = "0.55.3"
+aws-sdk-cognitoidentityprovider = "0.28.0"
+aws-sdk-dynamodb = "0.28.0"
+fractic-core = { path = "../rust-core" }
+fractic-env-config = { path = "../rust-env-config" }
+fractic-generic-server-error = { path = "../rust-generic-server-error" }
+serde = "1.0.176"
+serde_json = "1.0.104"
+uuid = { version = "1.4.1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

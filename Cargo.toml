@@ -9,9 +9,9 @@ async-trait = "0.1.72"
 aws-config = "0.55.3"
 aws-sdk-cognitoidentityprovider = "0.28.0"
 aws-sdk-dynamodb = "0.28.0"
-fractic-core = { path = "../rust-core" }
-fractic-env-config = { path = "../rust-env-config" }
-fractic-generic-server-error = { path = "../rust-generic-server-error" }
+fractic-core = { git = "https://github.com/fractic-io/rust-core.git" }
+fractic-env-config = { git = "https://github.com/fractic-io/rust-env-config.git" }
+fractic-generic-server-error = { git = "https://github.com/fractic-io/rust-generic-server-error.git" }
 serde = "1.0.176"
 serde_json = "1.0.104"
 uuid = { version = "1.4.1", features = ["v4"] }

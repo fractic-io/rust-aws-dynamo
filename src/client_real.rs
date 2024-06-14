@@ -12,8 +12,10 @@ use aws_sdk_dynamodb::{
     },
     types::AttributeValue,
 };
-use fractic_env_config::{EnvVariable, EnvVariables};
+use fractic_env_config::EnvVariablesWindow;
 use fractic_generic_server_error::GenericServerError;
+
+use crate::env::DynamoEnvConfig;
 
 use super::util::{DynamoClientImpl, DynamoUtil};
 
@@ -22,8 +24,10 @@ use super::util::{DynamoClientImpl, DynamoUtil};
 // --------------------------------------------------
 
 impl DynamoUtil<aws_sdk_dynamodb::Client> {
-    pub async fn new(config: &EnvVariables) -> Result<Self, GenericServerError> {
-        let region_str = config.get(&EnvVariable::DynamoRegion)?;
+    pub async fn new<'a>(
+        config: EnvVariablesWindow<'a, DynamoEnvConfig>,
+    ) -> Result<Self, GenericServerError> {
+        let region_str = config.get(&DynamoEnvConfig::DynamoRegion)?;
         let region = Region::new(region_str.clone());
         let shared_config = aws_config::from_env().region(region).load().await;
         let client = aws_sdk_dynamodb::Client::new(&shared_config);

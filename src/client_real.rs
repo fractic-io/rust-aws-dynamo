@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use aws_config::BehaviorVersion;
 use aws_sdk_cognitoidentityprovider::{config::Region, error::SdkError};
 use aws_sdk_dynamodb::{
     operation::{
@@ -29,7 +30,10 @@ impl DynamoUtil<aws_sdk_dynamodb::Client> {
     ) -> Result<Self, GenericServerError> {
         let region_str = config.get(&DynamoEnvConfig::DynamoRegion)?;
         let region = Region::new(region_str.clone());
-        let shared_config = aws_config::from_env().region(region).load().await;
+        let shared_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
+            .region(region)
+            .load()
+            .await;
         let client = aws_sdk_dynamodb::Client::new(&shared_config);
         Ok(Self { client })
     }

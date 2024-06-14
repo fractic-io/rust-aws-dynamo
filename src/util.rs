@@ -89,7 +89,7 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
             .query(table, index, condition, attribute_values)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
-        let items = response.items().unwrap_or_default();
+        let items = response.items();
         items
             .into_iter()
             .map(|item| parse_dynamo_map::<T>(&item))
@@ -119,7 +119,7 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
             .query(table, index, condition, attribute_values)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
-        let items = response.items().unwrap_or_default();
+        let items = response.items();
         Ok(items.to_vec())
     }
 

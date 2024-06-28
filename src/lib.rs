@@ -6,4 +6,5 @@ pub mod id_calculations;
 pub mod macros;
 pub mod parsing;
 pub mod pk_sk;
+pub mod schema;
 pub mod util;

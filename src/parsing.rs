@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_generic_server_error::{common::CriticalError, GenericServerError};
 
-use crate::errors::DynamoItemParsingError;
+use crate::{errors::DynamoItemParsingError, schema::DynamoObject};
 
-use super::util::{DynamoMap, DynamoObject};
+use super::util::DynamoMap;
 
 // Converting between DynamoMap and DynamoObject.
 // --------------------------------------------------

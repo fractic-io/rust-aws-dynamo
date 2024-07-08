@@ -138,6 +138,13 @@ fn serde_value_to_attribute_value(
             }
             Ok(AttributeValue::M(attribute_map)) // DynamoDB M type is for Map
         }
+        serde_json::Value::Array(array) => {
+            let mut attribute_array: Vec<AttributeValue> = Vec::new();
+            for value in array.into_iter() {
+                attribute_array.push(serde_value_to_attribute_value(value)?);
+            }
+            Ok(AttributeValue::L(attribute_array)) // DynamoDB L type is for List
+        }
         unsupported => Err(DynamoItemParsingError::with_debug(
             dbg_cxt,
             "unsupported serde_json::Value type",
@@ -162,6 +169,13 @@ fn attribute_value_to_serde_value(
                 serde_map.insert(key, attribute_value_to_serde_value(value)?);
             }
             Ok(serde_json::Value::Object(serde_map))
+        }
+        AttributeValue::L(array) => {
+            let mut serde_array: Vec<serde_json::Value> = Vec::new();
+            for value in array.into_iter() {
+                serde_array.push(attribute_value_to_serde_value(value)?);
+            }
+            Ok(serde_json::Value::Array(serde_array))
         }
         unsupported => Err(DynamoItemParsingError::with_debug(
             dbg_cxt,

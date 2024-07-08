@@ -17,6 +17,7 @@ use fractic_generic_server_error::GenericServerError;
 
 use crate::{
     errors::{DynamoConnectionError, DynamoInvalidOperationError, DynamoNotFoundError},
+    id_calculations::{ORDERED_IDS_DEFAULT_GAP, ORDERED_IDS_DIGITS, ORDERED_IDS_INIT},
     schema::DynamoObject,
 };
 
@@ -33,6 +34,12 @@ pub type DynamoMap = HashMap<String, AttributeValue>;
 pub enum DynamoQueryMatchType {
     BeginsWith,
     Equals,
+}
+
+pub enum DynamoInsertPosition {
+    First,
+    Last,
+    After { pk: String, sk: String },
 }
 
 // Main class, to be used by clients.
@@ -137,6 +144,88 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
         Ok((new_pk, new_sk))
+    }
+
+    pub async fn create_item_ordered<T: DynamoObject>(
+        &self,
+        table: String,
+        parent_pk: String,
+        parent_sk: String,
+        object: &T,
+        insert_position: DynamoInsertPosition,
+    ) -> Result<(String, String), GenericServerError> {
+        let dbg_cxt: &'static str = "create_item_ordered";
+        let search_pk = object.generate_pk(&parent_pk, &parent_sk, "");
+        let search_sk = object.generate_sk(&parent_pk, &parent_sk, "");
+        let query = self
+            .query::<T>(
+                table.clone(),
+                None,
+                search_pk,
+                search_sk,
+                DynamoQueryMatchType::BeginsWith,
+            )
+            .await?;
+        let existing_number_ids = query
+            .iter()
+            .filter_map(|item| item.sk())
+            .filter_map(|sk| sk.split('#').last())
+            .filter_map(|id_part| match id_part.parse::<u32>() {
+                Ok(id) => Some(id),
+                Err(_) => None,
+            })
+            .collect::<Vec<_>>();
+        let min_id = existing_number_ids
+            .iter()
+            .min()
+            .unwrap_or(&ORDERED_IDS_INIT);
+        let max_id = existing_number_ids
+            .iter()
+            .max()
+            .unwrap_or(&ORDERED_IDS_INIT);
+        let new_id = match insert_position {
+            DynamoInsertPosition::First => min_id - ORDERED_IDS_DEFAULT_GAP,
+            DynamoInsertPosition::Last => max_id + ORDERED_IDS_DEFAULT_GAP,
+            DynamoInsertPosition::After { sk, .. } => {
+                let mut last_id_components = sk.split('#').rev();
+                let (Some(last_id_part), Some(last_id_label)) =
+                    (last_id_components.next(), last_id_components.next())
+                else {
+                    return Err(DynamoInvalidOperationError::new(
+                        dbg_cxt,
+                        "'sk' of insert position does not have valid ordered ID structure (doesn't end in '[...#]label#ID')",
+                    ));
+                };
+                if last_id_label != T::id_label() {
+                    return Err(DynamoInvalidOperationError::with_debug(
+                        dbg_cxt,
+                        "'sk' of insert position does not have valid ordered ID structure (label does not match object type)",
+                        "expected: ".to_string() + T::id_label() + ", got: " + last_id_label,
+                    ));
+                };
+                let Ok(id_as_number) = last_id_part.parse::<u32>() else {
+                    return Err(DynamoInvalidOperationError::new(
+                        dbg_cxt,
+                        "'sk' of insert position does not have valid ordered ID structure (ID was not a number)",
+                    ));
+                };
+                let position_index = existing_number_ids
+                    .iter()
+                    .position(|id| id == &id_as_number)
+                    .ok_or(DynamoInvalidOperationError::new(
+                        dbg_cxt,
+                        "'sk' of insert position does not have valid ordered ID structure (ID was not found in existing items)",
+                    ))?;
+                match existing_number_ids.get(position_index + 1) {
+                    Some(next_id) => id_as_number + (next_id - id_as_number) / 2,
+                    None => id_as_number + ORDERED_IDS_DEFAULT_GAP,
+                }
+            }
+        };
+        // Since sorting based on strings, number of digits is important.
+        let new_id = format!("{:0width$}", new_id, width = ORDERED_IDS_DIGITS);
+        self.create_item(table, parent_pk, parent_sk, object, Some(new_id))
+            .await
     }
 
     pub async fn update_item<T: DynamoObject>(

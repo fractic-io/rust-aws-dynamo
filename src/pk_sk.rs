@@ -1,4 +1,7 @@
+use fractic_generic_server_error::GenericServerError;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+
+use crate::errors::DynamoInvalidIdError;
 
 use super::id_calculations::get_pk_sk_from_string;
 
@@ -9,6 +12,15 @@ use super::id_calculations::get_pk_sk_from_string;
 pub struct PkSk {
     pub pk: String,
     pub sk: String,
+}
+
+impl PkSk {
+    pub fn from_string(s: &str) -> Result<PkSk, GenericServerError> {
+        let dbg_cxt = "PkSk::from_string";
+        serde_json::from_str(s).map_err(|e| {
+            DynamoInvalidIdError::with_debug(dbg_cxt, "Invalid PkSk string.", e.to_string())
+        })
+    }
 }
 
 impl Serialize for PkSk {

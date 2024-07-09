@@ -8,7 +8,7 @@ use super::id_calculations::get_pk_sk_from_string;
 // Custom struct to hold 'pk' and 'sk', which gets serialized and deserialized
 // as "pk|sk" in communication with downstream clients, but are separate
 // properties in the underlying data store (primary_key and sort_key).
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Hash, Eq)]
 pub struct PkSk {
     pub pk: String,
     pub sk: String,

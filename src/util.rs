@@ -135,7 +135,7 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
         custom_id: Option<String>,
     ) -> Result<(String, String), GenericServerError> {
         let dbg_cxt: &'static str = "create_item";
-        let new_id = custom_id.unwrap_or(generate_id());
+        let new_id = custom_id.unwrap_or_else(generate_id);
         let new_pk = object.generate_pk(&parent_pk, &parent_sk, &new_id);
         let new_sk = object.generate_sk(&parent_pk, &parent_sk, &new_id);
         let map = build_dynamo_map::<T>(&object, IdKeys::Override(new_pk.clone(), new_sk.clone()))?;

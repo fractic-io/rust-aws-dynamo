@@ -3,9 +3,7 @@ use std::collections::HashMap;
 use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_generic_server_error::{common::CriticalError, GenericServerError};
 
-use crate::{errors::DynamoItemParsingError, schema::DynamoObject};
-
-use super::util::DynamoMap;
+use crate::{errors::DynamoItemParsingError, schema::DynamoObject, util::DynamoMap};
 
 // Converting between DynamoMap and DynamoObject.
 // --------------------------------------------------
@@ -120,7 +118,7 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, GenericSe
     })
 }
 
-// Helper functions.
+// Inner recursive functions.
 // --------------------------------------------------
 
 fn serde_value_to_attribute_value(

@@ -1,5 +1,10 @@
+use std::fmt;
+
 use fractic_generic_server_error::GenericServerError;
-use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{
+    de::{self},
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 
 use crate::errors::DynamoInvalidIdError;
 

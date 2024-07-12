@@ -18,9 +18,9 @@ use fractic_core::collection;
 use fractic_env_config::EnvVariables;
 use fractic_generic_server_error::GenericServerError;
 
-use crate::env::DynamoEnvConfig;
+use crate::{env::DynamoEnvConfig, util::DynamoUtil};
 
-use super::util::{DynamoClientImpl, DynamoUtil};
+use super::DynamoBackendImpl;
 
 // Real implementation,
 // making actual calls to AWS.
@@ -40,7 +40,7 @@ impl DynamoUtil<aws_sdk_dynamodb::Client> {
 }
 
 #[async_trait]
-impl DynamoClientImpl for aws_sdk_dynamodb::Client {
+impl DynamoBackendImpl for aws_sdk_dynamodb::Client {
     async fn query(
         &self,
         table_name: String,

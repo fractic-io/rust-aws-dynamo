@@ -1,15 +1,9 @@
 use std::collections::{BinaryHeap, HashMap};
 
-use async_trait::async_trait;
-use aws_sdk_cognitoidentityprovider::error::SdkError;
 use aws_sdk_dynamodb::{
     operation::{
-        batch_write_item::{BatchWriteItemError, BatchWriteItemOutput},
-        delete_item::{DeleteItemError, DeleteItemOutput},
-        get_item::{GetItemError, GetItemOutput},
-        put_item::{PutItemError, PutItemOutput},
-        query::{QueryError, QueryOutput},
-        update_item::{UpdateItemError, UpdateItemOutput},
+        batch_write_item::BatchWriteItemError, delete_item::DeleteItemError,
+        update_item::UpdateItemError,
     },
     types::AttributeValue,
 };
@@ -17,17 +11,16 @@ use fractic_core::collection;
 use fractic_generic_server_error::GenericServerError;
 
 use crate::{
+    backend::DynamoBackendImpl,
     errors::{DynamoConnectionError, DynamoInvalidOperationError, DynamoNotFoundError},
-    id_calculations::{
-        get_last_id_label, get_pk_sk_from_map, ORDERED_IDS_DEFAULT_GAP, ORDERED_IDS_DIGITS,
-        ORDERED_IDS_INIT,
+    schema::{
+        id_calculations::{
+            generate_id, get_last_id_label, get_pk_sk_from_map, ORDERED_IDS_DEFAULT_GAP,
+            ORDERED_IDS_DIGITS, ORDERED_IDS_INIT,
+        },
+        parsing::{build_dynamo_map, parse_dynamo_map, IdKeys},
+        DynamoObject,
     },
-    schema::DynamoObject,
-};
-
-use super::{
-    id_calculations::generate_id,
-    parsing::{build_dynamo_map, parse_dynamo_map, IdKeys},
 };
 
 // AWS Dynamo utils.
@@ -47,10 +40,10 @@ pub enum DynamoInsertPosition {
 }
 
 // Main class, to be used by clients.
-pub struct DynamoUtil<C: DynamoClientImpl> {
+pub struct DynamoUtil<C: DynamoBackendImpl> {
     pub client: C,
 }
-impl<C: DynamoClientImpl> DynamoUtil<C> {
+impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn query<T: DynamoObject>(
         &self,
         table: String,
@@ -458,61 +451,6 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
             })?;
         Ok(())
     }
-}
-
-// Underlying client, which performs the actual AWS operations.
-// Kept generic so that it can be swapped with a mock client for testing.
-//
-// Should be kept as minimal and close as possible to the real
-// aws_sdk_dynamodb::Client, to minimize untestable code.
-#[async_trait]
-pub trait DynamoClientImpl {
-    async fn query(
-        &self,
-        table_name: String,
-        index: Option<String>,
-        condition: String,
-        attribute_values: HashMap<String, AttributeValue>,
-    ) -> Result<QueryOutput, SdkError<QueryError>>;
-
-    async fn get_item(
-        &self,
-        table_name: String,
-        key: HashMap<String, AttributeValue>,
-    ) -> Result<GetItemOutput, SdkError<GetItemError>>;
-
-    async fn put_item(
-        &self,
-        table_name: String,
-        item: HashMap<String, AttributeValue>,
-    ) -> Result<PutItemOutput, SdkError<PutItemError>>;
-
-    async fn batch_put_item(
-        &self,
-        table_name: String,
-        items: Vec<HashMap<String, AttributeValue>>,
-    ) -> Result<BatchWriteItemOutput, SdkError<BatchWriteItemError>>;
-
-    async fn update_item(
-        &self,
-        table_name: String,
-        key: HashMap<String, AttributeValue>,
-        update_expression: String,
-        expression_attribute_values: HashMap<String, AttributeValue>,
-        expression_attribute_names: HashMap<String, String>,
-    ) -> Result<UpdateItemOutput, SdkError<UpdateItemError>>;
-
-    async fn delete_item(
-        &self,
-        table_name: String,
-        key: HashMap<String, AttributeValue>,
-    ) -> Result<DeleteItemOutput, SdkError<DeleteItemError>>;
-
-    async fn batch_delete_item(
-        &self,
-        table_name: String,
-        keys: Vec<HashMap<String, AttributeValue>>,
-    ) -> Result<BatchWriteItemOutput, SdkError<BatchWriteItemError>>;
 }
 
 // Tests.

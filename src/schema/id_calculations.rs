@@ -1,8 +1,6 @@
 use fractic_generic_server_error::{common::CriticalError, GenericServerError};
 
-use crate::errors::DynamoInvalidIdError;
-
-use super::util::DynamoMap;
+use crate::{errors::DynamoInvalidIdError, util::DynamoMap};
 
 const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const NUM_CHARACTERS_TO_GENERATE: usize = 16;

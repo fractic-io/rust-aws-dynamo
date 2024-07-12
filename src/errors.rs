@@ -1,6 +1,3 @@
-use std::error::Error as StdError;
-use std::fmt;
-
 use fractic_generic_server_error::{
     define_internal_error_type, define_user_visible_error_type, GenericServerError,
     GenericServerErrorTrait,

@@ -18,7 +18,10 @@ use fractic_generic_server_error::GenericServerError;
 
 use crate::{
     errors::{DynamoConnectionError, DynamoInvalidOperationError, DynamoNotFoundError},
-    id_calculations::{ORDERED_IDS_DEFAULT_GAP, ORDERED_IDS_DIGITS, ORDERED_IDS_INIT},
+    id_calculations::{
+        get_last_id_label, get_pk_sk_from_map, ORDERED_IDS_DEFAULT_GAP, ORDERED_IDS_DIGITS,
+        ORDERED_IDS_INIT,
+    },
     schema::DynamoObject,
 };
 
@@ -56,10 +59,6 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
         sk: String,
         match_type: DynamoQueryMatchType,
     ) -> Result<Vec<T>, GenericServerError> {
-        // NOTE: I don't really understand how this logic would support
-        // sub-objects. If we filter by pk begins_with ..., we'd also return
-        // child objects, which would fail to parse into T. Probably should be
-        // fixed at some point.
         let dbg_cxt: &'static str = "query";
         let condition = match match_type {
             DynamoQueryMatchType::BeginsWith => "pk = :pk_val AND begins_with(sk, :sk_val)",
@@ -78,7 +77,20 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
         let items = response.items();
         items
             .into_iter()
-            .map(|item| parse_dynamo_map::<T>(&item))
+            .filter_map(|item| {
+                let sk = get_pk_sk_from_map(&item)
+                    .expect("Query result item did not have pk/sk.")
+                    .1;
+                if get_last_id_label(sk) == T::id_label() {
+                    // Item is of type T.
+                    Some(parse_dynamo_map::<T>(&item))
+                } else {
+                    // Item is not of type T, but instead an inline child (of a
+                    // different type), which will be skipped. Use query_dynamic
+                    // to access objects of type T and their inline children.
+                    None
+                }
+            })
             .collect::<Result<Vec<T>, GenericServerError>>()
     }
 

@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 
 use async_trait::async_trait;
 use aws_sdk_cognitoidentityprovider::error::SdkError;
 use aws_sdk_dynamodb::{
     operation::{
+        batch_write_item::{BatchWriteItemError, BatchWriteItemOutput},
         delete_item::{DeleteItemError, DeleteItemOutput},
         get_item::{GetItemError, GetItemOutput},
         put_item::{PutItemError, PutItemOutput},
@@ -55,6 +56,10 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
         sk: String,
         match_type: DynamoQueryMatchType,
     ) -> Result<Vec<T>, GenericServerError> {
+        // NOTE: I don't really understand how this logic would support
+        // sub-objects. If we filter by pk begins_with ..., we'd also return
+        // child objects, which would fail to parse into T. Probably should be
+        // fixed at some point.
         let dbg_cxt: &'static str = "query";
         let condition = match match_type {
             DynamoQueryMatchType::BeginsWith => "pk = :pk_val AND begins_with(sk, :sk_val)",
@@ -146,15 +151,53 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
         Ok((new_pk, new_sk))
     }
 
-    pub async fn create_item_ordered<T: DynamoObject>(
+    pub async fn batch_create_item<T: DynamoObject>(
+        &self,
+        table: String,
+        parent_pk: String,
+        parent_sk: String,
+        objects_and_custom_ids: Vec<(&T, Option<String>)>,
+    ) -> Result<Vec<(String, String)>, GenericServerError> {
+        let dbg_cxt: &'static str = "batch_create_item";
+        if objects_and_custom_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (items, ids) = objects_and_custom_ids
+            .into_iter()
+            .map(|(object, custom_id)| {
+                let new_id = custom_id.unwrap_or_else(generate_id);
+                let new_pk = object.generate_pk(&parent_pk, &parent_sk, &new_id);
+                let new_sk = object.generate_sk(&parent_pk, &parent_sk, &new_id);
+                Ok((
+                    build_dynamo_map::<T>(
+                        &object,
+                        IdKeys::Override(new_pk.clone(), new_sk.clone()),
+                    )?,
+                    (new_pk, new_sk),
+                ))
+            })
+            .collect::<Result<Vec<(DynamoMap, (String, String))>, GenericServerError>>()?
+            .into_iter()
+            .unzip();
+        self.client
+            .batch_put_item(table, items)
+            .await
+            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+        Ok(ids)
+    }
+
+    async fn generate_ordered_custom_ids<T: DynamoObject>(
         &self,
         table: String,
         parent_pk: String,
         parent_sk: String,
         object: &T,
         insert_position: DynamoInsertPosition,
-    ) -> Result<(String, String), GenericServerError> {
-        let dbg_cxt: &'static str = "create_item_ordered";
+        num: usize,
+    ) -> Result<Vec<String>, GenericServerError> {
+        let dbg_cxt = "generate_ordered_custom_ids";
+
+        // Search for all IDs for existing items of this type.
         let search_pk = object.generate_pk(&parent_pk, &parent_sk, "");
         let search_sk = object.generate_sk(&parent_pk, &parent_sk, "");
         let query = self
@@ -166,7 +209,7 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
                 DynamoQueryMatchType::BeginsWith,
             )
             .await?;
-        let existing_number_ids = query
+        let mut existing_ids_heap = query
             .iter()
             .filter_map(|item| item.sk())
             .filter_map(|sk| sk.split('#').last())
@@ -174,58 +217,139 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
                 Ok(id) => Some(id),
                 Err(_) => None,
             })
-            .collect::<Vec<_>>();
-        let min_id = existing_number_ids
-            .iter()
-            .min()
-            .unwrap_or(&ORDERED_IDS_INIT);
-        let max_id = existing_number_ids
-            .iter()
-            .max()
-            .unwrap_or(&ORDERED_IDS_INIT);
-        let new_id = match insert_position {
-            DynamoInsertPosition::First => min_id - ORDERED_IDS_DEFAULT_GAP,
-            DynamoInsertPosition::Last => max_id + ORDERED_IDS_DEFAULT_GAP,
-            DynamoInsertPosition::After { sk, .. } => {
-                let mut last_id_components = sk.split('#').rev();
-                let (Some(last_id_part), Some(last_id_label)) =
-                    (last_id_components.next(), last_id_components.next())
-                else {
-                    return Err(DynamoInvalidOperationError::new(
-                        dbg_cxt,
-                        "'sk' of insert position does not have valid ordered ID structure (doesn't end in '[...#]label#ID')",
-                    ));
-                };
-                if last_id_label != T::id_label() {
-                    return Err(DynamoInvalidOperationError::with_debug(
-                        dbg_cxt,
-                        "'sk' of insert position does not have valid ordered ID structure (label does not match object type)",
-                        "expected: ".to_string() + T::id_label() + ", got: " + last_id_label,
-                    ));
-                };
-                let Ok(id_as_number) = last_id_part.parse::<u32>() else {
-                    return Err(DynamoInvalidOperationError::new(
-                        dbg_cxt,
-                        "'sk' of insert position does not have valid ordered ID structure (ID was not a number)",
-                    ));
-                };
-                let position_index = existing_number_ids
+            .collect::<BinaryHeap<_>>();
+
+        // Determine the new IDs based on insertion position.
+        let mut results = Vec::new();
+        let mut last_inserted_id = None;
+        for _ in 0..num {
+            let existing_ids_sorted_vec = existing_ids_heap.clone().into_sorted_vec();
+            let min_id = existing_ids_sorted_vec.first().unwrap_or(&ORDERED_IDS_INIT);
+            let max_id = existing_ids_sorted_vec.last().unwrap_or(&ORDERED_IDS_INIT);
+
+            let new_id = match &insert_position {
+                DynamoInsertPosition::First => min_id - ORDERED_IDS_DEFAULT_GAP,
+                DynamoInsertPosition::Last => max_id + ORDERED_IDS_DEFAULT_GAP,
+                DynamoInsertPosition::After {
+                    sk: insert_position_sk,
+                    ..
+                } => {
+                    let insert_after_id = if let Some(last_inserted_id) = last_inserted_id {
+                        // Since we're generating multiple IDs, only the first
+                        // one should follow the sk from the
+                        // DynamoInsertPosition. All the rest should follow the
+                        // last item.
+                        last_inserted_id
+                    } else {
+                        let mut last_id_components = insert_position_sk.split('#').rev();
+                        let (Some(last_id_part), Some(last_id_label)) =
+                            (last_id_components.next(), last_id_components.next())
+                        else {
+                            return Err(DynamoInvalidOperationError::new(
+                                dbg_cxt,
+                                "'sk' of insert position does not have valid ordered ID structure (doesn't end in '[...#]label#ID')",
+                            ));
+                        };
+                        if last_id_label != T::id_label() {
+                            return Err(DynamoInvalidOperationError::with_debug(
+                                dbg_cxt,
+                                "'sk' of insert position does not have valid ordered ID structure (label does not match object type)",
+                                "expected: ".to_string()
+                                    + T::id_label()
+                                    + ", got: "
+                                    + last_id_label,
+                            ));
+                        };
+                        let Ok(id_as_number) = last_id_part.parse::<u32>() else {
+                            return Err(DynamoInvalidOperationError::new(
+                                dbg_cxt,
+                                "'sk' of insert position does not have valid ordered ID structure (ID was not a number)",
+                            ));
+                        };
+                        id_as_number
+                    };
+                    let position_index = existing_ids_sorted_vec
                     .iter()
-                    .position(|id| id == &id_as_number)
+                    .position(|id| id == &insert_after_id)
                     .ok_or(DynamoInvalidOperationError::new(
                         dbg_cxt,
                         "'sk' of insert position does not have valid ordered ID structure (ID was not found in existing items)",
                     ))?;
-                match existing_number_ids.get(position_index + 1) {
-                    Some(next_id) => id_as_number + (next_id - id_as_number) / 2,
-                    None => id_as_number + ORDERED_IDS_DEFAULT_GAP,
+                    match existing_ids_sorted_vec.get(position_index + 1) {
+                        Some(next_id) => insert_after_id + (next_id - insert_after_id) / 2,
+                        None => insert_after_id + ORDERED_IDS_DEFAULT_GAP,
+                    }
                 }
-            }
-        };
-        // Since sorting based on strings, number of digits is important.
-        let new_id = format!("{:0width$}", new_id, width = ORDERED_IDS_DIGITS);
+            };
+            // Since sorting based on strings, number of digits is important.
+            results.push(format!("{:0width$}", new_id, width = ORDERED_IDS_DIGITS));
+
+            last_inserted_id = Some(new_id);
+            existing_ids_heap.push(new_id);
+        }
+        Ok(results)
+    }
+
+    pub async fn create_item_ordered<T: DynamoObject>(
+        &self,
+        table: String,
+        parent_pk: String,
+        parent_sk: String,
+        object: &T,
+        insert_position: DynamoInsertPosition,
+    ) -> Result<(String, String), GenericServerError> {
+        let dbg_cxt: &'static str = "create_item_ordered";
+        let new_id = self
+            .generate_ordered_custom_ids(
+                table.clone(),
+                parent_pk.clone(),
+                parent_sk.clone(),
+                object,
+                insert_position,
+                1,
+            )
+            .await?
+            .pop()
+            .ok_or(DynamoInvalidOperationError::new(
+                dbg_cxt,
+                "failed to generate new ordered ID",
+            ))?;
         self.create_item(table, parent_pk, parent_sk, object, Some(new_id))
             .await
+    }
+
+    pub async fn batch_create_item_ordered<T: DynamoObject>(
+        &self,
+        table: String,
+        parent_pk: String,
+        parent_sk: String,
+        objects: Vec<&T>,
+        insert_position: DynamoInsertPosition,
+    ) -> Result<Vec<(String, String)>, GenericServerError> {
+        if objects.is_empty() {
+            return Ok(Vec::new());
+        }
+        let new_ids = self
+            .generate_ordered_custom_ids(
+                table.clone(),
+                parent_pk.clone(),
+                parent_sk.clone(),
+                *objects.first().unwrap(),
+                insert_position,
+                objects.len(),
+            )
+            .await?;
+        self.batch_create_item(
+            table,
+            parent_pk,
+            parent_sk,
+            objects
+                .into_iter()
+                .zip(new_ids.into_iter())
+                .map(|(object, new_id)| (object, Some(new_id)))
+                .collect(),
+        )
+        .await
     }
 
     pub async fn update_item<T: DynamoObject>(
@@ -294,6 +418,34 @@ impl<C: DynamoClientImpl> DynamoUtil<C> {
             })?;
         Ok(())
     }
+
+    pub async fn batch_delete_item(
+        &self,
+        table: String,
+        keys: Vec<(String, String)>,
+    ) -> Result<(), GenericServerError> {
+        let dbg_cxt: &'static str = "batch_delete_item";
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let items = keys
+            .into_iter()
+            .map(|(pk, sk)| {
+                collection! {
+                    "pk".to_string() => AttributeValue::S(pk),
+                    "sk".to_string() => AttributeValue::S(sk),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.client
+            .batch_delete_item(table, items)
+            .await
+            .map_err(|e| match e.into_service_error() {
+                BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFoundError::default(),
+                other => DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other)),
+            })?;
+        Ok(())
+    }
 }
 
 // Underlying client, which performs the actual AWS operations.
@@ -323,6 +475,12 @@ pub trait DynamoClientImpl {
         item: HashMap<String, AttributeValue>,
     ) -> Result<PutItemOutput, SdkError<PutItemError>>;
 
+    async fn batch_put_item(
+        &self,
+        table_name: String,
+        items: Vec<HashMap<String, AttributeValue>>,
+    ) -> Result<BatchWriteItemOutput, SdkError<BatchWriteItemError>>;
+
     async fn update_item(
         &self,
         table_name: String,
@@ -337,6 +495,12 @@ pub trait DynamoClientImpl {
         table_name: String,
         key: HashMap<String, AttributeValue>,
     ) -> Result<DeleteItemOutput, SdkError<DeleteItemError>>;
+
+    async fn batch_delete_item(
+        &self,
+        table_name: String,
+        keys: Vec<HashMap<String, AttributeValue>>,
+    ) -> Result<BatchWriteItemOutput, SdkError<BatchWriteItemError>>;
 }
 
 // Tests.

@@ -5,14 +5,16 @@ use aws_config::BehaviorVersion;
 use aws_sdk_cognitoidentityprovider::{config::Region, error::SdkError};
 use aws_sdk_dynamodb::{
     operation::{
+        batch_write_item::{BatchWriteItemError, BatchWriteItemOutput},
         delete_item::{DeleteItemError, DeleteItemOutput},
         get_item::{GetItemError, GetItemOutput},
         put_item::{PutItemError, PutItemOutput},
         query::{QueryError, QueryOutput},
         update_item::{UpdateItemError, UpdateItemOutput},
     },
-    types::AttributeValue,
+    types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
 };
+use fractic_core::collection;
 use fractic_env_config::EnvVariables;
 use fractic_generic_server_error::GenericServerError;
 
@@ -25,9 +27,7 @@ use super::util::{DynamoClientImpl, DynamoUtil};
 // --------------------------------------------------
 
 impl DynamoUtil<aws_sdk_dynamodb::Client> {
-    pub async fn new(
-        env: EnvVariables<DynamoEnvConfig>,
-    ) -> Result<Self, GenericServerError> {
+    pub async fn new(env: EnvVariables<DynamoEnvConfig>) -> Result<Self, GenericServerError> {
         let region_str = env.get(&DynamoEnvConfig::DynamoRegion)?;
         let region = Region::new(region_str.clone());
         let shared_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
@@ -81,6 +81,29 @@ impl DynamoClientImpl for aws_sdk_dynamodb::Client {
             .await
     }
 
+    async fn batch_put_item(
+        &self,
+        table_name: String,
+        items: Vec<HashMap<String, AttributeValue>>,
+    ) -> Result<BatchWriteItemOutput, SdkError<BatchWriteItemError>> {
+        self.batch_write_item()
+            .set_request_items(Some(collection!(
+                table_name => items
+                    .into_iter()
+                    .map(|item|
+                        WriteRequest::builder()
+                            .put_request(PutRequest::builder()
+                            .set_item(Some(item))
+                            .build()
+                            .expect("Invalid PutRequest"))
+                            .build()
+                    )
+                    .collect()
+            )))
+            .send()
+            .await
+    }
+
     async fn update_item(
         &self,
         table_name: String,
@@ -107,6 +130,29 @@ impl DynamoClientImpl for aws_sdk_dynamodb::Client {
         self.delete_item()
             .set_table_name(Some(table_name))
             .set_key(Some(key))
+            .send()
+            .await
+    }
+
+    async fn batch_delete_item(
+        &self,
+        table_name: String,
+        keys: Vec<HashMap<String, AttributeValue>>,
+    ) -> Result<BatchWriteItemOutput, SdkError<BatchWriteItemError>> {
+        self.batch_write_item()
+            .set_request_items(Some(collection!(
+                table_name => keys
+                    .into_iter()
+                    .map(|key|
+                        WriteRequest::builder()
+                            .delete_request(DeleteRequest::builder()
+                            .set_key(Some(key))
+                            .build()
+                            .expect("Invalid DeleteRequest"))
+                            .build()
+                    )
+                    .collect()
+            )))
             .send()
             .await
     }

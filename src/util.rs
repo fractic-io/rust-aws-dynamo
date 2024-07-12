@@ -52,23 +52,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         sk: String,
         match_type: DynamoQueryMatchType,
     ) -> Result<Vec<T>, GenericServerError> {
-        let dbg_cxt: &'static str = "query";
-        let condition = match match_type {
-            DynamoQueryMatchType::BeginsWith => "pk = :pk_val AND begins_with(sk, :sk_val)",
-            DynamoQueryMatchType::Equals => "pk = :pk_val AND sk = :sk_val",
-        }
-        .to_string();
-        let attribute_values = collection! {
-            ":pk_val".to_string() => AttributeValue::S(pk),
-            ":sk_val".to_string() => AttributeValue::S(sk),
-        };
-        let response = self
-            .client
-            .query(table, index, condition, attribute_values)
-            .await
-            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
-        let items = response.items();
-        items
+        self.query_generic(table, index, pk, sk, match_type)
+            .await?
             .into_iter()
             .filter_map(|item| {
                 let (pk, sk) =

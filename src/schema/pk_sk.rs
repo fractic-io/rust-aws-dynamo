@@ -28,6 +28,12 @@ impl PkSk {
     }
 }
 
+impl fmt::Display for PkSk {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}|{}", self.pk, self.sk)
+    }
+}
+
 impl Serialize for PkSk {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

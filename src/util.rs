@@ -15,7 +15,7 @@ use crate::{
     errors::{DynamoConnectionError, DynamoInvalidOperationError, DynamoNotFoundError},
     schema::{
         id_calculations::{
-            generate_id, get_last_id_label, get_pk_sk_from_map, ORDERED_IDS_DEFAULT_GAP,
+            generate_id, get_object_type, get_pk_sk_from_map, ORDERED_IDS_DEFAULT_GAP,
             ORDERED_IDS_DIGITS, ORDERED_IDS_INIT,
         },
         parsing::{build_dynamo_map, parse_dynamo_map, IdKeys},
@@ -71,10 +71,9 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         items
             .into_iter()
             .filter_map(|item| {
-                let sk = get_pk_sk_from_map(&item)
-                    .expect("Query result item did not have pk/sk.")
-                    .1;
-                if get_last_id_label(sk) == T::id_label() {
+                let (pk, sk) =
+                    get_pk_sk_from_map(&item).expect("Query result item did not have pk/sk.");
+                if get_object_type(pk, sk) == T::id_label() {
                     // Item is of type T.
                     Some(parse_dynamo_map::<T>(&item))
                 } else {

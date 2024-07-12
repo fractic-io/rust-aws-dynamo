@@ -1,5 +1,5 @@
 use fractic_generic_server_error::{common::CriticalError, GenericServerError};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub mod id_calculations;
 pub mod parsing;
@@ -67,4 +67,23 @@ macro_rules! impl_dynamo_object {
             }
         }
     };
+}
+
+// Standard sub-structs:
+// ---------------------------
+
+// Custom struct to hold 'pk' and 'sk', which gets serialized and deserialized
+// as "pk|sk" in communication with downstream clients, but are separate
+// properties in the underlying data store (primary_key and sort_key).
+#[derive(Debug, PartialEq, Clone, Hash, Eq)]
+pub struct PkSk {
+    pub pk: String,
+    pub sk: String,
+}
+
+// Used for automatic created / modified timestamps.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Timestamp {
+    pub seconds: i64,
+    pub nanos: u32,
 }

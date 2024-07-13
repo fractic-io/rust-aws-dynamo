@@ -1,4 +1,4 @@
-use fractic_generic_server_error::{common::CriticalError, GenericServerError};
+use fractic_generic_server_error::GenericServerError;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub mod id_calculations;
@@ -11,32 +11,29 @@ pub enum NestingType {
     TopLevelChild,
 }
 pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
+    // ID calculations:
     fn pk(&self) -> Option<&str>;
     fn sk(&self) -> Option<&str>;
     fn id_label() -> &'static str;
     fn generate_pk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
     fn generate_sk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
 
+    // Shorthand ID accessors:
     fn id_or_critical(&self) -> Result<&PkSk, GenericServerError>;
     fn pk_or_critical(&self) -> Result<&str, GenericServerError> {
-        let dbg_cxt: &'static str = "pk_or_critical";
-        Ok(self.pk().ok_or_else(|| {
-            CriticalError::with_debug(
-                dbg_cxt,
-                "DynamoObject did not have pk.",
-                Self::id_label().to_string(),
-            )
-        })?)
+        self.id_or_critical().map(|id| id.pk.as_str())
     }
     fn sk_or_critical(&self) -> Result<&str, GenericServerError> {
-        let dbg_cxt: &'static str = "sk_or_critical";
-        Ok(self.sk().ok_or_else(|| {
-            CriticalError::with_debug(
-                dbg_cxt,
-                "DynamoObject did not have sk.",
-                Self::id_label().to_string(),
-            )
-        })?)
+        self.id_or_critical().map(|id| id.sk.as_str())
+    }
+
+    // Auto-fields accessors:
+    fn auto_fields(&self) -> &AutoFields;
+    fn created_at(&self) -> Option<&Timestamp> {
+        self.auto_fields().created_at.as_ref()
+    }
+    fn updated_at(&self) -> Option<&Timestamp> {
+        self.auto_fields().updated_at.as_ref()
     }
 }
 
@@ -67,15 +64,26 @@ macro_rules! impl_dynamo_object {
                     NestingType::InlineChild => format!("{parent_sk}#{}#{uuid}", $id_label),
                 }
             }
-            fn id_or_critical(&self) -> Result<&PkSk, GenericServerError> {
+
+            fn id_or_critical(
+                &self,
+            ) -> Result<&PkSk, fractic_generic_server_error::GenericServerError> {
                 let dbg_cxt: &'static str = "id_or_critical";
                 Ok(self.id.as_ref().ok_or_else(|| {
-                    CriticalError::with_debug(
+                    fractic_generic_server_error::common::CriticalError::with_debug(
                         dbg_cxt,
                         "DynamoObject did not have id.",
                         Self::id_label().to_string(),
                     )
                 })?)
+            }
+
+            fn auto_fields(&self) -> &AutoFields {
+                // All DynamoObjects should add a flattened auto_fields field:
+                //
+                // #[serde(flatten)]
+                // pub auto_fields: AutoFields,
+                &self.auto_fields
             }
         }
     };
@@ -91,6 +99,17 @@ macro_rules! impl_dynamo_object {
 pub struct PkSk {
     pub pk: String,
     pub sk: String,
+}
+
+// Fields automatically populated by DynamoUtil. This struct should be included
+// in all DynamoObjects as a flattened field:
+//
+// #[serde(flatten)]
+// pub auto_fields: AutoFields,
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AutoFields {
+    pub created_at: Option<Timestamp>,
+    pub updated_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

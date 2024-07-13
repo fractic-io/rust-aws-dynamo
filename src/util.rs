@@ -1,4 +1,4 @@
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 
 use aws_sdk_dynamodb::{
     operation::{
@@ -7,6 +7,7 @@ use aws_sdk_dynamodb::{
     },
     types::AttributeValue,
 };
+use calculate_sort::calculate_sort_values;
 use fractic_core::collection;
 use fractic_generic_server_error::GenericServerError;
 
@@ -14,21 +15,18 @@ use crate::{
     backend::DynamoBackendImpl,
     errors::{DynamoConnectionError, DynamoInvalidOperationError, DynamoNotFoundError},
     schema::{
-        id_calculations::{
-            generate_id, get_object_type, get_pk_sk_from_map, ORDERED_IDS_DEFAULT_GAP,
-            ORDERED_IDS_DIGITS, ORDERED_IDS_INIT,
-        },
+        id_calculations::{generate_uuid, get_object_type, get_pk_sk_from_map},
         parsing::{build_dynamo_map, parse_dynamo_map, IdKeys},
         DynamoObject, PkSk, Timestamp,
     },
 };
 
-// AWS Dynamo utils.
-// --------------------------------------------------
+mod calculate_sort;
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
 pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
 pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
+pub const AUTO_FIELDS_SORT: &str = "sort";
 
 pub enum DynamoQueryMatchType {
     BeginsWith,
@@ -41,7 +39,6 @@ pub enum DynamoInsertPosition {
     After(PkSk),
 }
 
-// Main class, to be used by clients.
 pub struct DynamoUtil<B: DynamoBackendImpl> {
     pub backend: B,
     pub table: String,
@@ -93,7 +90,23 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .query(self.table.clone(), index, condition, attribute_values)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
-        let items = response.items();
+        let mut items = response.items().to_vec();
+        items.sort_by(|a, b| {
+            let a_sort = a
+                .get(AUTO_FIELDS_SORT)
+                .and_then(|v| v.as_n().ok().map(|n| n.parse::<f64>().ok()))
+                .flatten();
+            let b_sort = b
+                .get(AUTO_FIELDS_SORT)
+                .and_then(|v| v.as_n().ok().map(|n| n.parse::<f64>().ok()))
+                .flatten();
+            match (a_sort, b_sort) {
+                (Some(a), Some(b)) => a.partial_cmp(&b).unwrap(),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            }
+        });
         Ok(items.to_vec())
     }
 
@@ -121,10 +134,10 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         &self,
         parent_id: PkSk,
         object: &T,
-        custom_uuid: Option<String>,
+        custom_sort: Option<f64>,
     ) -> Result<PkSk, GenericServerError> {
         let dbg_cxt: &'static str = "create_item";
-        let uuid = custom_uuid.unwrap_or_else(generate_id);
+        let uuid = generate_uuid();
         let new_pk = object.generate_pk(&parent_id.pk, &parent_id.sk, &uuid);
         let new_sk = object.generate_sk(&parent_id.pk, &parent_id.sk, &uuid);
         let map = build_dynamo_map::<T>(
@@ -133,6 +146,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             Some(vec![
                 (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
                 (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+                (AUTO_FIELDS_SORT, Box::new(custom_sort)),
             ]),
         )?;
         self.backend
@@ -148,16 +162,16 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn batch_create_item<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        objects_and_custom_uuids: Vec<(&T, Option<String>)>,
+        objects_and_custom_sorts: Vec<(&T, Option<f64>)>,
     ) -> Result<Vec<PkSk>, GenericServerError> {
         let dbg_cxt: &'static str = "batch_create_item";
-        if objects_and_custom_uuids.is_empty() {
+        if objects_and_custom_sorts.is_empty() {
             return Ok(Vec::new());
         }
-        let (items, ids) = objects_and_custom_uuids
+        let (items, ids) = objects_and_custom_sorts
             .into_iter()
-            .map(|(object, custom_uuid)| {
-                let uuid = custom_uuid.unwrap_or_else(generate_id);
+            .map(|(object, custom_sort)| {
+                let uuid = generate_uuid();
                 let new_pk = object.generate_pk(&parent_id.pk, &parent_id.sk, &uuid);
                 let new_sk = object.generate_sk(&parent_id.pk, &parent_id.sk, &uuid);
                 Ok((
@@ -167,6 +181,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                         Some(vec![
                             (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
                             (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+                            (AUTO_FIELDS_SORT, Box::new(custom_sort)),
                         ]),
                     )?,
                     PkSk {
@@ -185,104 +200,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(ids)
     }
 
-    async fn generate_ordered_custom_ids<T: DynamoObject>(
-        &self,
-        parent_id: PkSk,
-        object: &T,
-        insert_position: DynamoInsertPosition,
-        num: usize,
-    ) -> Result<Vec<String>, GenericServerError> {
-        let dbg_cxt = "generate_ordered_custom_ids";
-
-        // Search for all IDs for existing items of this type.
-        let search_id = PkSk {
-            pk: object.generate_pk(&parent_id.pk, &parent_id.sk, ""),
-            sk: object.generate_sk(&parent_id.pk, &parent_id.sk, ""),
-        };
-        let query = self
-            .query::<T>(None, search_id, DynamoQueryMatchType::BeginsWith)
-            .await?;
-        let mut existing_ids_heap = query
-            .iter()
-            .filter_map(|item| item.sk())
-            .filter_map(|sk| sk.split('#').last())
-            .filter_map(|id_part| match id_part.parse::<u32>() {
-                Ok(id) => Some(id),
-                Err(_) => None,
-            })
-            .collect::<BinaryHeap<_>>();
-
-        // Determine the new IDs based on insertion position.
-        let mut results = Vec::new();
-        let mut last_inserted_id = None;
-        for _ in 0..num {
-            let existing_ids_sorted_vec = existing_ids_heap.clone().into_sorted_vec();
-            let min_id = existing_ids_sorted_vec.first().unwrap_or(&ORDERED_IDS_INIT);
-            let max_id = existing_ids_sorted_vec.last().unwrap_or(&ORDERED_IDS_INIT);
-
-            let new_id = match &insert_position {
-                DynamoInsertPosition::First => min_id - ORDERED_IDS_DEFAULT_GAP,
-                DynamoInsertPosition::Last => max_id + ORDERED_IDS_DEFAULT_GAP,
-                DynamoInsertPosition::After(PkSk {
-                    sk: insert_position_sk,
-                    ..
-                }) => {
-                    let insert_after_id = if let Some(last_inserted_id) = last_inserted_id {
-                        // Since we're generating multiple IDs, only the first
-                        // one should follow the sk from the
-                        // DynamoInsertPosition. All the rest should follow the
-                        // last item.
-                        last_inserted_id
-                    } else {
-                        let mut last_id_components = insert_position_sk.split('#').rev();
-                        let (Some(last_id_part), Some(last_id_label)) =
-                            (last_id_components.next(), last_id_components.next())
-                        else {
-                            return Err(DynamoInvalidOperationError::new(
-                                dbg_cxt,
-                                "'sk' of insert position does not have valid ordered ID structure (doesn't end in '[...#]label#ID')",
-                            ));
-                        };
-                        if last_id_label != T::id_label() {
-                            return Err(DynamoInvalidOperationError::with_debug(
-                                dbg_cxt,
-                                "'sk' of insert position does not have valid ordered ID structure (label does not match object type)",
-                                "expected: ".to_string()
-                                    + T::id_label()
-                                    + ", got: "
-                                    + last_id_label,
-                            ));
-                        };
-                        let Ok(id_as_number) = last_id_part.parse::<u32>() else {
-                            return Err(DynamoInvalidOperationError::new(
-                                dbg_cxt,
-                                "'sk' of insert position does not have valid ordered ID structure (ID was not a number)",
-                            ));
-                        };
-                        id_as_number
-                    };
-                    let position_index = existing_ids_sorted_vec
-                    .iter()
-                    .position(|id| id == &insert_after_id)
-                    .ok_or(DynamoInvalidOperationError::new(
-                        dbg_cxt,
-                        "'sk' of insert position does not have valid ordered ID structure (ID was not found in existing items)",
-                    ))?;
-                    match existing_ids_sorted_vec.get(position_index + 1) {
-                        Some(next_id) => insert_after_id + (next_id - insert_after_id) / 2,
-                        None => insert_after_id + ORDERED_IDS_DEFAULT_GAP,
-                    }
-                }
-            };
-            // Since sorting based on strings, number of digits is important.
-            results.push(format!("{:0width$}", new_id, width = ORDERED_IDS_DIGITS));
-
-            last_inserted_id = Some(new_id);
-            existing_ids_heap.push(new_id);
-        }
-        Ok(results)
-    }
-
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
@@ -290,15 +207,14 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         insert_position: DynamoInsertPosition,
     ) -> Result<PkSk, GenericServerError> {
         let dbg_cxt: &'static str = "create_item_ordered";
-        let new_id = self
-            .generate_ordered_custom_ids(parent_id.clone(), object, insert_position, 1)
+        let sort_val = calculate_sort_values(self, parent_id.clone(), object, insert_position, 1)
             .await?
             .pop()
             .ok_or(DynamoInvalidOperationError::new(
                 dbg_cxt,
                 "failed to generate new ordered ID",
             ))?;
-        self.create_item(parent_id, object, Some(new_id)).await
+        self.create_item(parent_id, object, Some(sort_val)).await
     }
 
     pub async fn batch_create_item_ordered<T: DynamoObject>(
@@ -310,20 +226,20 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         if objects.is_empty() {
             return Ok(Vec::new());
         }
-        let new_ids = self
-            .generate_ordered_custom_ids(
-                parent_id.clone(),
-                *objects.first().unwrap(),
-                insert_position,
-                objects.len(),
-            )
-            .await?;
+        let new_ids = calculate_sort_values(
+            self,
+            parent_id.clone(),
+            *objects.first().unwrap(),
+            insert_position,
+            objects.len(),
+        )
+        .await?;
         self.batch_create_item(
             parent_id,
             objects
                 .into_iter()
                 .zip(new_ids.into_iter())
-                .map(|(object, new_id)| (object, Some(new_id)))
+                .map(|(object, sort_val)| (object, Some(sort_val)))
                 .collect(),
         )
         .await

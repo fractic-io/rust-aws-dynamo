@@ -5,22 +5,6 @@ use crate::{errors::DynamoInvalidIdError, util::DynamoMap};
 const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const NUM_CHARACTERS_TO_GENERATE: usize = 16;
 
-// Ordered IDs.
-//
-// Ordering of items with 'ordered IDs' is based on lexicographical sort, so the
-// amount of digits is important.
-//
-// - If we add to the end, we add the 'gap' to the current largest ID.
-// - If we add to the beginning, we subtract the 'gap' from the current smallest ID.
-// - If we add in the middle, we take the average of the two IDs.
-//
-// Choose a middle gap such that, if we keep adding items at the end, we have
-// plenty of space to grow, yet large enough to be able to insert items in the
-// middle without running out of possible values.
-pub(crate) const ORDERED_IDS_DIGITS: usize = 9;
-pub(crate) const ORDERED_IDS_INIT: u32 = 2000000000;
-pub(crate) const ORDERED_IDS_DEFAULT_GAP: u32 = 0000010000;
-
 fn _base62_encode(mut n: u128) -> String {
     let mut result = vec![' '; NUM_CHARACTERS_TO_GENERATE];
 
@@ -32,7 +16,7 @@ fn _base62_encode(mut n: u128) -> String {
     result.into_iter().collect()
 }
 
-pub fn generate_id() -> String {
+pub fn generate_uuid() -> String {
     let uuid = uuid::Uuid::new_v4();
     _base62_encode(uuid.as_u128())
 }

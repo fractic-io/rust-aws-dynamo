@@ -37,6 +37,9 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     fn updated_at(&self) -> Option<&Timestamp> {
         self.auto_fields().updated_at.as_ref()
     }
+    fn sort(&self) -> Option<f64> {
+        self.auto_fields().sort
+    }
     fn has_unknown_fields(&self) -> bool {
         !self.auto_fields().unknown_fields.is_empty()
     }
@@ -126,6 +129,8 @@ pub struct AutoFields {
     pub created_at: Option<Timestamp>,
     #[serde(skip_serializing)] // Read-only.
     pub updated_at: Option<Timestamp>,
+    #[serde(skip_serializing)] // Read-only.
+    pub sort: Option<f64>,
     #[serde(flatten, skip_serializing)] // Read-only.
     pub unknown_fields: HashMap<String, serde_json::Value>,
 }

@@ -19,7 +19,7 @@ impl PkSk {
     }
     pub fn from_string(s: &str) -> Result<PkSk, GenericServerError> {
         let dbg_cxt = "PkSk::from_string";
-        serde_json::from_str(s).map_err(|e| {
+        serde_json::from_str(format!("\"{}\"", s).as_str()).map_err(|e| {
             DynamoInvalidIdError::with_debug(dbg_cxt, "Invalid PkSk string.", e.to_string())
         })
     }
@@ -71,12 +71,13 @@ mod tests {
 
     #[test]
     fn test_from_string_valid() {
-        let json_str = r#""test_pk|test_sk""#;
         // Using from_string:
+        let json_str = r#"test_pk|test_sk"#;
         let pksk = PkSk::from_string(json_str).unwrap();
         assert_eq!(pksk.pk, "test_pk");
         assert_eq!(pksk.sk, "test_sk");
         // Using Deserialize:
+        let json_str = r#""test_pk|test_sk""#; // Extra quotes.
         let pksk: PkSk = serde_json::from_str(json_str).unwrap();
         assert_eq!(pksk.pk, "test_pk");
         assert_eq!(pksk.sk, "test_sk");
@@ -88,7 +89,7 @@ mod tests {
         let json_str = r#"invalid_format"#;
         assert!(PkSk::from_string(json_str).is_err());
         // Using Deserialize:
-        let json_str = r#""invalid_format""#;
+        let json_str = r#""invalid_format""#; // Extra quotes.
         assert!(serde_json::from_str::<PkSk>(json_str).is_err());
     }
 
@@ -102,6 +103,6 @@ mod tests {
         assert_eq!(format!("{}", pksk), "test_pk|test_sk");
         // Using Serialize:
         let serialized = serde_json::to_string(&pksk).unwrap();
-        assert_eq!(serialized, r#""test_pk|test_sk""#);
+        assert_eq!(serialized, r#""test_pk|test_sk""#); // Extra quotes.
     }
 }

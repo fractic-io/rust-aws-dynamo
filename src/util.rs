@@ -40,19 +40,19 @@ pub enum DynamoInsertPosition {
 }
 
 // Main class, to be used by clients.
-pub struct DynamoUtil<C: DynamoBackendImpl> {
-    pub client: C,
+pub struct DynamoUtil<B: DynamoBackendImpl> {
+    pub backend: B,
+    pub table: String,
 }
 impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn query<T: DynamoObject>(
         &self,
-        table: String,
         index: Option<String>,
         pk: String,
         sk: String,
         match_type: DynamoQueryMatchType,
     ) -> Result<Vec<T>, GenericServerError> {
-        self.query_generic(table, index, pk, sk, match_type)
+        self.query_generic(index, pk, sk, match_type)
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -73,7 +73,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn query_generic(
         &self,
-        table: String,
         index: Option<String>,
         pk: String,
         sk: String,
@@ -90,8 +89,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             ":sk_val".to_string() => AttributeValue::S(sk),
         };
         let response = self
-            .client
-            .query(table, index, condition, attribute_values)
+            .backend
+            .query(self.table.clone(), index, condition, attribute_values)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
         let items = response.items();
@@ -100,7 +99,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn get_item<T: DynamoObject>(
         &self,
-        table: String,
         pk: String,
         sk: String,
     ) -> Result<Option<T>, GenericServerError> {
@@ -110,8 +108,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             "sk".to_string() => AttributeValue::S(sk),
         };
         let response = self
-            .client
-            .get_item(table, key)
+            .backend
+            .get_item(self.table.clone(), key)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
         response
@@ -122,7 +120,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn create_item<T: DynamoObject>(
         &self,
-        table: String,
         parent_pk: String,
         parent_sk: String,
         object: &T,
@@ -133,8 +130,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let new_pk = object.generate_pk(&parent_pk, &parent_sk, &new_id);
         let new_sk = object.generate_sk(&parent_pk, &parent_sk, &new_id);
         let map = build_dynamo_map::<T>(&object, IdKeys::Override(new_pk.clone(), new_sk.clone()))?;
-        self.client
-            .put_item(table, map)
+        self.backend
+            .put_item(self.table.clone(), map)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
         Ok((new_pk, new_sk))
@@ -142,7 +139,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn batch_create_item<T: DynamoObject>(
         &self,
-        table: String,
         parent_pk: String,
         parent_sk: String,
         objects_and_custom_ids: Vec<(&T, Option<String>)>,
@@ -168,8 +164,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .collect::<Result<Vec<(DynamoMap, (String, String))>, GenericServerError>>()?
             .into_iter()
             .unzip();
-        self.client
-            .batch_put_item(table, items)
+        self.backend
+            .batch_put_item(self.table.clone(), items)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
         Ok(ids)
@@ -177,7 +173,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     async fn generate_ordered_custom_ids<T: DynamoObject>(
         &self,
-        table: String,
         parent_pk: String,
         parent_sk: String,
         object: &T,
@@ -190,13 +185,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let search_pk = object.generate_pk(&parent_pk, &parent_sk, "");
         let search_sk = object.generate_sk(&parent_pk, &parent_sk, "");
         let query = self
-            .query::<T>(
-                table.clone(),
-                None,
-                search_pk,
-                search_sk,
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query::<T>(None, search_pk, search_sk, DynamoQueryMatchType::BeginsWith)
             .await?;
         let mut existing_ids_heap = query
             .iter()
@@ -281,7 +270,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
-        table: String,
         parent_pk: String,
         parent_sk: String,
         object: &T,
@@ -290,7 +278,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let dbg_cxt: &'static str = "create_item_ordered";
         let new_id = self
             .generate_ordered_custom_ids(
-                table.clone(),
                 parent_pk.clone(),
                 parent_sk.clone(),
                 object,
@@ -303,13 +290,12 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 dbg_cxt,
                 "failed to generate new ordered ID",
             ))?;
-        self.create_item(table, parent_pk, parent_sk, object, Some(new_id))
+        self.create_item(parent_pk, parent_sk, object, Some(new_id))
             .await
     }
 
     pub async fn batch_create_item_ordered<T: DynamoObject>(
         &self,
-        table: String,
         parent_pk: String,
         parent_sk: String,
         objects: Vec<&T>,
@@ -320,7 +306,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         }
         let new_ids = self
             .generate_ordered_custom_ids(
-                table.clone(),
                 parent_pk.clone(),
                 parent_sk.clone(),
                 *objects.first().unwrap(),
@@ -329,7 +314,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             )
             .await?;
         self.batch_create_item(
-            table,
             parent_pk,
             parent_sk,
             objects
@@ -341,11 +325,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         .await
     }
 
-    pub async fn update_item<T: DynamoObject>(
-        &self,
-        table: String,
-        object: &T,
-    ) -> Result<(), GenericServerError> {
+    pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "update_item";
         let key = collection! {
             "pk".to_string() => AttributeValue::S(object.pk().ok_or(
@@ -371,9 +351,9 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 })
                 .collect::<Vec<String>>()
                 .join(", ");
-        self.client
+        self.backend
             .update_item(
-                table,
+                self.table.clone(),
                 key,
                 update_expression,
                 expression_attribute_values,
@@ -387,19 +367,14 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(())
     }
 
-    pub async fn delete_item(
-        &self,
-        table: String,
-        pk: String,
-        sk: String,
-    ) -> Result<(), GenericServerError> {
+    pub async fn delete_item(&self, pk: String, sk: String) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "delete_item";
         let key = collection! {
             "pk".to_string() => AttributeValue::S(pk),
             "sk".to_string() => AttributeValue::S(sk),
         };
-        self.client
-            .delete_item(table, key)
+        self.backend
+            .delete_item(self.table.clone(), key)
             .await
             .map_err(|e| match e.into_service_error() {
                 DeleteItemError::ResourceNotFoundException(_) => DynamoNotFoundError::default(),
@@ -410,7 +385,6 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn batch_delete_item(
         &self,
-        table: String,
         keys: Vec<(String, String)>,
     ) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "batch_delete_item";
@@ -426,8 +400,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 }
             })
             .collect::<Vec<_>>();
-        self.client
-            .batch_delete_item(table, items)
+        self.backend
+            .batch_delete_item(self.table.clone(), items)
             .await
             .map_err(|e| match e.into_service_error() {
                 BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFoundError::default(),

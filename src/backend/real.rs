@@ -27,7 +27,10 @@ use super::DynamoBackendImpl;
 // --------------------------------------------------
 
 impl DynamoUtil<aws_sdk_dynamodb::Client> {
-    pub async fn new(env: EnvVariables<DynamoEnvConfig>) -> Result<Self, GenericServerError> {
+    pub async fn new(
+        env: EnvVariables<DynamoEnvConfig>,
+        table: impl Into<String>,
+    ) -> Result<Self, GenericServerError> {
         let region_str = env.get(&DynamoEnvConfig::DynamoRegion)?;
         let region = Region::new(region_str.clone());
         let shared_config = aws_config::defaults(BehaviorVersion::v2024_03_28())
@@ -35,7 +38,10 @@ impl DynamoUtil<aws_sdk_dynamodb::Client> {
             .load()
             .await;
         let client = aws_sdk_dynamodb::Client::new(&shared_config);
-        Ok(Self { client })
+        Ok(Self {
+            backend: client,
+            table: table.into(),
+        })
     }
 }
 
@@ -157,8 +163,3 @@ impl DynamoBackendImpl for aws_sdk_dynamodb::Client {
             .await
     }
 }
-
-// Tests.
-// --------------------------------------------------
-
-// TODO

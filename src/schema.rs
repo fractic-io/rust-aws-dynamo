@@ -116,10 +116,17 @@ pub struct PkSk {
 // pub auto_fields: AutoFields,
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct AutoFields {
+    // Since these are manually handled by DynamoUtil, they should be read-only.
+    // This is can be accomplished by skipping serialization, since it will
+    // cause these fields to be skipped when converting to the DynomoMap. This
+    // also means they will not be included when an object is converted to JSON
+    // (ex. when this object is sent to a client by an API), so if they are
+    // needed they should be manually read and included using the accessors.
+    #[serde(skip_serializing)] // Read-only.
     pub created_at: Option<Timestamp>,
+    #[serde(skip_serializing)] // Read-only.
     pub updated_at: Option<Timestamp>,
-
-    #[serde(flatten)]
+    #[serde(flatten, skip_serializing)] // Read-only.
     pub unknown_fields: HashMap<String, serde_json::Value>,
 }
 

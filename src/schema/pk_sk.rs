@@ -11,6 +11,12 @@ use crate::errors::DynamoInvalidIdError;
 use super::{id_calculations::get_pk_sk_from_string, PkSk};
 
 impl PkSk {
+    pub fn root() -> PkSk {
+        PkSk {
+            pk: "ROOT".to_string(),
+            sk: "ROOT".to_string(),
+        }
+    }
     pub fn from_string(s: &str) -> Result<PkSk, GenericServerError> {
         let dbg_cxt = "PkSk::from_string";
         serde_json::from_str(s).map_err(|e| {

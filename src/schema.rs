@@ -117,7 +117,7 @@ pub struct PkSk {
 //
 // #[serde(flatten)]
 // pub auto_fields: AutoFields,
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct AutoFields {
     // Since these are manually handled by DynamoUtil, they should be read-only.
     // This is can be accomplished by skipping serialization, since it will
@@ -135,7 +135,7 @@ pub struct AutoFields {
     pub unknown_fields: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Timestamp {
     pub seconds: i64,
     pub nanos: u32,

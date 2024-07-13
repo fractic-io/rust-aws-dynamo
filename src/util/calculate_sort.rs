@@ -9,9 +9,6 @@ use crate::{
 
 use super::{DynamoInsertPosition, DynamoQueryMatchType, DynamoUtil};
 
-// 'sort' field value calculations:
-// --------------------------------------------------
-
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedItem<'a> {
     id: &'a PkSk,

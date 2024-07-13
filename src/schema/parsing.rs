@@ -17,6 +17,7 @@ pub enum IdKeys {
 pub fn build_dynamo_map<T: DynamoObject>(
     object: &T,
     id_keys: IdKeys,
+    overrides: Option<Vec<(impl Into<String>, Box<dyn erased_serde::Serialize>)>>,
 ) -> Result<DynamoMap, GenericServerError> {
     let dbg_cxt: &'static str = "build_dynamo_map";
 
@@ -74,6 +75,20 @@ pub fn build_dynamo_map<T: DynamoObject>(
             );
         }
         IdKeys::None => {}
+    }
+
+    // Set overrides.
+    if let Some(overrides) = overrides {
+        for (key, value) in overrides.into_iter() {
+            let json_value = serde_json::to_value(&value).map_err(|e| {
+                DynamoItemParsingError::with_debug(
+                    dbg_cxt,
+                    "failed to serialize override object",
+                    e.to_string(),
+                )
+            })?;
+            attribute_values.insert(key.into(), serde_value_to_attribute_value(json_value)?);
+        }
     }
 
     Ok(attribute_values)

@@ -10,6 +10,7 @@ aws-config = "1.5.1"
 aws-sdk-cognitoidentityprovider = "1.35.0"
 aws-sdk-dynamodb = "1.34.0"
 chrono = "0.4.38"
+erased-serde = "0.4.5"
 fractic-core = { git = "https://github.com/fractic-io/rust-core.git" }
 fractic-env-config = { git = "https://github.com/fractic-io/rust-env-config.git" }
 fractic-generic-server-error = { git = "https://github.com/fractic-io/rust-generic-server-error.git" }

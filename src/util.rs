@@ -19,7 +19,7 @@ use crate::{
             ORDERED_IDS_DIGITS, ORDERED_IDS_INIT,
         },
         parsing::{build_dynamo_map, parse_dynamo_map, IdKeys},
-        DynamoObject, PkSk,
+        DynamoObject, PkSk, Timestamp,
     },
 };
 
@@ -27,6 +27,8 @@ use crate::{
 // --------------------------------------------------
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
+pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
+pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
 
 pub enum DynamoQueryMatchType {
     BeginsWith,
@@ -125,7 +127,14 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let uuid = custom_uuid.unwrap_or_else(generate_id);
         let new_pk = object.generate_pk(&parent_id.pk, &parent_id.sk, &uuid);
         let new_sk = object.generate_sk(&parent_id.pk, &parent_id.sk, &uuid);
-        let map = build_dynamo_map::<T>(&object, IdKeys::Override(new_pk.clone(), new_sk.clone()))?;
+        let map = build_dynamo_map::<T>(
+            &object,
+            IdKeys::Override(new_pk.clone(), new_sk.clone()),
+            Some(vec![
+                (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
+                (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+            ]),
+        )?;
         self.backend
             .put_item(self.table.clone(), map)
             .await
@@ -155,6 +164,10 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                     build_dynamo_map::<T>(
                         &object,
                         IdKeys::Override(new_pk.clone(), new_sk.clone()),
+                        Some(vec![
+                            (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
+                            (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+                        ]),
                     )?,
                     PkSk {
                         pk: new_pk,
@@ -326,7 +339,11 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 DynamoInvalidOperationError::new(
                     dbg_cxt, "sk required"))?.to_string()),
         };
-        let map = build_dynamo_map::<T>(&object, IdKeys::None)?;
+        let map = build_dynamo_map::<T>(
+            &object,
+            IdKeys::None,
+            Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
+        )?;
         let mut expression_attribute_names = HashMap::new();
         let mut expression_attribute_values = HashMap::new();
         let update_expression = "SET ".to_string()

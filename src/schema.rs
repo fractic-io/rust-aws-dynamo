@@ -34,8 +34,8 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
         })?)
     }
     fn id_label() -> &'static str;
-    fn generate_pk(&self, parent_pk: &str, parent_sk: &str, new_id: &str) -> String;
-    fn generate_sk(&self, parent_pk: &str, parent_sk: &str, new_id: &str) -> String;
+    fn generate_pk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
+    fn generate_sk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
 }
 
 #[macro_export]
@@ -51,18 +51,18 @@ macro_rules! impl_dynamo_object {
             fn id_label() -> &'static str {
                 $id_label
             }
-            fn generate_pk(&self, parent_pk: &str, parent_sk: &str, new_id: &str) -> String {
+            fn generate_pk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String {
                 match $nesting_type {
                     NestingType::Root => format!("ROOT"),
                     NestingType::TopLevelChild => format!("{parent_sk}"),
                     NestingType::InlineChild => format!("{parent_pk}"),
                 }
             }
-            fn generate_sk(&self, parent_pk: &str, parent_sk: &str, new_id: &str) -> String {
+            fn generate_sk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String {
                 match $nesting_type {
-                    NestingType::Root => format!("{}#{new_id}", $id_label),
-                    NestingType::TopLevelChild => format!("{}#{new_id}", $id_label),
-                    NestingType::InlineChild => format!("{parent_sk}#{}#{new_id}", $id_label),
+                    NestingType::Root => format!("{}#{uuid}", $id_label),
+                    NestingType::TopLevelChild => format!("{}#{uuid}", $id_label),
+                    NestingType::InlineChild => format!("{parent_sk}#{}#{uuid}", $id_label),
                 }
             }
         }

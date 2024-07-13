@@ -19,7 +19,7 @@ use crate::{
             ORDERED_IDS_DIGITS, ORDERED_IDS_INIT,
         },
         parsing::{build_dynamo_map, parse_dynamo_map, IdKeys},
-        DynamoObject,
+        DynamoObject, PkSk,
     },
 };
 
@@ -36,7 +36,7 @@ pub enum DynamoQueryMatchType {
 pub enum DynamoInsertPosition {
     First,
     Last,
-    After { pk: String, sk: String },
+    After(PkSk),
 }
 
 // Main class, to be used by clients.
@@ -48,11 +48,10 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn query<T: DynamoObject>(
         &self,
         index: Option<String>,
-        pk: String,
-        sk: String,
+        id: PkSk,
         match_type: DynamoQueryMatchType,
     ) -> Result<Vec<T>, GenericServerError> {
-        self.query_generic(index, pk, sk, match_type)
+        self.query_generic(index, id, match_type)
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -74,8 +73,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn query_generic(
         &self,
         index: Option<String>,
-        pk: String,
-        sk: String,
+        id: PkSk,
         match_type: DynamoQueryMatchType,
     ) -> Result<Vec<DynamoMap>, GenericServerError> {
         let dbg_cxt: &'static str = "query_generic";
@@ -85,8 +83,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         }
         .to_string();
         let attribute_values = collection! {
-            ":pk_val".to_string() => AttributeValue::S(pk),
-            ":sk_val".to_string() => AttributeValue::S(sk),
+            ":pk_val".to_string() => AttributeValue::S(id.pk),
+            ":sk_val".to_string() => AttributeValue::S(id.sk),
         };
         let response = self
             .backend
@@ -99,13 +97,12 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn get_item<T: DynamoObject>(
         &self,
-        pk: String,
-        sk: String,
+        id: PkSk,
     ) -> Result<Option<T>, GenericServerError> {
         let dbg_cxt: &'static str = "get_item";
         let key = collection! {
-            "pk".to_string() => AttributeValue::S(pk),
-            "sk".to_string() => AttributeValue::S(sk),
+            "pk".to_string() => AttributeValue::S(id.pk),
+            "sk".to_string() => AttributeValue::S(id.sk),
         };
         let response = self
             .backend
@@ -120,48 +117,52 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn create_item<T: DynamoObject>(
         &self,
-        parent_pk: String,
-        parent_sk: String,
+        parent_id: PkSk,
         object: &T,
-        custom_id: Option<String>,
-    ) -> Result<(String, String), GenericServerError> {
+        custom_uuid: Option<String>,
+    ) -> Result<PkSk, GenericServerError> {
         let dbg_cxt: &'static str = "create_item";
-        let new_id = custom_id.unwrap_or_else(generate_id);
-        let new_pk = object.generate_pk(&parent_pk, &parent_sk, &new_id);
-        let new_sk = object.generate_sk(&parent_pk, &parent_sk, &new_id);
+        let uuid = custom_uuid.unwrap_or_else(generate_id);
+        let new_pk = object.generate_pk(&parent_id.pk, &parent_id.sk, &uuid);
+        let new_sk = object.generate_sk(&parent_id.pk, &parent_id.sk, &uuid);
         let map = build_dynamo_map::<T>(&object, IdKeys::Override(new_pk.clone(), new_sk.clone()))?;
         self.backend
             .put_item(self.table.clone(), map)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
-        Ok((new_pk, new_sk))
+        Ok(PkSk {
+            pk: new_pk,
+            sk: new_sk,
+        })
     }
 
     pub async fn batch_create_item<T: DynamoObject>(
         &self,
-        parent_pk: String,
-        parent_sk: String,
-        objects_and_custom_ids: Vec<(&T, Option<String>)>,
-    ) -> Result<Vec<(String, String)>, GenericServerError> {
+        parent_id: PkSk,
+        objects_and_custom_uuids: Vec<(&T, Option<String>)>,
+    ) -> Result<Vec<PkSk>, GenericServerError> {
         let dbg_cxt: &'static str = "batch_create_item";
-        if objects_and_custom_ids.is_empty() {
+        if objects_and_custom_uuids.is_empty() {
             return Ok(Vec::new());
         }
-        let (items, ids) = objects_and_custom_ids
+        let (items, ids) = objects_and_custom_uuids
             .into_iter()
-            .map(|(object, custom_id)| {
-                let new_id = custom_id.unwrap_or_else(generate_id);
-                let new_pk = object.generate_pk(&parent_pk, &parent_sk, &new_id);
-                let new_sk = object.generate_sk(&parent_pk, &parent_sk, &new_id);
+            .map(|(object, custom_uuid)| {
+                let uuid = custom_uuid.unwrap_or_else(generate_id);
+                let new_pk = object.generate_pk(&parent_id.pk, &parent_id.sk, &uuid);
+                let new_sk = object.generate_sk(&parent_id.pk, &parent_id.sk, &uuid);
                 Ok((
                     build_dynamo_map::<T>(
                         &object,
                         IdKeys::Override(new_pk.clone(), new_sk.clone()),
                     )?,
-                    (new_pk, new_sk),
+                    PkSk {
+                        pk: new_pk,
+                        sk: new_sk,
+                    },
                 ))
             })
-            .collect::<Result<Vec<(DynamoMap, (String, String))>, GenericServerError>>()?
+            .collect::<Result<Vec<(DynamoMap, PkSk)>, GenericServerError>>()?
             .into_iter()
             .unzip();
         self.backend
@@ -173,8 +174,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     async fn generate_ordered_custom_ids<T: DynamoObject>(
         &self,
-        parent_pk: String,
-        parent_sk: String,
+        parent_id: PkSk,
         object: &T,
         insert_position: DynamoInsertPosition,
         num: usize,
@@ -182,10 +182,12 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let dbg_cxt = "generate_ordered_custom_ids";
 
         // Search for all IDs for existing items of this type.
-        let search_pk = object.generate_pk(&parent_pk, &parent_sk, "");
-        let search_sk = object.generate_sk(&parent_pk, &parent_sk, "");
+        let search_id = PkSk {
+            pk: object.generate_pk(&parent_id.pk, &parent_id.sk, ""),
+            sk: object.generate_sk(&parent_id.pk, &parent_id.sk, ""),
+        };
         let query = self
-            .query::<T>(None, search_pk, search_sk, DynamoQueryMatchType::BeginsWith)
+            .query::<T>(None, search_id, DynamoQueryMatchType::BeginsWith)
             .await?;
         let mut existing_ids_heap = query
             .iter()
@@ -208,10 +210,10 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             let new_id = match &insert_position {
                 DynamoInsertPosition::First => min_id - ORDERED_IDS_DEFAULT_GAP,
                 DynamoInsertPosition::Last => max_id + ORDERED_IDS_DEFAULT_GAP,
-                DynamoInsertPosition::After {
+                DynamoInsertPosition::After(PkSk {
                     sk: insert_position_sk,
                     ..
-                } => {
+                }) => {
                     let insert_after_id = if let Some(last_inserted_id) = last_inserted_id {
                         // Since we're generating multiple IDs, only the first
                         // one should follow the sk from the
@@ -270,52 +272,41 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
-        parent_pk: String,
-        parent_sk: String,
+        parent_id: PkSk,
         object: &T,
         insert_position: DynamoInsertPosition,
-    ) -> Result<(String, String), GenericServerError> {
+    ) -> Result<PkSk, GenericServerError> {
         let dbg_cxt: &'static str = "create_item_ordered";
         let new_id = self
-            .generate_ordered_custom_ids(
-                parent_pk.clone(),
-                parent_sk.clone(),
-                object,
-                insert_position,
-                1,
-            )
+            .generate_ordered_custom_ids(parent_id.clone(), object, insert_position, 1)
             .await?
             .pop()
             .ok_or(DynamoInvalidOperationError::new(
                 dbg_cxt,
                 "failed to generate new ordered ID",
             ))?;
-        self.create_item(parent_pk, parent_sk, object, Some(new_id))
-            .await
+        self.create_item(parent_id, object, Some(new_id)).await
     }
 
     pub async fn batch_create_item_ordered<T: DynamoObject>(
         &self,
-        parent_pk: String,
-        parent_sk: String,
+        parent_id: PkSk,
         objects: Vec<&T>,
         insert_position: DynamoInsertPosition,
-    ) -> Result<Vec<(String, String)>, GenericServerError> {
+    ) -> Result<Vec<PkSk>, GenericServerError> {
         if objects.is_empty() {
             return Ok(Vec::new());
         }
         let new_ids = self
             .generate_ordered_custom_ids(
-                parent_pk.clone(),
-                parent_sk.clone(),
+                parent_id.clone(),
                 *objects.first().unwrap(),
                 insert_position,
                 objects.len(),
             )
             .await?;
         self.batch_create_item(
-            parent_pk,
-            parent_sk,
+            parent_id,
             objects
                 .into_iter()
                 .zip(new_ids.into_iter())
@@ -367,11 +358,11 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(())
     }
 
-    pub async fn delete_item(&self, pk: String, sk: String) -> Result<(), GenericServerError> {
+    pub async fn delete_item(&self, id: PkSk) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "delete_item";
         let key = collection! {
-            "pk".to_string() => AttributeValue::S(pk),
-            "sk".to_string() => AttributeValue::S(sk),
+            "pk".to_string() => AttributeValue::S(id.pk),
+            "sk".to_string() => AttributeValue::S(id.sk),
         };
         self.backend
             .delete_item(self.table.clone(), key)
@@ -383,20 +374,17 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(())
     }
 
-    pub async fn batch_delete_item(
-        &self,
-        keys: Vec<(String, String)>,
-    ) -> Result<(), GenericServerError> {
+    pub async fn batch_delete_item(&self, keys: Vec<PkSk>) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "batch_delete_item";
         if keys.is_empty() {
             return Ok(());
         }
         let items = keys
             .into_iter()
-            .map(|(pk, sk)| {
+            .map(|id| {
                 collection! {
-                    "pk".to_string() => AttributeValue::S(pk),
-                    "sk".to_string() => AttributeValue::S(sk),
+                    "pk".to_string() => AttributeValue::S(id.pk),
+                    "sk".to_string() => AttributeValue::S(id.sk),
                 }
             })
             .collect::<Vec<_>>();

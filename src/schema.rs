@@ -61,14 +61,14 @@ macro_rules! impl_dynamo_object {
             fn id_label() -> &'static str {
                 $id_label
             }
-            fn generate_pk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String {
+            fn generate_pk(&self, parent_pk: &str, parent_sk: &str, _uuid: &str) -> String {
                 match $nesting_type {
                     NestingType::Root => format!("ROOT"),
                     NestingType::TopLevelChild => format!("{parent_sk}"),
                     NestingType::InlineChild => format!("{parent_pk}"),
                 }
             }
-            fn generate_sk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String {
+            fn generate_sk(&self, _parent_pk: &str, parent_sk: &str, uuid: &str) -> String {
                 match $nesting_type {
                     NestingType::Root => format!("{}#{uuid}", $id_label),
                     NestingType::TopLevelChild => format!("{}#{uuid}", $id_label),
@@ -139,4 +139,148 @@ pub struct AutoFields {
 pub struct Timestamp {
     pub seconds: i64,
     pub nanos: u32,
+}
+
+// Tests.
+// ---------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+    struct TestMain {
+        id: Option<PkSk>,
+        #[serde(flatten)]
+        auto_fields: AutoFields,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+    struct TestInlineChild {
+        id: Option<PkSk>,
+        #[serde(flatten)]
+        auto_fields: AutoFields,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+    struct TestTopLevelChild {
+        id: Option<PkSk>,
+        #[serde(flatten)]
+        auto_fields: AutoFields,
+    }
+
+    impl_dynamo_object!(TestMain, "TEST", NestingType::Root);
+    impl_dynamo_object!(TestInlineChild, "INLINECHILD", NestingType::InlineChild);
+    impl_dynamo_object!(
+        TestTopLevelChild,
+        "TOPLEVELCHILD",
+        NestingType::TopLevelChild
+    );
+
+    #[test]
+    fn test_auto_fields_default() {
+        let obj = TestMain::default();
+        assert!(obj.auto_fields.created_at.is_none());
+        assert!(obj.auto_fields.updated_at.is_none());
+        assert!(obj.auto_fields.sort.is_none());
+        assert!(obj.auto_fields.unknown_fields.is_empty());
+    }
+
+    #[test]
+    fn test_id_accessors() {
+        let obj_with_id = TestMain {
+            id: Some(PkSk {
+                pk: String::from("PK"),
+                sk: String::from("SK"),
+            }),
+            auto_fields: AutoFields::default(),
+        };
+        let obj_without_id = TestMain {
+            id: None,
+            auto_fields: AutoFields::default(),
+        };
+
+        assert!(obj_with_id.id_or_critical().is_ok());
+        assert!(obj_without_id.id_or_critical().is_err());
+        assert_eq!(obj_with_id.pk_or_critical().unwrap(), "PK");
+        assert!(obj_without_id.pk_or_critical().is_err());
+        assert_eq!(obj_with_id.sk_or_critical().unwrap(), "SK");
+        assert!(obj_without_id.sk_or_critical().is_err());
+    }
+
+    #[test]
+    fn test_auto_fields_accessors() {
+        let mut unknown_fields = HashMap::new();
+        unknown_fields.insert(String::from("key"), json!("value"));
+        let auto_fields = AutoFields {
+            created_at: Some(Timestamp {
+                seconds: 1625247600,
+                nanos: 0,
+            }),
+            updated_at: Some(Timestamp {
+                seconds: 1625247601,
+                nanos: 0,
+            }),
+            sort: Some(1.0),
+            unknown_fields,
+        };
+
+        let obj = TestMain {
+            id: None,
+            auto_fields: auto_fields.clone(),
+        };
+
+        assert_eq!(obj.created_at().unwrap().seconds, 1625247600);
+        assert_eq!(obj.updated_at().unwrap().seconds, 1625247601);
+        assert_eq!(obj.sort().unwrap(), 1.0);
+        assert!(obj.has_unknown_fields());
+        assert_eq!(obj.unknown_field_keys(), vec![&String::from("key")]);
+    }
+
+    #[test]
+    fn test_generate_id_main() {
+        let obj = TestMain {
+            id: Some(PkSk {
+                pk: String::from("PK"),
+                sk: String::from("SK"),
+            }),
+            auto_fields: AutoFields::default(),
+        };
+        let pk = obj.generate_pk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(pk, "ROOT");
+        let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(sk, "TEST#uuid");
+    }
+
+    #[test]
+    fn test_generate_id_inline_child() {
+        let obj = TestInlineChild {
+            id: Some(PkSk {
+                pk: String::from("PK"),
+                sk: String::from("SK"),
+            }),
+            auto_fields: AutoFields::default(),
+        };
+        let pk = obj.generate_pk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(pk, "parent_pk");
+        let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(sk, "parent_sk#INLINECHILD#uuid");
+    }
+
+    #[test]
+    fn test_generate_id_top_level_child() {
+        let obj = TestTopLevelChild {
+            id: Some(PkSk {
+                pk: String::from("PK"),
+                sk: String::from("SK"),
+            }),
+            auto_fields: AutoFields::default(),
+        };
+        let pk = obj.generate_pk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(pk, "parent_sk");
+        let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(sk, "TOPLEVELCHILD#uuid");
+    }
 }

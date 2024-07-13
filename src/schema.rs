@@ -12,30 +12,32 @@ pub enum NestingType {
 }
 pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     fn pk(&self) -> Option<&str>;
+    fn sk(&self) -> Option<&str>;
+    fn id_label() -> &'static str;
+    fn generate_pk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
+    fn generate_sk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
+
+    fn id_or_critical(&self) -> Result<&PkSk, GenericServerError>;
     fn pk_or_critical(&self) -> Result<&str, GenericServerError> {
         let dbg_cxt: &'static str = "pk_or_critical";
         Ok(self.pk().ok_or_else(|| {
             CriticalError::with_debug(
                 dbg_cxt,
-                "DynamoObject did not have pk!",
+                "DynamoObject did not have pk.",
                 Self::id_label().to_string(),
             )
         })?)
     }
-    fn sk(&self) -> Option<&str>;
     fn sk_or_critical(&self) -> Result<&str, GenericServerError> {
         let dbg_cxt: &'static str = "sk_or_critical";
         Ok(self.sk().ok_or_else(|| {
             CriticalError::with_debug(
                 dbg_cxt,
-                "DynamoObject did not have sk!",
+                "DynamoObject did not have sk.",
                 Self::id_label().to_string(),
             )
         })?)
     }
-    fn id_label() -> &'static str;
-    fn generate_pk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
-    fn generate_sk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
 }
 
 #[macro_export]
@@ -65,6 +67,16 @@ macro_rules! impl_dynamo_object {
                     NestingType::InlineChild => format!("{parent_sk}#{}#{uuid}", $id_label),
                 }
             }
+            fn id_or_critical(&self) -> Result<&PkSk, GenericServerError> {
+                let dbg_cxt: &'static str = "id_or_critical";
+                Ok(self.id.as_ref().ok_or_else(|| {
+                    CriticalError::with_debug(
+                        dbg_cxt,
+                        "DynamoObject did not have id.",
+                        Self::id_label().to_string(),
+                    )
+                })?)
+            }
         }
     };
 }
@@ -81,7 +93,6 @@ pub struct PkSk {
     pub sk: String,
 }
 
-// Used for automatic created / modified timestamps.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Timestamp {
     pub seconds: i64,

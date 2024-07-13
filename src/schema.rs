@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use fractic_generic_server_error::GenericServerError;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -34,6 +36,12 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     }
     fn updated_at(&self) -> Option<&Timestamp> {
         self.auto_fields().updated_at.as_ref()
+    }
+    fn has_unknown_fields(&self) -> bool {
+        !self.auto_fields().unknown_fields.is_empty()
+    }
+    fn unknown_field_keys(&self) -> Vec<&String> {
+        self.auto_fields().unknown_fields.keys().collect()
     }
 }
 
@@ -110,6 +118,9 @@ pub struct PkSk {
 pub struct AutoFields {
     pub created_at: Option<Timestamp>,
     pub updated_at: Option<Timestamp>,
+
+    #[serde(flatten)]
+    pub unknown_fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -115,3 +115,257 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject, B: DynamoBackendImpl>
         }
     })
 }
+
+// Tests.
+// --------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::{
+        impl_dynamo_object,
+        schema::{AutoFields, NestingType},
+        util::{backend::MockDynamoBackendImpl, DynamoUtil},
+    };
+    use aws_sdk_dynamodb::{operation::query::QueryOutput, types::AttributeValue};
+    use fractic_core::collection;
+    use mockall::predicate::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    struct TestDynamoObject {
+        id: Option<PkSk>,
+        #[serde(flatten)]
+        auto_fields: AutoFields,
+        data: Option<String>,
+    }
+    impl_dynamo_object!(TestDynamoObject, "TEST", NestingType::TopLevelChild);
+
+    fn build_test_item(pk: &str, sk: &str, sort: Option<f64>) -> TestDynamoObject {
+        TestDynamoObject {
+            id: Some(PkSk {
+                pk: pk.to_string(),
+                sk: sk.to_string(),
+            }),
+            auto_fields: AutoFields {
+                sort,
+                ..Default::default()
+            },
+            data: None,
+        }
+    }
+
+    fn build_dynamo_item(pk: &str, sk: &str, sort: Option<f64>) -> HashMap<String, AttributeValue> {
+        let mut item: HashMap<String, AttributeValue> = collection! {
+            "pk".to_string() => AttributeValue::S(pk.to_string()),
+            "sk".to_string() => AttributeValue::S(sk.to_string()),
+        };
+        if let Some(sort_val) = sort {
+            item.insert("sort".to_string(), AttributeValue::N(sort_val.to_string()));
+        }
+        item
+    }
+
+    #[tokio::test]
+    async fn test_calculate_sort_values_first() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_query()
+            .withf(|_, _, _, _| true)
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
+                        build_dynamo_item("ROOT", "GROUP#123#TEST#2", Some(1.5)),
+                    ]))
+                    .build())
+            });
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123".to_string(),
+        };
+
+        let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
+
+        let sort_values =
+            calculate_sort_values(&util, parent_id, &object, DynamoInsertPosition::First, 2)
+                .await
+                .unwrap();
+
+        assert_eq!(sort_values.len(), 2);
+        assert!(sort_values[0] < 0.5);
+        assert!(sort_values[1] < 0.5);
+        assert!(sort_values[0] < sort_values[1]);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_sort_values_last() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_query()
+            .withf(|_, _, _, _| true)
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
+                        build_dynamo_item("ROOT", "GROUP#123#TEST#2", Some(1.5)),
+                    ]))
+                    .build())
+            });
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123".to_string(),
+        };
+
+        let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
+
+        let sort_values =
+            calculate_sort_values(&util, parent_id, &object, DynamoInsertPosition::Last, 2)
+                .await
+                .unwrap();
+
+        assert_eq!(sort_values.len(), 2);
+        assert!(sort_values[0] > 1.5);
+        assert!(sort_values[1] > 1.5);
+        assert!(sort_values[0] < sort_values[1]);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_sort_values_after() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_query()
+            .withf(|_, _, _, _| true)
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
+                        build_dynamo_item("ROOT", "GROUP#123#TEST#2", Some(1.5)),
+                    ]))
+                    .build())
+            });
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123".to_string(),
+        };
+
+        let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
+
+        let after_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123#TEST#1".to_string(),
+        };
+
+        let sort_values = calculate_sort_values(
+            &util,
+            parent_id,
+            &object,
+            DynamoInsertPosition::After(after_id),
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(sort_values.len(), 2);
+        assert!(sort_values[0] > 0.5 && sort_values[0] < 1.5);
+        assert!(sort_values[1] > 0.5 && sort_values[1] < 1.5);
+        assert!(sort_values[0] < sort_values[1]);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_sort_values_after_last_item() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_query()
+            .withf(|_, _, _, _| true)
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
+                        build_dynamo_item("ROOT", "GROUP#123#TEST#2", Some(1.5)),
+                    ]))
+                    .build())
+            });
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123".to_string(),
+        };
+
+        let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
+
+        let after_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123#TEST#2".to_string(),
+        };
+
+        let sort_values = calculate_sort_values(
+            &util,
+            parent_id,
+            &object,
+            DynamoInsertPosition::After(after_id),
+            2,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(sort_values.len(), 2);
+        assert!(sort_values[0] > 1.5);
+        assert!(sort_values[1] > 1.5);
+        assert!(sort_values[0] < sort_values[1]);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_sort_values_empty_existing_items() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_query()
+            .withf(|_, _, _, _| true)
+            .returning(|_, _, _, _| Ok(QueryOutput::builder().set_items(Some(vec![])).build()));
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123".to_string(),
+        };
+
+        let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
+
+        let sort_values =
+            calculate_sort_values(&util, parent_id, &object, DynamoInsertPosition::First, 2)
+                .await
+                .unwrap();
+
+        assert_eq!(sort_values.len(), 2);
+        assert!(sort_values[0] < sort_values[1]);
+    }
+}

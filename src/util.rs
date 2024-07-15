@@ -7,12 +7,12 @@ use aws_sdk_dynamodb::{
     },
     types::AttributeValue,
 };
+use backend::DynamoBackendImpl;
 use calculate_sort::calculate_sort_values;
 use fractic_core::collection;
 use fractic_generic_server_error::GenericServerError;
 
 use crate::{
-    backend::DynamoBackendImpl,
     errors::{DynamoConnectionError, DynamoInvalidOperationError, DynamoNotFoundError},
     schema::{
         id_calculations::{generate_uuid, get_object_type, get_pk_sk_from_map},
@@ -21,6 +21,7 @@ use crate::{
     },
 };
 
+pub mod backend;
 mod calculate_sort;
 
 pub type DynamoMap = HashMap<String, AttributeValue>;

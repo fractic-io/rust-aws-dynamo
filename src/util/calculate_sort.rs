@@ -2,12 +2,11 @@ use fractic_generic_server_error::GenericServerError;
 use ordered_float::NotNan;
 
 use crate::{
-    backend::DynamoBackendImpl,
     errors::DynamoInvalidOperationError,
     schema::{DynamoObject, PkSk},
 };
 
-use super::{DynamoInsertPosition, DynamoQueryMatchType, DynamoUtil};
+use super::{backend::DynamoBackendImpl, DynamoInsertPosition, DynamoQueryMatchType, DynamoUtil};
 
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedItem<'a> {

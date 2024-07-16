@@ -65,9 +65,9 @@ pub fn get_pk_sk_from_map(map: &DynamoMap) -> Result<(&str, &str), GenericServer
             .map_err(|_| gen_err())?,
     ))
 }
-pub fn set_pk_sk_in_map(map: &mut DynamoMap, pk: &str, sk: &str) {
-    map.insert("pk".to_string(), AttributeValue::S(pk.to_string()));
-    map.insert("sk".to_string(), AttributeValue::S(sk.to_string()));
+pub fn set_pk_sk_in_map(map: &mut DynamoMap, pk: String, sk: String) {
+    map.insert("pk".to_string(), AttributeValue::S(pk));
+    map.insert("sk".to_string(), AttributeValue::S(sk));
 }
 
 #[cfg(test)]

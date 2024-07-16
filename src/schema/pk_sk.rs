@@ -8,7 +8,10 @@ use serde::{
 
 use crate::errors::DynamoInvalidIdError;
 
-use super::{id_calculations::get_pk_sk_from_string, PkSk};
+use super::{
+    id_calculations::{get_object_type, get_pk_sk_from_string},
+    PkSk,
+};
 
 impl PkSk {
     pub fn root() -> PkSk {
@@ -17,11 +20,16 @@ impl PkSk {
             sk: "ROOT".to_string(),
         }
     }
+
     pub fn from_string(s: &str) -> Result<PkSk, GenericServerError> {
         let dbg_cxt = "PkSk::from_string";
         serde_json::from_str(format!("\"{}\"", s).as_str()).map_err(|e| {
             DynamoInvalidIdError::with_debug(dbg_cxt, "Invalid PkSk string.", e.to_string())
         })
+    }
+
+    pub fn object_type(&self) -> &str {
+        &get_object_type(&self.pk, &self.sk)
     }
 }
 
@@ -104,5 +112,14 @@ mod tests {
         // Using Serialize:
         let serialized = serde_json::to_string(&pksk).unwrap();
         assert_eq!(serialized, r#""test_pk|test_sk""#); // Extra quotes.
+    }
+
+    #[test]
+    fn test_object_type() {
+        let pksk = PkSk {
+            pk: "PARENT_OJBECT#123abc".to_string(),
+            sk: "CHILD_OBJECT#456def#NESTED_CHILD_OBJECT#789hij".to_string(),
+        };
+        assert_eq!(pksk.object_type(), "NESTED_CHILD_OBJECT");
     }
 }

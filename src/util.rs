@@ -332,4 +332,26 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             })?;
         Ok(())
     }
+
+    // Performs no checks and directly writes the given DynamoMaps to the database.
+    // If the item exists, it is updated. If it does not exist, it is created.
+    //
+    // This does not check or update auto fields (updated_at, sort, etc.). The map values
+    // are just directly written.
+    //
+    // Should only be used internally for efficient low-level DB actions.
+    pub async fn raw_batch_put_item(
+        &self,
+        items: Vec<DynamoMap>,
+    ) -> Result<(), GenericServerError> {
+        let dbg_cxt: &'static str = "raw_batch_put_item";
+        if items.is_empty() {
+            return Ok(());
+        }
+        self.backend
+            .batch_put_item(self.table.clone(), items)
+            .await
+            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+        Ok(())
+    }
 }

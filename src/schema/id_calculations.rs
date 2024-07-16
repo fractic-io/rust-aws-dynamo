@@ -1,3 +1,4 @@
+use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_generic_server_error::{common::CriticalError, GenericServerError};
 
 use crate::{errors::DynamoInvalidIdError, util::DynamoMap};
@@ -49,7 +50,7 @@ pub fn get_pk_sk_from_string(id: &str) -> Result<(&str, &str), GenericServerErro
     }
 }
 
-// Helper function to grab the pk/sk from a DynamoMap.
+// Helper function to grab or update the pk/sk from a DynamoMap.
 pub fn get_pk_sk_from_map(map: &DynamoMap) -> Result<(&str, &str), GenericServerError> {
     let dbg_cxt: &'static str = "get_pk_sk_from_map";
     let gen_err = || CriticalError::new(dbg_cxt, "DynamoMap did not contain pk/sk fields!");
@@ -63,6 +64,10 @@ pub fn get_pk_sk_from_map(map: &DynamoMap) -> Result<(&str, &str), GenericServer
             .as_s()
             .map_err(|_| gen_err())?,
     ))
+}
+pub fn set_pk_sk_in_map(map: &mut DynamoMap, pk: &str, sk: &str) {
+    map.insert("pk".to_string(), AttributeValue::S(pk.to_string()));
+    map.insert("sk".to_string(), AttributeValue::S(sk.to_string()));
 }
 
 #[cfg(test)]

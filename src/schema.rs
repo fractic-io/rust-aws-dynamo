@@ -7,11 +7,14 @@ pub mod id_calculations;
 pub mod parsing;
 pub mod pk_sk;
 pub mod timestamp;
+
+#[derive(Debug, PartialEq)]
 pub enum NestingType {
     Root,
     InlineChild,
     TopLevelChild,
 }
+
 pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     // ID calculations:
     fn pk(&self) -> Option<&str>;
@@ -59,11 +62,11 @@ macro_rules! impl_dynamo_object {
             fn sk(&self) -> Option<&str> {
                 self.id.as_ref().map(|pk_sk| pk_sk.sk.as_str())
             }
-            fn nesting_type() -> NestingType {
-                $nesting_type
-            }
             fn id_label() -> &'static str {
                 $id_label
+            }
+            fn nesting_type() -> NestingType {
+                $nesting_type
             }
             fn generate_pk(&self, parent_pk: &str, parent_sk: &str, _uuid: &str) -> String {
                 match $nesting_type {

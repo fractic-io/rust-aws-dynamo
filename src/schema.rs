@@ -17,6 +17,7 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     fn pk(&self) -> Option<&str>;
     fn sk(&self) -> Option<&str>;
     fn id_label() -> &'static str;
+    fn nesting_type() -> NestingType;
     fn generate_pk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
     fn generate_sk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
 
@@ -57,6 +58,9 @@ macro_rules! impl_dynamo_object {
             }
             fn sk(&self) -> Option<&str> {
                 self.id.as_ref().map(|pk_sk| pk_sk.sk.as_str())
+            }
+            fn nesting_type() -> NestingType {
+                $nesting_type
             }
             fn id_label() -> &'static str {
                 $id_label

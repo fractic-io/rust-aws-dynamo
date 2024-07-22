@@ -24,6 +24,18 @@ impl Timestamp {
     }
 }
 
+impl std::fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            self.to_utc_datetime()
+                .map_err(|_| std::fmt::Error)?
+                .format("%Y-%m-%d %H:%M:%S %Z")
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,5 +87,15 @@ mod tests {
         let result = timestamp.to_utc_datetime();
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_display() {
+        let timestamp = Timestamp {
+            seconds: 1_000_000_000,
+            nanos: 0,
+        };
+
+        assert_eq!(format!("{}", timestamp), "2001-09-09 01:46:40 UTC");
     }
 }

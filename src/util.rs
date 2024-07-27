@@ -79,14 +79,16 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     ) -> Result<Vec<DynamoMap>, GenericServerError> {
         let dbg_cxt: &'static str = "query_generic";
         let condition = match match_type {
+            DynamoQueryMatchType::BeginsWith if id.sk.is_empty() => "pk = :pk_val",
             DynamoQueryMatchType::BeginsWith => "pk = :pk_val AND begins_with(sk, :sk_val)",
             DynamoQueryMatchType::Equals => "pk = :pk_val AND sk = :sk_val",
         }
         .to_string();
-        let attribute_values = collection! {
-            ":pk_val".to_string() => AttributeValue::S(id.pk),
-            ":sk_val".to_string() => AttributeValue::S(id.sk),
-        };
+        let mut attribute_values = HashMap::new();
+        attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
+        if !id.sk.is_empty() {
+            attribute_values.insert(":sk_val".to_string(), AttributeValue::S(id.sk));
+        }
         let response = self
             .backend
             .query(self.table.clone(), index, condition, attribute_values)

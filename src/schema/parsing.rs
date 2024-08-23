@@ -139,11 +139,11 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, GenericSe
 fn serde_value_to_attribute_value(
     value: serde_json::Value,
 ) -> Result<AttributeValue, GenericServerError> {
-    let dbg_cxt: &'static str = "serde_value_to_attribute_value";
     match value {
         serde_json::Value::Null => Ok(AttributeValue::Null(true)),
         serde_json::Value::String(s) => Ok(AttributeValue::S(s)),
         serde_json::Value::Number(n) => Ok(AttributeValue::N(n.to_string())),
+        serde_json::Value::Bool(b) => Ok(AttributeValue::Bool(b)),
         serde_json::Value::Object(map) => {
             let mut attribute_map: HashMap<String, AttributeValue> = HashMap::new();
             for (key, value) in map.into_iter() {
@@ -158,11 +158,6 @@ fn serde_value_to_attribute_value(
             }
             Ok(AttributeValue::L(attribute_array)) // DynamoDB L type is for List
         }
-        unsupported => Err(DynamoItemParsingError::with_debug(
-            dbg_cxt,
-            "unsupported serde_json::Value type",
-            format!("{:?}", unsupported),
-        )),
     }
 }
 
@@ -176,6 +171,7 @@ fn attribute_value_to_serde_value(
         AttributeValue::N(n) => Ok(serde_json::Value::Number(n.parse().map_err(|e| {
             DynamoItemParsingError::with_debug(dbg_cxt, "failed to parse number", format!("{}", e))
         })?)),
+        AttributeValue::Bool(b) => Ok(serde_json::Value::Bool(b)),
         AttributeValue::M(map) => {
             let mut serde_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
             for (key, value) in map.into_iter() {

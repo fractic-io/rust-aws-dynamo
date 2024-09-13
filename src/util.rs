@@ -172,7 +172,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         if objects_and_custom_sorts.is_empty() {
             return Ok(Vec::new());
         }
-        let (items, ids) = objects_and_custom_sorts
+        let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = objects_and_custom_sorts
             .into_iter()
             .map(|(object, custom_sort)| {
                 let uuid = generate_uuid();
@@ -197,10 +197,13 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .collect::<Result<Vec<(DynamoMap, PkSk)>, GenericServerError>>()?
             .into_iter()
             .unzip();
-        self.backend
-            .batch_put_item(self.table.clone(), items)
-            .await
-            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+        // Split into 25-item chunks (max supported by DynamoDB).
+        for chunk in items.chunks(25) {
+            self.backend
+                .batch_put_item(self.table.clone(), chunk.to_vec())
+                .await
+                .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+        }
         Ok(ids)
     }
 

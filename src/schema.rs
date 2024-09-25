@@ -9,10 +9,71 @@ pub mod pk_sk;
 pub mod timestamp;
 
 #[derive(Debug, PartialEq)]
-pub enum NestingType {
-    Root,
-    InlineChild,
+pub enum IdLogic {
+    // Warning:
+    //   All RootChild & RootSingleton objects are stored under the 'ROOT' pk,
+    //   so this key will likely get very hot (and therefore throttled) if this
+    //   data frequently used. If clients need frequent access, consider ways to
+    //   move the data down into more specific pk's using the other types or, if
+    //   the data is fairly static, consider putting it behind a cache or using
+    //   a separate access pattern outside of DynamoDB (such as S3).
+
+    // Note:
+    //   In all of the below options, the parent pk/sk may indicate a real
+    //   parent object, but they don't have to. The concept of the 'parent' is
+    //   used kind of like a placement indicator for the ID-generation logic, to
+    //   place the new objects in a logically reasonable yet efficient location
+    //   in the database.
+
+    // Root:
+    //
+    // Objects are placed under 'ROOT' partition (regardless of parent IDs
+    // provided).
+    // ------
+
+    // New unique object created everytime:
+    //   pk: ROOT
+    //   sk: LABEL#uuid
+    RootChild,
+    // Fixed-ID singleton object created or overwritten:
+    //   pk: ROOT
+    //   sk: !LABEL
+    RootSingleton,
+
+    // TopLevel:
+    //
+    // Objects are placed under separate partition based on parent's sk. As
+    // such, the child objects require a separate query to fetch.
+    // ------
+
+    // New unique object created everytime:
+    //   pk: parent.sk
+    //   sk: LABEL#uuid
     TopLevelChild,
+    // Fixed-ID singleton object created or overwritten:
+    //   pk: parent.sk
+    //   sk: !LABEL
+    TopLevelSingleton,
+
+    // Inline:
+    //
+    // Objects are placed under the same partition as the parent object. This
+    // way the child objects can often be directly inlined into the search
+    // results for the parent (by querying sk prefix).
+    // ------
+
+    // New unique object created everytime:
+    //   pk: parent.pk
+    //   sk: parent.sk#LABEL#uuid
+    InlineChild,
+    // Fixed-ID singleton object created or overwritten:
+    //   pk: parent.pk
+    //   sk: !LABEL:parent.sk
+    InlinePrefixSingleton,
+    // Fixed-ID singleton object created or overwritten:
+    //   pk: parent.pk
+    //   sk: parent.sk:!LABEL
+    InlinePostfixSingleton,
 }
 
 pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
@@ -20,7 +81,7 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     fn pk(&self) -> Option<&str>;
     fn sk(&self) -> Option<&str>;
     fn id_label() -> &'static str;
-    fn nesting_type() -> NestingType;
+    fn id_logic() -> IdLogic;
     fn generate_pk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
     fn generate_sk(&self, parent_pk: &str, parent_sk: &str, uuid: &str) -> String;
 
@@ -54,7 +115,7 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
 
 #[macro_export]
 macro_rules! impl_dynamo_object {
-    ($type:ident, $id_label:expr, $nesting_type:expr) => {
+    ($type:ident, $id_label:expr, $id_logic:expr) => {
         impl DynamoObject for $type {
             fn pk(&self) -> Option<&str> {
                 // All DynamoObjects should add an id field:
@@ -73,21 +134,29 @@ macro_rules! impl_dynamo_object {
             fn id_label() -> &'static str {
                 $id_label
             }
-            fn nesting_type() -> NestingType {
-                $nesting_type
+            fn id_logic() -> IdLogic {
+                $id_logic
             }
             fn generate_pk(&self, parent_pk: &str, parent_sk: &str, _uuid: &str) -> String {
-                match $nesting_type {
-                    NestingType::Root => format!("ROOT"),
-                    NestingType::TopLevelChild => format!("{parent_sk}"),
-                    NestingType::InlineChild => format!("{parent_pk}"),
+                match $id_logic {
+                    IdLogic::RootChild => format!("ROOT"),
+                    IdLogic::RootSingleton => format!("ROOT"),
+                    IdLogic::TopLevelChild => format!("{parent_sk}"),
+                    IdLogic::TopLevelSingleton => format!("{parent_sk}"),
+                    IdLogic::InlineChild => format!("{parent_pk}"),
+                    IdLogic::InlinePrefixSingleton => format!("{parent_pk}"),
+                    IdLogic::InlinePostfixSingleton => format!("{parent_pk}"),
                 }
             }
             fn generate_sk(&self, _parent_pk: &str, parent_sk: &str, uuid: &str) -> String {
-                match $nesting_type {
-                    NestingType::Root => format!("{}#{uuid}", $id_label),
-                    NestingType::TopLevelChild => format!("{}#{uuid}", $id_label),
-                    NestingType::InlineChild => format!("{parent_sk}#{}#{uuid}", $id_label),
+                match $id_logic {
+                    IdLogic::RootChild => format!("{}#{uuid}", $id_label),
+                    IdLogic::RootSingleton => format!("!{}", $id_label),
+                    IdLogic::TopLevelChild => format!("{}#{uuid}", $id_label),
+                    IdLogic::TopLevelSingleton => format!("!{}", $id_label),
+                    IdLogic::InlineChild => format!("{parent_sk}#{}#{uuid}", $id_label),
+                    IdLogic::InlinePrefixSingleton => format!("!{}:{parent_sk}", $id_label),
+                    IdLogic::InlinePostfixSingleton => format!("{parent_sk}:!{}", $id_label),
                 }
             }
 
@@ -167,7 +236,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-    struct TestMain {
+    struct TestRootChild {
         id: Option<PkSk>,
         #[serde(flatten)]
         auto_fields: AutoFields,
@@ -187,17 +256,57 @@ mod tests {
         auto_fields: AutoFields,
     }
 
-    impl_dynamo_object!(TestMain, "TEST", NestingType::Root);
-    impl_dynamo_object!(TestInlineChild, "INLINECHILD", NestingType::InlineChild);
+    #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+    struct TestRootSingleton {
+        id: Option<PkSk>,
+        #[serde(flatten)]
+        auto_fields: AutoFields,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+    struct TestTopLevelSingleton {
+        id: Option<PkSk>,
+        #[serde(flatten)]
+        auto_fields: AutoFields,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+    struct TestInlinePrefixSingleton {
+        id: Option<PkSk>,
+        #[serde(flatten)]
+        auto_fields: AutoFields,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+    struct TestInlinePostfixSingleton {
+        id: Option<PkSk>,
+        #[serde(flatten)]
+        auto_fields: AutoFields,
+    }
+
+    impl_dynamo_object!(TestRootChild, "ROOTCHILD", IdLogic::RootChild);
+    impl_dynamo_object!(TestInlineChild, "INLINECHILD", IdLogic::InlineChild);
+    impl_dynamo_object!(TestTopLevelChild, "TOPLEVELCHILD", IdLogic::TopLevelChild);
+    impl_dynamo_object!(TestRootSingleton, "ROOTSINGLETON", IdLogic::RootSingleton);
     impl_dynamo_object!(
-        TestTopLevelChild,
-        "TOPLEVELCHILD",
-        NestingType::TopLevelChild
+        TestTopLevelSingleton,
+        "TOPLEVELSINGLETON",
+        IdLogic::TopLevelSingleton
+    );
+    impl_dynamo_object!(
+        TestInlinePrefixSingleton,
+        "INLINEPREFIXSINGLETON",
+        IdLogic::InlinePrefixSingleton
+    );
+    impl_dynamo_object!(
+        TestInlinePostfixSingleton,
+        "INLINEPOSTFIXSINGLETON",
+        IdLogic::InlinePostfixSingleton
     );
 
     #[test]
     fn test_auto_fields_default() {
-        let obj = TestMain::default();
+        let obj = TestRootChild::default();
         assert!(obj.auto_fields.created_at.is_none());
         assert!(obj.auto_fields.updated_at.is_none());
         assert!(obj.auto_fields.sort.is_none());
@@ -206,14 +315,14 @@ mod tests {
 
     #[test]
     fn test_id_accessors() {
-        let obj_with_id = TestMain {
+        let obj_with_id = TestRootChild {
             id: Some(PkSk {
                 pk: String::from("PK"),
                 sk: String::from("SK"),
             }),
             auto_fields: AutoFields::default(),
         };
-        let obj_without_id = TestMain {
+        let obj_without_id = TestRootChild {
             id: None,
             auto_fields: AutoFields::default(),
         };
@@ -243,7 +352,7 @@ mod tests {
             unknown_fields,
         };
 
-        let obj = TestMain {
+        let obj = TestRootChild {
             id: None,
             auto_fields: auto_fields.clone(),
         };
@@ -256,8 +365,8 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_id_main() {
-        let obj = TestMain {
+    fn test_generate_id_root_child() {
+        let obj = TestRootChild {
             id: Some(PkSk {
                 pk: String::from("PK"),
                 sk: String::from("SK"),
@@ -267,7 +376,7 @@ mod tests {
         let pk = obj.generate_pk("parent_pk", "parent_sk", "uuid");
         assert_eq!(pk, "ROOT");
         let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
-        assert_eq!(sk, "TEST#uuid");
+        assert_eq!(sk, "ROOTCHILD#uuid");
     }
 
     #[test]
@@ -298,5 +407,65 @@ mod tests {
         assert_eq!(pk, "parent_sk");
         let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
         assert_eq!(sk, "TOPLEVELCHILD#uuid");
+    }
+
+    #[test]
+    fn test_generate_id_root_singleton() {
+        let obj = TestRootSingleton {
+            id: Some(PkSk {
+                pk: String::from("PK"),
+                sk: String::from("SK"),
+            }),
+            auto_fields: AutoFields::default(),
+        };
+        let pk = obj.generate_pk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(pk, "ROOT");
+        let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(sk, "!ROOTSINGLETON");
+    }
+
+    #[test]
+    fn test_generate_id_top_level_singleton() {
+        let obj = TestTopLevelSingleton {
+            id: Some(PkSk {
+                pk: String::from("PK"),
+                sk: String::from("SK"),
+            }),
+            auto_fields: AutoFields::default(),
+        };
+        let pk = obj.generate_pk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(pk, "parent_sk");
+        let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(sk, "!TOPLEVELSINGLETON");
+    }
+
+    #[test]
+    fn test_generate_id_inline_prefix_singleton() {
+        let obj = TestInlinePrefixSingleton {
+            id: Some(PkSk {
+                pk: String::from("PK"),
+                sk: String::from("SK"),
+            }),
+            auto_fields: AutoFields::default(),
+        };
+        let pk = obj.generate_pk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(pk, "parent_pk");
+        let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(sk, "!INLINEPREFIXSINGLETON:parent_sk");
+    }
+
+    #[test]
+    fn test_generate_id_inline_postfix_singleton() {
+        let obj = TestInlinePostfixSingleton {
+            id: Some(PkSk {
+                pk: String::from("PK"),
+                sk: String::from("SK"),
+            }),
+            auto_fields: AutoFields::default(),
+        };
+        let pk = obj.generate_pk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(pk, "parent_pk");
+        let sk = obj.generate_sk("parent_pk", "parent_sk", "uuid");
+        assert_eq!(sk, "parent_sk:!INLINEPOSTFIXSINGLETON");
     }
 }

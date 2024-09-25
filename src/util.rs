@@ -58,14 +58,17 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .filter_map(|item| {
                 let (pk, sk) =
                     get_pk_sk_from_map(&item).expect("Query result item did not have pk/sk.");
-                if get_object_type(pk, sk) == T::id_label() {
-                    // Item is of type T.
-                    Some(parse_dynamo_map::<T>(&item))
-                } else {
-                    // Item is not of type T, but instead an inline child (of a
-                    // different type), which will be skipped. Use query_dynamic
-                    // to access objects of type T and their inline children.
-                    None
+                match get_object_type(pk, sk) {
+                    Ok(label) if label == T::id_label() => {
+                        // Item is of type T.
+                        Some(parse_dynamo_map::<T>(&item))
+                    }
+                    _ => {
+                        // Item is not of type T, but instead an inline child (of a
+                        // different type), which will be skipped. Use query_dynamic
+                        // to access objects of type T and their inline children.
+                        None
+                    }
                 }
             })
             .collect::<Result<Vec<T>, GenericServerError>>()
@@ -141,6 +144,12 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         custom_sort: Option<f64>,
     ) -> Result<PkSk, GenericServerError> {
         let dbg_cxt: &'static str = "create_item";
+        if parent_id.is_singleton() {
+            return Err(DynamoInvalidOperationError::new(
+                dbg_cxt,
+                "Singleton objects cannot have children.",
+            ));
+        }
         let uuid = generate_uuid();
         let new_pk = object.generate_pk(&parent_id.pk, &parent_id.sk, &uuid);
         let new_sk = object.generate_sk(&parent_id.pk, &parent_id.sk, &uuid);
@@ -171,6 +180,12 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let dbg_cxt: &'static str = "batch_create_item";
         if objects_and_custom_sorts.is_empty() {
             return Ok(Vec::new());
+        }
+        if parent_id.is_singleton() {
+            return Err(DynamoInvalidOperationError::new(
+                dbg_cxt,
+                "Singleton objects cannot have children.",
+            ));
         }
         let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = objects_and_custom_sorts
             .into_iter()

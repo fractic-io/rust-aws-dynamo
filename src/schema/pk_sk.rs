@@ -9,7 +9,7 @@ use serde::{
 use crate::errors::DynamoInvalidIdError;
 
 use super::{
-    id_calculations::{get_object_type, get_pk_sk_from_string},
+    id_calculations::{get_object_type, get_pk_sk_from_string, is_singleton},
     PkSk,
 };
 
@@ -28,8 +28,12 @@ impl PkSk {
         })
     }
 
-    pub fn object_type(&self) -> &str {
-        &get_object_type(&self.pk, &self.sk)
+    pub fn object_type(&self) -> Result<&str, GenericServerError> {
+        get_object_type(&self.pk, &self.sk)
+    }
+
+    pub fn is_singleton(&self) -> bool {
+        is_singleton(&self.sk)
     }
 }
 
@@ -120,6 +124,17 @@ mod tests {
             pk: "PARENT_OJBECT#123abc".to_string(),
             sk: "CHILD_OBJECT#456def#NESTED_CHILD_OBJECT#789hij".to_string(),
         };
-        assert_eq!(pksk.object_type(), "NESTED_CHILD_OBJECT");
+        assert_eq!(pksk.object_type().unwrap(), "NESTED_CHILD_OBJECT");
+        assert!(!pksk.is_singleton());
+    }
+
+    #[test]
+    fn test_object_type_singleton() {
+        let pksk = PkSk {
+            pk: "PARENT_OJBECT#123abc".to_string(),
+            sk: "!SINGLETON:CHILD_OBJECT#456def#NESTED_CHILD_OBJECT#789hij".to_string(),
+        };
+        assert_eq!(pksk.object_type().unwrap(), "SINGLETON");
+        assert!(pksk.is_singleton());
     }
 }

@@ -126,7 +126,7 @@ mod tests {
     use super::*;
     use crate::{
         impl_dynamo_object,
-        schema::{AutoFields, NestingType},
+        schema::{AutoFields, IdLogic},
         util::{backend::MockDynamoBackendImpl, DynamoUtil},
     };
     use aws_sdk_dynamodb::{operation::query::QueryOutput, types::AttributeValue};
@@ -141,7 +141,7 @@ mod tests {
         auto_fields: AutoFields,
         data: Option<String>,
     }
-    impl_dynamo_object!(TestDynamoObject, "TEST", NestingType::TopLevelChild);
+    impl_dynamo_object!(TestDynamoObject, "TEST", IdLogic::TopLevelChild);
 
     fn build_test_item(pk: &str, sk: &str, sort: Option<f64>) -> TestDynamoObject {
         TestDynamoObject {

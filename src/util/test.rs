@@ -3,7 +3,7 @@ mod tests {
     use crate::util::DynamoObject;
     use crate::{
         impl_dynamo_object,
-        schema::{AutoFields, NestingType, PkSk},
+        schema::{AutoFields, IdLogic, PkSk},
         util::{
             backend::MockDynamoBackendImpl, DynamoQueryMatchType, DynamoUtil,
             AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
@@ -30,7 +30,7 @@ mod tests {
         auto_fields: AutoFields,
         data: Option<String>,
     }
-    impl_dynamo_object!(TestDynamoObject, "TEST", NestingType::TopLevelChild);
+    impl_dynamo_object!(TestDynamoObject, "TEST", IdLogic::TopLevelChild);
 
     fn build_item_no_data() -> (TestDynamoObject, HashMap<String, AttributeValue>) {
         (

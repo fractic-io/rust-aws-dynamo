@@ -22,20 +22,31 @@ pub fn generate_uuid() -> String {
     _base62_encode(uuid.as_u128())
 }
 
-pub fn get_object_type<'a>(pk: &'a str, sk: &'a str) -> &'a str {
-    if get_last_id_label(sk) == "ROOT" {
-        get_last_id_label(pk)
-    } else {
-        get_last_id_label(sk)
-    }
+pub fn is_singleton(sk: &str) -> bool {
+    sk.contains('!')
 }
 
-pub fn get_last_id_label(id: &str) -> &str {
-    let split: Vec<&str> = id.split('#').collect();
-    if split.len() < 2 {
-        "ROOT"
+pub fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, GenericServerError> {
+    let dbg_cxt: &'static str = "get_object_type";
+    if let Some(pos) = sk.find('!') {
+        // '!' indicates object is a singleton. In this case, the only label
+        // that matters is the !LABEL, which can by extracted by getting the
+        // text between '!' and ':' or EOL.
+        let after_excl = &sk[pos + 1..];
+        let end_pos = after_excl.find(|c| c == ':').unwrap_or(after_excl.len());
+        Ok(&after_excl[..end_pos])
     } else {
-        split[split.len() - 2]
+        // Otherwise, object type is decided by the last label in the
+        // PARENT#uuid#CHILD#uuid#... format.
+        let split: Vec<&str> = sk.split('#').collect();
+        if split.len() < 2 {
+            Err(DynamoInvalidIdError::new(
+                dbg_cxt,
+                "sk not in LABEL#uuid format",
+            ))
+        } else {
+            Ok(split[split.len() - 2])
+        }
     }
 }
 
@@ -95,19 +106,29 @@ mod tests {
 
     #[test]
     fn test_get_object_type() {
-        assert_eq!(get_object_type("USER#123", "ROOT"), "USER");
-        assert_eq!(get_object_type("ROOT", "ORDER#456"), "ORDER");
-        assert_eq!(get_object_type("ROOT", "ORDER#456#ITEM#789"), "ITEM");
-        assert_eq!(get_object_type("ORDER#123", "ITEM#789"), "ITEM");
-        assert_eq!(get_object_type("USER#123", "ORDER#456#ITEM#910"), "ITEM");
-    }
+        assert!(get_object_type("USER#123", "INVALID").is_err());
+        assert_eq!(get_object_type("ROOT", "ORDER#456").unwrap(), "ORDER");
+        assert_eq!(
+            get_object_type("ROOT", "ORDER#456#ITEM#789").unwrap(),
+            "ITEM"
+        );
+        assert_eq!(get_object_type("ORDER#123", "ITEM#789").unwrap(), "ITEM");
+        assert_eq!(
+            get_object_type("USER#123", "ORDER#456#ITEM#910").unwrap(),
+            "ITEM"
+        );
 
-    #[test]
-    fn test_get_last_id_label() {
-        assert_eq!(get_last_id_label("USER#123"), "USER");
-        assert_eq!(get_last_id_label("USER#123#ORDER#456"), "ORDER");
-        assert_eq!(get_last_id_label("ROOT"), "ROOT");
-        assert_eq!(get_last_id_label("USER#123#ORDER#456#ITEM#789"), "ITEM");
+        // Singletons:
+        assert_eq!(get_object_type("USER#123", "!SINGLTN").unwrap(), "SINGLTN");
+        assert_eq!(get_object_type("ROOT", "!SINGLTN").unwrap(), "SINGLTN");
+        assert_eq!(
+            get_object_type("USER#456", "!PREF:ORDER#46#ITEM#7").unwrap(),
+            "PREF"
+        );
+        assert_eq!(
+            get_object_type("USER#123", "ORDER#56#ITEM#1:!POST").unwrap(),
+            "POST"
+        );
     }
 
     #[test]

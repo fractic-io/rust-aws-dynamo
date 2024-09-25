@@ -343,13 +343,20 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 }
             })
             .collect::<Vec<_>>();
-        self.backend
-            .batch_delete_item(self.table.clone(), items)
-            .await
-            .map_err(|e| match e.into_service_error() {
-                BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFoundError::default(),
-                other => DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other)),
-            })?;
+        // Split into 25-item chunks (max supported by DynamoDB).
+        for chunk in items.chunks(25) {
+            self.backend
+                .batch_delete_item(self.table.clone(), chunk.to_vec())
+                .await
+                .map_err(|e| match e.into_service_error() {
+                    BatchWriteItemError::ResourceNotFoundException(_) => {
+                        DynamoNotFoundError::default()
+                    }
+                    other => {
+                        DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other))
+                    }
+                })?;
+        }
         Ok(())
     }
 
@@ -368,10 +375,13 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         if items.is_empty() {
             return Ok(());
         }
-        self.backend
-            .batch_put_item(self.table.clone(), items)
-            .await
-            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+        // Split into 25-item chunks (max supported by DynamoDB).
+        for chunk in items.chunks(25) {
+            self.backend
+                .batch_put_item(self.table.clone(), chunk.to_vec())
+                .await
+                .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+        }
         Ok(())
     }
 }

@@ -57,9 +57,17 @@ macro_rules! impl_dynamo_object {
     ($type:ident, $id_label:expr, $nesting_type:expr) => {
         impl DynamoObject for $type {
             fn pk(&self) -> Option<&str> {
+                // All DynamoObjects should add an id field:
+                //
+                // id: Option<PkSk>,
+                //
                 self.id.as_ref().map(|pk_sk| pk_sk.pk.as_str())
             }
             fn sk(&self) -> Option<&str> {
+                // All DynamoObjects should add an id field:
+                //
+                // id: Option<PkSk>,
+                //
                 self.id.as_ref().map(|pk_sk| pk_sk.sk.as_str())
             }
             fn id_label() -> &'static str {
@@ -101,6 +109,7 @@ macro_rules! impl_dynamo_object {
                 //
                 // #[serde(flatten)]
                 // pub auto_fields: AutoFields,
+                //
                 &self.auto_fields
             }
         }

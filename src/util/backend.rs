@@ -64,6 +64,7 @@ pub trait DynamoBackendImpl {
         update_expression: String,
         expression_attribute_values: HashMap<String, AttributeValue>,
         expression_attribute_names: HashMap<String, String>,
+        condition_expression: Option<String>,
     ) -> Result<UpdateItemOutput, SdkError<UpdateItemError>>;
 
     async fn delete_item(
@@ -174,6 +175,7 @@ impl DynamoBackendImpl for aws_sdk_dynamodb::Client {
         update_expression: String,
         expression_attribute_values: HashMap<String, AttributeValue>,
         expression_attribute_names: HashMap<String, String>,
+        condition_expression: Option<String>,
     ) -> Result<UpdateItemOutput, SdkError<UpdateItemError>> {
         self.update_item()
             .set_table_name(Some(table_name))
@@ -181,6 +183,7 @@ impl DynamoBackendImpl for aws_sdk_dynamodb::Client {
             .set_update_expression(Some(update_expression))
             .set_expression_attribute_values(Some(expression_attribute_values))
             .set_expression_attribute_names(Some(expression_attribute_names))
+            .set_condition_expression(condition_expression)
             .send()
             .await
     }

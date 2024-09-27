@@ -311,7 +311,7 @@ mod tests {
         let mut backend = MockDynamoBackendImpl::new();
         backend
             .expect_update_item()
-            .withf(|_, id, update_expr, values, keys| {
+            .withf(|_, id, update_expr, values, keys, condition| {
                 id.get("pk").unwrap().as_s().unwrap() == "pk_to_update"
                     && id.get("sk").unwrap().as_s().unwrap() == "sk_to_update"
                     && update_expr == "SET #k1 = :v1, #k2 = :v2"
@@ -322,8 +322,9 @@ mod tests {
                         v.sort();
                         v
                     } == vec![&"data".to_string(), &"updated_at".to_string()]
+                    && matches!(condition, Some(c) if c == "attribute_exists(pk)")
             })
-            .returning(|_, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
 
         let util = DynamoUtil {
             backend,

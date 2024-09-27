@@ -325,6 +325,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 update_expression,
                 expression_attribute_values,
                 expression_attribute_names,
+                // Ensure item exists:
+                Some("attribute_exists(pk)".to_string()),
             )
             .await
             .map_err(|e| match e.into_service_error() {

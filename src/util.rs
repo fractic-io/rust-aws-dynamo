@@ -178,6 +178,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         objects_and_custom_sorts: Vec<(&T, Option<f64>)>,
     ) -> Result<Vec<PkSk>, GenericServerError> {
         let dbg_cxt: &'static str = "batch_create_item";
+        // TODO: Disallow timestamp-based IDs in batch_create_item.
         if objects_and_custom_sorts.is_empty() {
             return Ok(Vec::new());
         }
@@ -222,6 +223,23 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(ids)
     }
 
+    // Use when complex ordering is required
+    // (for simple ordering, consider using timestamp-based IDs).
+    //
+    // Complex ordering works based on a 'sort' field, a floating point value
+    // such that a new item can always always be place in between any two
+    // existing items. Query functions in this util take this 'sort' field into
+    // account, always sorting the query results by it before returning the
+    // data.
+    //
+    // If this ordered insertion is used together with regular insertion, some
+    // items will have a 'sort' value while others will not. In this case, the
+    // ordered items will be placed before unordered items in query results.
+    //
+    // WARNING: This function requires checking all existing sort values to
+    // place the new item appropriately, which can be expensive. If inserting
+    // many ordered items, use batch_create_item_ordered (which only fetches
+    // sort values once), or consider using timestamp-based IDs instead.
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
@@ -267,6 +285,9 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         .await
     }
 
+    // Updates fields of an existing item. Since this logic internally uses
+    // update_item instead of put_item, unrecognized fields unaffected. If the
+    // item does not exist, an error is returned.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "update_item";
         let key = collection! {

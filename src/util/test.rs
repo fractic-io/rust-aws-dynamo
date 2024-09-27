@@ -318,8 +318,8 @@ mod tests {
         backend
             .expect_update_item()
             .withf(|_, id, update_expr, values, keys, condition| {
-                id.get("pk").unwrap().as_s().unwrap() == "pk_to_update"
-                    && id.get("sk").unwrap().as_s().unwrap() == "sk_to_update"
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "TEST#321"
                     && update_expr == "SET #k1 = :v1, #k2 = :v2"
                     && values.get(":v1").is_some()
                     && values.get(":v2").is_some()
@@ -339,8 +339,8 @@ mod tests {
 
         let update_item = TestDynamoObject {
             id: Some(PkSk {
-                pk: "pk_to_update".to_string(),
-                sk: "sk_to_update".to_string(),
+                pk: "ABC#123".to_string(),
+                sk: "TEST#321".to_string(),
             }),
             auto_fields: Default::default(),
             data: Some("new_data".to_string()),
@@ -359,7 +359,7 @@ mod tests {
                 eq("my_table".to_string()),
                 eq::<HashMap<String, AttributeValue>>(collection! {
                     "pk".to_string() => AttributeValue::S("GROUP#123".to_string()),
-                    "sk".to_string() => AttributeValue::S("LIST#123#ITEM#456".to_string())
+                    "sk".to_string() => AttributeValue::S("LIST#123#TEST#456".to_string())
                 }),
             )
             .returning(|_, _| Ok(DeleteItemOutput::builder().build()));
@@ -370,14 +370,43 @@ mod tests {
         };
 
         let result = util
-            .delete_item(PkSk {
+            .delete_item::<TestDynamoObject>(PkSk {
                 pk: "GROUP#123".to_string(),
-                sk: "LIST#123#ITEM#456".to_string(),
+                sk: "LIST#123#TEST#456".to_string(),
             })
             .await
             .unwrap();
 
         assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_delete_item_invalid_type() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_delete_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("GROUP#123".to_string()),
+                    "sk".to_string() => AttributeValue::S("LIST#123#WRONGTYPE#456".to_string())
+                }),
+            )
+            .returning(|_, _| Ok(DeleteItemOutput::builder().build()));
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let result = util
+            .delete_item::<TestDynamoObject>(PkSk {
+                pk: "GROUP#123".to_string(),
+                sk: "LIST#123#WRONGTYPE#456".to_string(),
+            })
+            .await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -389,12 +418,12 @@ mod tests {
                 eq("my_table".to_string()),
                 eq(vec![
                     collection! {
-                        "pk".to_string() => AttributeValue::S("pk_to_delete_1".to_string()),
-                        "sk".to_string() => AttributeValue::S("sk_to_delete_1".to_string()),
+                        "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
+                        "sk".to_string() => AttributeValue::S("TEST#321".to_string()),
                     },
                     collection! {
-                        "pk".to_string() => AttributeValue::S("pk_to_delete_2".to_string()),
-                        "sk".to_string() => AttributeValue::S("sk_to_delete_2".to_string()),
+                        "pk".to_string() => AttributeValue::S("DEF#456".to_string()),
+                        "sk".to_string() => AttributeValue::S("TEST#654".to_string()),
                     },
                 ]),
             )
@@ -407,16 +436,19 @@ mod tests {
 
         let keys = vec![
             PkSk {
-                pk: "pk_to_delete_1".to_string(),
-                sk: "sk_to_delete_1".to_string(),
+                pk: "ABC#123".to_string(),
+                sk: "TEST#321".to_string(),
             },
             PkSk {
-                pk: "pk_to_delete_2".to_string(),
-                sk: "sk_to_delete_2".to_string(),
+                pk: "DEF#456".to_string(),
+                sk: "TEST#654".to_string(),
             },
         ];
 
-        let result = util.batch_delete_item(keys).await.unwrap();
+        let result = util
+            .batch_delete_item::<TestDynamoObject>(keys)
+            .await
+            .unwrap();
         assert_eq!(result, ());
     }
 }

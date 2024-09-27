@@ -41,6 +41,20 @@ pub enum DynamoInsertPosition {
     After(PkSk),
 }
 
+fn _validate_id<T: DynamoObject>(
+    dbg_cxt: &'static str,
+    id: &PkSk,
+) -> Result<(), GenericServerError> {
+    if id.object_type()? != T::id_label() {
+        return Err(DynamoInvalidOperation::with_debug(
+            dbg_cxt,
+            "ID does not match object type.",
+            format!("Expected object type: {}, got ID: {}", T::id_label(), id),
+        ));
+    }
+    Ok(())
+}
+
 pub struct DynamoUtil<B: DynamoBackendImpl> {
     pub backend: B,
     pub table: String,
@@ -122,6 +136,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         id: PkSk,
     ) -> Result<Option<T>, GenericServerError> {
         let dbg_cxt: &'static str = "get_item";
+        _validate_id::<T>(dbg_cxt, &id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
@@ -282,6 +297,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 DynamoInvalidOperation::new(
                     dbg_cxt, "sk required"))?.to_string()),
         };
+        _validate_id::<T>(dbg_cxt, object.id_or_critical()?)?;
         let map = build_dynamo_map::<T>(
             &object,
             IdKeys::None,
@@ -320,8 +336,9 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(())
     }
 
-    pub async fn delete_item(&self, id: PkSk) -> Result<(), GenericServerError> {
+    pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "delete_item";
+        _validate_id::<T>(dbg_cxt, &id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
@@ -336,10 +353,16 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(())
     }
 
-    pub async fn batch_delete_item(&self, keys: Vec<PkSk>) -> Result<(), GenericServerError> {
+    pub async fn batch_delete_item<T: DynamoObject>(
+        &self,
+        keys: Vec<PkSk>,
+    ) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "batch_delete_item";
         if keys.is_empty() {
             return Ok(());
+        }
+        for key in &keys {
+            _validate_id::<T>(dbg_cxt, key)?;
         }
         let items = keys
             .into_iter()

@@ -13,9 +13,9 @@ use fractic_core::collection;
 use fractic_generic_server_error::GenericServerError;
 
 use crate::{
-    errors::{DynamoConnectionError, DynamoInvalidOperationError, DynamoNotFoundError},
+    errors::{DynamoConnectionError, DynamoInvalidOperation, DynamoNotFound},
     schema::{
-        id_calculations::{generate_uuid, get_object_type, get_pk_sk_from_map},
+        id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
         parsing::{build_dynamo_map, parse_dynamo_map, IdKeys},
         DynamoObject, PkSk, Timestamp,
     },
@@ -144,15 +144,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         custom_sort: Option<f64>,
     ) -> Result<PkSk, GenericServerError> {
         let dbg_cxt: &'static str = "create_item";
-        if parent_id.is_singleton() {
-            return Err(DynamoInvalidOperationError::new(
-                dbg_cxt,
-                "Singleton objects cannot have children.",
-            ));
-        }
-        let uuid = generate_uuid();
-        let new_pk = object.generate_pk(&parent_id.pk, &parent_id.sk, &uuid);
-        let new_sk = object.generate_sk(&parent_id.pk, &parent_id.sk, &uuid);
+        let (new_pk, new_sk) = generate_pk_sk(object, &parent_id.pk, &parent_id.sk)?;
         let map = build_dynamo_map::<T>(
             &object,
             IdKeys::Override(new_pk.clone(), new_sk.clone()),
@@ -182,18 +174,10 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         if objects_and_custom_sorts.is_empty() {
             return Ok(Vec::new());
         }
-        if parent_id.is_singleton() {
-            return Err(DynamoInvalidOperationError::new(
-                dbg_cxt,
-                "Singleton objects cannot have children.",
-            ));
-        }
         let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = objects_and_custom_sorts
             .into_iter()
             .map(|(object, custom_sort)| {
-                let uuid = generate_uuid();
-                let new_pk = object.generate_pk(&parent_id.pk, &parent_id.sk, &uuid);
-                let new_sk = object.generate_sk(&parent_id.pk, &parent_id.sk, &uuid);
+                let (new_pk, new_sk) = generate_pk_sk(object, &parent_id.pk, &parent_id.sk)?;
                 Ok((
                     build_dynamo_map::<T>(
                         &object,
@@ -250,7 +234,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let sort_val = calculate_sort_values(self, parent_id.clone(), object, insert_position, 1)
             .await?
             .pop()
-            .ok_or(DynamoInvalidOperationError::new(
+            .ok_or(DynamoInvalidOperation::new(
                 dbg_cxt,
                 "failed to generate new ordered ID",
             ))?;
@@ -292,10 +276,10 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let dbg_cxt: &'static str = "update_item";
         let key = collection! {
             "pk".to_string() => AttributeValue::S(object.pk().ok_or(
-                DynamoInvalidOperationError::new(
+                DynamoInvalidOperation::new(
                     dbg_cxt, "pk required"))?.to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().ok_or(
-                DynamoInvalidOperationError::new(
+                DynamoInvalidOperation::new(
                     dbg_cxt, "sk required"))?.to_string()),
         };
         let map = build_dynamo_map::<T>(
@@ -330,7 +314,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             )
             .await
             .map_err(|e| match e.into_service_error() {
-                UpdateItemError::ResourceNotFoundException(_) => DynamoNotFoundError::default(),
+                UpdateItemError::ResourceNotFoundException(_) => DynamoNotFound::default(),
                 other => DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other)),
             })?;
         Ok(())
@@ -346,7 +330,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .delete_item(self.table.clone(), key)
             .await
             .map_err(|e| match e.into_service_error() {
-                DeleteItemError::ResourceNotFoundException(_) => DynamoNotFoundError::default(),
+                DeleteItemError::ResourceNotFoundException(_) => DynamoNotFound::default(),
                 other => DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other)),
             })?;
         Ok(())
@@ -372,9 +356,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 .batch_delete_item(self.table.clone(), chunk.to_vec())
                 .await
                 .map_err(|e| match e.into_service_error() {
-                    BatchWriteItemError::ResourceNotFoundException(_) => {
-                        DynamoNotFoundError::default()
-                    }
+                    BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::default(),
                     other => {
                         DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other))
                     }

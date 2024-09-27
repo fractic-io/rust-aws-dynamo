@@ -6,10 +6,12 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use crate::errors::DynamoInvalidIdError;
+use crate::{
+    errors::DynamoInvalidId, schema::id_calculations::get_pk_sk_from_map, util::DynamoMap,
+};
 
 use super::{
-    id_calculations::{get_object_type, get_pk_sk_from_string, is_singleton},
+    id_calculations::{get_object_type, get_pk_sk_from_string, is_singleton, set_pk_sk_in_map},
     PkSk,
 };
 
@@ -24,8 +26,20 @@ impl PkSk {
     pub fn from_string(s: &str) -> Result<PkSk, GenericServerError> {
         let dbg_cxt = "PkSk::from_string";
         serde_json::from_str(format!("\"{}\"", s).as_str()).map_err(|e| {
-            DynamoInvalidIdError::with_debug(dbg_cxt, "Invalid PkSk string.", e.to_string())
+            DynamoInvalidId::with_debug(dbg_cxt, "Invalid PkSk string.", e.to_string())
         })
+    }
+
+    pub fn from_map(map: &DynamoMap) -> Result<PkSk, GenericServerError> {
+        let (pk, sk) = get_pk_sk_from_map(map)?;
+        Ok(PkSk {
+            pk: pk.to_string(),
+            sk: sk.to_string(),
+        })
+    }
+
+    pub fn write_to_map(&self, map: &mut DynamoMap) {
+        set_pk_sk_in_map(map, self.pk.to_string(), self.sk.to_string());
     }
 
     pub fn object_type(&self) -> Result<&str, GenericServerError> {
@@ -33,7 +47,7 @@ impl PkSk {
     }
 
     pub fn is_singleton(&self) -> bool {
-        is_singleton(&self.sk)
+        is_singleton(&self.pk, &self.sk)
     }
 }
 
@@ -132,7 +146,7 @@ mod tests {
     fn test_object_type_singleton() {
         let pksk = PkSk {
             pk: "PARENT_OJBECT#123abc".to_string(),
-            sk: "!SINGLETON:CHILD_OBJECT#456def#NESTED_CHILD_OBJECT#789hij".to_string(),
+            sk: "@SINGLETON[CHILD_OBJECT#456def#NESTED_CHILD_OBJECT#789hij]".to_string(),
         };
         assert_eq!(pksk.object_type().unwrap(), "SINGLETON");
         assert!(pksk.is_singleton());

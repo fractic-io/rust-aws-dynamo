@@ -202,7 +202,7 @@ mod tests {
     use super::*;
     use crate::{
         impl_dynamo_object,
-        schema::{AutoFields, IdLogic, PkSk, Timestamp},
+        schema::{AutoFields, IdLogic, NestingLogic, PkSk, Timestamp},
         util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT},
     };
     use aws_sdk_dynamodb::types::AttributeValue;
@@ -226,7 +226,7 @@ mod tests {
         nested_vec: Vec<String>,
     }
 
-    impl_dynamo_object!(TestDynamoObject, "TEST", IdLogic::RootChild);
+    impl_dynamo_object!(TestDynamoObject, "TEST", IdLogic::Uuid, NestingLogic::Root);
 
     #[test]
     fn test_build_dynamo_map_copy_id_from_object() {

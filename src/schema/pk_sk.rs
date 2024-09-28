@@ -26,10 +26,10 @@ impl PkSk {
     }
 
     pub fn generate<T: DynamoObject>(
-        object: &T,
+        data: &T::Data,
         parent_id: &PkSk,
     ) -> Result<PkSk, GenericServerError> {
-        let (pk, sk) = generate_pk_sk(object, &parent_id.pk, &parent_id.sk)?;
+        let (pk, sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
         Ok(PkSk { pk, sk })
     }
 

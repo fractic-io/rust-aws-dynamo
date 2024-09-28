@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use fractic_generic_server_error::GenericServerError;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub(crate) mod id_calculations;
@@ -8,7 +7,7 @@ pub mod parsing;
 pub mod pk_sk;
 pub mod timestamp;
 
-pub enum IdLogic<T: DynamoObject> {
+pub enum IdLogic<T: DynamoObjectData> {
     // New IDs are generated based on UUID v4. This option should be used in
     // almost all cases.
     //
@@ -89,21 +88,24 @@ pub enum NestingLogic {
 }
 
 pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
+    type Data: DynamoObjectData;
+
+    fn new(id: PkSk, data: Self::Data) -> Self;
+
     // ID calculations:
-    fn pk(&self) -> Option<&str>;
-    fn sk(&self) -> Option<&str>;
+    fn id(&self) -> &PkSk;
+    fn pk(&self) -> &str {
+        self.id().pk.as_str()
+    }
+    fn sk(&self) -> &str {
+        self.id().sk.as_str()
+    }
     fn id_label() -> &'static str;
-    fn id_logic() -> IdLogic<Self>;
+    fn id_logic() -> IdLogic<Self::Data>;
     fn nesting_logic() -> NestingLogic;
 
-    // Shorthand ID accessors:
-    fn id_or_critical(&self) -> Result<&PkSk, GenericServerError>;
-    fn pk_or_critical(&self) -> Result<&str, GenericServerError> {
-        self.id_or_critical().map(|id| id.pk.as_str())
-    }
-    fn sk_or_critical(&self) -> Result<&str, GenericServerError> {
-        self.id_or_critical().map(|id| id.sk.as_str())
-    }
+    // Data:
+    fn data(&self) -> &Self::Data;
 
     // Auto-fields accessors:
     fn auto_fields(&self) -> &AutoFields;
@@ -124,54 +126,54 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     }
 }
 
+pub trait DynamoObjectData: Serialize + DeserializeOwned + std::fmt::Debug + Default {}
+
 #[macro_export]
-macro_rules! impl_dynamo_object {
-    ($type:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {
+macro_rules! dynamo_object {
+    ($type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {
+        #[derive(Debug, Serialize, Deserialize)]
+        pub struct $type {
+            id: PkSk,
+
+            #[serde(flatten)]
+            pub data: $datatype,
+
+            // Must be last to capture unknown fields.
+            #[serde(flatten)]
+            auto_fields: AutoFields,
+        }
+
+        impl DynamoObjectData for $datatype {}
+
         impl DynamoObject for $type {
-            fn pk(&self) -> Option<&str> {
-                // All DynamoObjects should add an id field:
-                //
-                // id: Option<PkSk>,
-                //
-                self.id.as_ref().map(|pk_sk| pk_sk.pk.as_str())
+            type Data = $datatype;
+
+            fn new(id: PkSk, data: Self::Data) -> Self {
+                Self {
+                    id,
+                    data,
+                    auto_fields: AutoFields::default(),
+                }
             }
-            fn sk(&self) -> Option<&str> {
-                // All DynamoObjects should add an id field:
-                //
-                // id: Option<PkSk>,
-                //
-                self.id.as_ref().map(|pk_sk| pk_sk.sk.as_str())
+
+            fn id(&self) -> &PkSk {
+                &self.id
             }
+            fn data(&self) -> &Self::Data {
+                &self.data
+            }
+            fn auto_fields(&self) -> &AutoFields {
+                &self.auto_fields
+            }
+
             fn id_label() -> &'static str {
                 $id_label
             }
-            fn id_logic() -> IdLogic<$type> {
+            fn id_logic() -> IdLogic<$datatype> {
                 $id_logic
             }
             fn nesting_logic() -> NestingLogic {
                 $nesting_logic
-            }
-
-            fn id_or_critical(
-                &self,
-            ) -> Result<&PkSk, fractic_generic_server_error::GenericServerError> {
-                let dbg_cxt: &'static str = "id_or_critical";
-                Ok(self.id.as_ref().ok_or_else(|| {
-                    fractic_generic_server_error::common::CriticalError::with_debug(
-                        dbg_cxt,
-                        "DynamoObject did not have id.",
-                        Self::id_label().to_string(),
-                    )
-                })?)
-            }
-
-            fn auto_fields(&self) -> &AutoFields {
-                // All DynamoObjects should add a flattened auto_fields field:
-                //
-                // #[serde(flatten)]
-                // pub auto_fields: AutoFields,
-                //
-                &self.auto_fields
             }
         }
     };
@@ -189,8 +191,8 @@ pub struct PkSk {
     pub sk: String,
 }
 
-// Fields automatically populated by DynamoUtil. This struct should be included
-// in all DynamoObjects as a flattened field:
+// Fields automatically populated by DynamoUtil. This struct is automatically
+// included in all DynamoObjects as a flattened field:
 //
 // #[serde(flatten)]
 // pub auto_fields: AutoFields,
@@ -228,56 +230,48 @@ mod tests {
     use std::collections::HashMap;
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-    struct Test1 {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(Test1, "TEST1", IdLogic::Uuid, NestingLogic::Root);
+    pub struct Test1Data {}
+    dynamo_object!(Test1, Test1Data, "TEST1", IdLogic::Uuid, NestingLogic::Root);
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-    struct Test2 {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(
+    pub struct Test2Data {}
+    dynamo_object!(
         Test2,
+        Test2Data,
         "TEST2",
         IdLogic::Timestamp,
         NestingLogic::InlineChildOfAny
     );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-    struct Test3 {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(
+    pub struct Test3Data {}
+    dynamo_object!(
         Test3,
+        Test3Data,
         "TEST3",
         IdLogic::Singleton,
         NestingLogic::TopLevelChildOf("TEST2")
     );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
-    struct Test4 {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
+    pub struct Test4Data {
         key: String,
     }
-    impl_dynamo_object!(
+    dynamo_object!(
         Test4,
+        Test4Data,
         "TEST4",
-        IdLogic::SingletonFamily(Box::new(|obj: &Test4| obj.key.clone())),
+        IdLogic::SingletonFamily(Box::new(|obj: &Test4Data| obj.key.clone())),
         NestingLogic::InlineChildOf("TEST3")
     );
 
     #[test]
     fn test_auto_fields_default() {
-        let obj = Test1::default();
+        let obj = Test1 {
+            id: PkSk::root(),
+            auto_fields: AutoFields::default(),
+            data: Test1Data::default(),
+        };
         assert!(obj.auto_fields.created_at.is_none());
         assert!(obj.auto_fields.updated_at.is_none());
         assert!(obj.auto_fields.sort.is_none());
@@ -286,24 +280,19 @@ mod tests {
 
     #[test]
     fn test_id_accessors() {
-        let obj_with_id = Test1 {
-            id: Some(PkSk {
+        let obj = Test1 {
+            id: PkSk {
                 pk: String::from("PK"),
                 sk: String::from("SK"),
-            }),
+            },
             auto_fields: AutoFields::default(),
-        };
-        let obj_without_id = Test1 {
-            id: None,
-            auto_fields: AutoFields::default(),
+            data: Test1Data::default(),
         };
 
-        assert!(obj_with_id.id_or_critical().is_ok());
-        assert!(obj_without_id.id_or_critical().is_err());
-        assert_eq!(obj_with_id.pk_or_critical().unwrap(), "PK");
-        assert!(obj_without_id.pk_or_critical().is_err());
-        assert_eq!(obj_with_id.sk_or_critical().unwrap(), "SK");
-        assert!(obj_without_id.sk_or_critical().is_err());
+        assert_eq!(obj.pk(), "PK");
+        assert_eq!(obj.id().pk, "PK");
+        assert_eq!(obj.sk(), "SK");
+        assert_eq!(obj.id().sk, "SK");
     }
 
     #[test]
@@ -324,8 +313,9 @@ mod tests {
         };
 
         let obj = Test1 {
-            id: None,
+            id: PkSk::root(),
             auto_fields: auto_fields.clone(),
+            data: Test1Data::default(),
         };
 
         assert_eq!(obj.created_at().unwrap().seconds, 1625247600);
@@ -363,13 +353,15 @@ mod tests {
     #[test]
     fn test_singleton_family_key_fn() {
         let obj = Test4 {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
-            key: String::from("KEY"),
+            data: Test4Data {
+                key: String::from("KEY"),
+            },
         };
         let IdLogic::SingletonFamily(key_fn) = Test4::id_logic() else {
             panic!("Expected SingletonFamily.");
         };
-        assert_eq!(key_fn(&obj), "KEY");
+        assert_eq!(key_fn(&obj.data), "KEY");
     }
 }

@@ -26,7 +26,7 @@ impl Ord for OrderedItem<'_> {
 
 // Strip final UUID or timestamp from a DynamoDB ID.
 fn _sk_strip_uuid<T: DynamoObject>(
-    id_logic: IdLogic<T>,
+    id_logic: IdLogic<T::Data>,
     sk: String,
 ) -> Result<String, GenericServerError> {
     let dbg_cxt: &'static str = "_sk_strip_uuid";
@@ -50,7 +50,7 @@ fn _sk_strip_uuid<T: DynamoObject>(
 pub(crate) async fn calculate_sort_values<T: DynamoObject, B: DynamoBackendImpl>(
     util: &DynamoUtil<B>,
     parent_id: PkSk,
-    object: &T,
+    data: &T::Data,
     insert_position: DynamoInsertPosition,
     num: usize,
 ) -> Result<Vec<f64>, GenericServerError> {
@@ -63,10 +63,10 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject, B: DynamoBackendImpl>
 
     // Search for all IDs for existing items of this type by creating an example
     // ID and stripping the ID UUID / timestamp off the end.
-    let (example_pk, example_sk) = generate_pk_sk(object, &parent_id.pk, &parent_id.sk)?;
+    let (example_pk, example_sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
     let search_id = PkSk {
         pk: example_pk,
-        sk: _sk_strip_uuid(T::id_logic(), example_sk)?,
+        sk: _sk_strip_uuid::<T>(T::id_logic(), example_sk)?,
     };
     let query = util
         .query::<T>(None, search_id, DynamoQueryMatchType::BeginsWith)
@@ -77,7 +77,7 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject, B: DynamoBackendImpl>
             .filter_map(|item| {
                 if let Some(Ok(sort)) = item.sort().map(NotNan::new) {
                     Some(OrderedItem {
-                        id: item.id_or_critical().unwrap(),
+                        id: item.id(),
                         sort,
                     })
                 } else {
@@ -150,8 +150,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        impl_dynamo_object,
-        schema::{AutoFields, NestingLogic},
+        dynamo_object,
+        schema::{AutoFields, DynamoObject, DynamoObjectData, NestingLogic},
         util::{backend::MockDynamoBackendImpl, DynamoUtil},
     };
     use aws_sdk_dynamodb::{operation::query::QueryOutput, types::AttributeValue};
@@ -160,14 +160,12 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-    struct TestDynamoObject {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
+    pub struct TestDynamoObjectData {
         data: Option<String>,
     }
-    impl_dynamo_object!(
+    dynamo_object!(
         TestDynamoObject,
+        TestDynamoObjectData,
         "TEST",
         IdLogic::Uuid,
         NestingLogic::TopLevelChildOfAny
@@ -175,15 +173,15 @@ mod tests {
 
     fn build_test_item(pk: &str, sk: &str, sort: Option<f64>) -> TestDynamoObject {
         TestDynamoObject {
-            id: Some(PkSk {
+            id: PkSk {
                 pk: pk.to_string(),
                 sk: sk.to_string(),
-            }),
+            },
             auto_fields: AutoFields {
                 sort,
                 ..Default::default()
             },
-            data: None,
+            data: TestDynamoObjectData::default(),
         }
     }
 
@@ -225,10 +223,15 @@ mod tests {
 
         let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
 
-        let sort_values =
-            calculate_sort_values(&util, parent_id, &object, DynamoInsertPosition::First, 2)
-                .await
-                .unwrap();
+        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
+            &util,
+            parent_id,
+            &object.data,
+            DynamoInsertPosition::First,
+            2,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(sort_values.len(), 2);
         assert!(sort_values[0] < 0.5);
@@ -263,10 +266,15 @@ mod tests {
 
         let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
 
-        let sort_values =
-            calculate_sort_values(&util, parent_id, &object, DynamoInsertPosition::Last, 2)
-                .await
-                .unwrap();
+        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
+            &util,
+            parent_id,
+            &object.data,
+            DynamoInsertPosition::Last,
+            2,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(sort_values.len(), 2);
         assert!(sort_values[0] > 1.5);
@@ -306,10 +314,10 @@ mod tests {
             sk: "GROUP#123#TEST#1".to_string(),
         };
 
-        let sort_values = calculate_sort_values(
+        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
             &util,
             parent_id,
-            &object,
+            &object.data,
             DynamoInsertPosition::After(after_id),
             2,
         )
@@ -354,10 +362,10 @@ mod tests {
             sk: "GROUP#123#TEST#2".to_string(),
         };
 
-        let sort_values = calculate_sort_values(
+        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
             &util,
             parent_id,
-            &object,
+            &object.data,
             DynamoInsertPosition::After(after_id),
             2,
         )
@@ -390,10 +398,15 @@ mod tests {
 
         let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
 
-        let sort_values =
-            calculate_sort_values(&util, parent_id, &object, DynamoInsertPosition::First, 2)
-                .await
-                .unwrap();
+        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
+            &util,
+            parent_id,
+            &object.data,
+            DynamoInsertPosition::First,
+            2,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(sort_values.len(), 2);
         assert!(sort_values[0] < sort_values[1]);
@@ -406,32 +419,34 @@ mod tests {
         // function doesn't use it and we just want to test the function logic
         // here.
         assert_eq!(
-            _sk_strip_uuid(
-                IdLogic::<TestDynamoObject>::Uuid,
+            _sk_strip_uuid::<TestDynamoObject>(
+                IdLogic::<TestDynamoObjectData>::Uuid,
                 "GROUP#123#TEST#123".to_string()
             )
             .unwrap(),
             "GROUP#123#TEST"
         );
         assert_eq!(
-            _sk_strip_uuid(
-                IdLogic::<TestDynamoObject>::Timestamp,
+            _sk_strip_uuid::<TestDynamoObject>(
+                IdLogic::<TestDynamoObjectData>::Timestamp,
                 "GROUP#123#TEST2#0005416".to_string()
             )
             .unwrap(),
             "GROUP#123#TEST2"
         );
         assert_eq!(
-            _sk_strip_uuid(
-                IdLogic::<TestDynamoObject>::Singleton,
+            _sk_strip_uuid::<TestDynamoObject>(
+                IdLogic::<TestDynamoObjectData>::Singleton,
                 "@SINGLETON".to_string()
             )
             .unwrap(),
             "@SINGLETON"
         );
         assert_eq!(
-            _sk_strip_uuid(
-                IdLogic::<TestDynamoObject>::SingletonFamily(Box::new(|_| "samplekey".to_string())),
+            _sk_strip_uuid::<TestDynamoObject>(
+                IdLogic::<TestDynamoObjectData>::SingletonFamily(Box::new(
+                    |_| "samplekey".to_string()
+                )),
                 "@SINGLETONFAM[samplekey]".to_string()
             )
             .unwrap(),

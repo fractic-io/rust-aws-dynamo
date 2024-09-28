@@ -34,7 +34,7 @@ fn _epoch_timestamp_16_chars() -> String {
 }
 
 pub(crate) fn generate_pk_sk<T: DynamoObject>(
-    object: &T,
+    data: &T::Data,
     parent_pk: &str,
     parent_sk: &str,
 ) -> Result<(String, String), GenericServerError> {
@@ -64,7 +64,7 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
         IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
         IdLogic::Singleton => format!("@{}", T::id_label()),
-        IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(object)),
+        IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
     };
     match T::nesting_logic() {
         NestingLogic::Root => Ok(("ROOT".to_string(), new_obj_id)),
@@ -145,8 +145,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use crate::{
-        impl_dynamo_object,
-        schema::{AutoFields, PkSk},
+        dynamo_object,
+        schema::{AutoFields, DynamoObject, DynamoObjectData, PkSk},
     };
 
     use super::*;
@@ -272,14 +272,11 @@ mod tests {
     // --------------------------------------------------
 
     // Test case 1: NestingLogic::Root with IdLogic::Uuid
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestObjectRootUuid {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(
+    #[derive(Debug, Serialize, Deserialize, Default)]
+    pub struct TestObjectRootUuidData {}
+    dynamo_object!(
         TestObjectRootUuid,
+        TestObjectRootUuidData,
         "TEST",
         IdLogic::Uuid,
         NestingLogic::Root
@@ -288,26 +285,24 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_root_uuid() {
         let obj = TestObjectRootUuid {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectRootUuidData::default(),
         };
         let parent_pk = "any_pk";
         let parent_sk = "any_sk";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk).unwrap();
+        let result = generate_pk_sk::<TestObjectRootUuid>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, "ROOT");
         assert!(result.1.starts_with("TEST#"));
         assert_eq!(result.1.len(), "TEST#".len() + 16);
     }
 
     // Test case 2: NestingLogic::Root with IdLogic::Timestamp
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestObjectRootTimestamp {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(
+    #[derive(Debug, Serialize, Deserialize, Default)]
+    pub struct TestObjectRootTimestampData {}
+    dynamo_object!(
         TestObjectRootTimestamp,
+        TestObjectRootTimestampData,
         "TEST",
         IdLogic::Timestamp,
         NestingLogic::Root
@@ -316,26 +311,25 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_root_timestamp() {
         let obj = TestObjectRootTimestamp {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectRootTimestampData::default(),
         };
         let parent_pk = "any_pk";
         let parent_sk = "any_sk";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk).unwrap();
+        let result =
+            generate_pk_sk::<TestObjectRootTimestamp>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, "ROOT");
         assert!(result.1.starts_with("TEST#"));
         assert_eq!(result.1.len(), "TEST#".len() + 16);
     }
 
     // Test case 3: NestingLogic::TopLevelChildOfAny with IdLogic::Uuid
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestObjectTopLevelChildUuid {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(
+    #[derive(Debug, Serialize, Deserialize, Default)]
+    pub struct TestObjectTopLevelChildUuidData {}
+    dynamo_object!(
         TestObjectTopLevelChildUuid,
+        TestObjectTopLevelChildUuidData,
         "TEST",
         IdLogic::Uuid,
         NestingLogic::TopLevelChildOfAny
@@ -344,26 +338,25 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_top_level_child_uuid() {
         let obj = TestObjectTopLevelChildUuid {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectTopLevelChildUuidData::default(),
         };
         let parent_pk = "parent_pk";
         let parent_sk = "parent_sk";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk).unwrap();
+        let result =
+            generate_pk_sk::<TestObjectTopLevelChildUuid>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, parent_sk);
         assert!(result.1.starts_with("TEST#"));
         assert_eq!(result.1.len(), "TEST#".len() + 16);
     }
 
     // Test case 4: NestingLogic::InlineChildOfAny with IdLogic::Uuid
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestObjectInlineChildUuid {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(
+    #[derive(Debug, Serialize, Deserialize, Default)]
+    pub struct TestObjectInlineChildUuidData {}
+    dynamo_object!(
         TestObjectInlineChildUuid,
+        TestObjectInlineChildUuidData,
         "TEST",
         IdLogic::Uuid,
         NestingLogic::InlineChildOfAny
@@ -372,12 +365,14 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_inline_child_uuid() {
         let obj = TestObjectInlineChildUuid {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectInlineChildUuidData::default(),
         };
         let parent_pk = "parent_pk";
         let parent_sk = "parent_sk";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk).unwrap();
+        let result =
+            generate_pk_sk::<TestObjectInlineChildUuid>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, parent_pk);
         let expected_sk_prefix = format!("{}#TEST#", parent_sk);
         assert!(result.1.starts_with(&expected_sk_prefix));
@@ -389,12 +384,13 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_singleton_parent_error() {
         let obj = TestObjectTopLevelChildUuid {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectTopLevelChildUuidData::default(),
         };
         let parent_pk = "any_pk";
         let parent_sk = "@PARENT";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk);
+        let result = generate_pk_sk::<TestObjectTopLevelChildUuid>(&obj.data, parent_pk, parent_sk);
         assert!(result.is_err());
         if let Err(err) = result {
             let err_msg = err.to_string();
@@ -405,14 +401,11 @@ mod tests {
     }
 
     // Test case 6: NestingLogic::TopLevelChildOf("PARENT") with matching parent type
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestObjectTopLevelChildOfParent {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(
+    #[derive(Debug, Serialize, Deserialize, Default)]
+    pub struct TestObjectTopLevelChildOfParentData {}
+    dynamo_object!(
         TestObjectTopLevelChildOfParent,
+        TestObjectTopLevelChildOfParentData,
         "CHILD",
         IdLogic::Uuid,
         NestingLogic::TopLevelChildOf("PARENT")
@@ -421,12 +414,15 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_top_level_child_of_parent() {
         let obj = TestObjectTopLevelChildOfParent {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectTopLevelChildOfParentData::default(),
         };
         let parent_pk = "any_pk";
         let parent_sk = "PARENT#1234567890123456";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk).unwrap();
+        let result =
+            generate_pk_sk::<TestObjectTopLevelChildOfParent>(&obj.data, parent_pk, parent_sk)
+                .unwrap();
         assert_eq!(result.0, parent_sk);
         assert!(result.1.starts_with("CHILD#"));
         assert_eq!(result.1.len(), "CHILD#".len() + 16);
@@ -436,12 +432,14 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_top_level_child_of_parent_error() {
         let obj = TestObjectTopLevelChildOfParent {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectTopLevelChildOfParentData::default(),
         };
         let parent_pk = "any_pk";
         let parent_sk = "NOTPARENT#1234567890123456";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk);
+        let result =
+            generate_pk_sk::<TestObjectTopLevelChildOfParent>(&obj.data, parent_pk, parent_sk);
         assert!(result.is_err());
         if let Err(err) = result {
             let err_msg = err.to_string();
@@ -452,14 +450,11 @@ mod tests {
     }
 
     // Test case 8: IdLogic::Singleton
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestObjectSingleton {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-    }
-    impl_dynamo_object!(
+    #[derive(Debug, Serialize, Deserialize, Default)]
+    pub struct TestObjectSingletonData {}
+    dynamo_object!(
         TestObjectSingleton,
+        TestObjectSingletonData,
         "SINGLETON",
         IdLogic::Singleton,
         NestingLogic::Root
@@ -468,28 +463,28 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_singleton() {
         let obj = TestObjectSingleton {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectSingletonData::default(),
         };
         let parent_pk = "any_pk";
         let parent_sk = "any_sk";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk).unwrap();
+        let result =
+            generate_pk_sk::<TestObjectSingleton>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, "ROOT");
         assert_eq!(result.1, "@SINGLETON");
     }
 
     // Test case 9: IdLogic::SingletonFamily
-    #[derive(Debug, Serialize, Deserialize)]
-    struct TestObjectSingletonFamily {
-        id: Option<PkSk>,
-        #[serde(flatten)]
-        auto_fields: AutoFields,
+    #[derive(Debug, Serialize, Deserialize, Default)]
+    pub struct TestObjectSingletonFamilyData {
         key_field: String,
     }
-    impl_dynamo_object!(
+    dynamo_object!(
         TestObjectSingletonFamily,
+        TestObjectSingletonFamilyData,
         "FAMILY",
-        IdLogic::SingletonFamily(Box::new(|obj: &TestObjectSingletonFamily| obj
+        IdLogic::SingletonFamily(Box::new(|obj: &TestObjectSingletonFamilyData| obj
             .key_field
             .clone())),
         NestingLogic::Root
@@ -498,13 +493,16 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_singleton_family() {
         let obj = TestObjectSingletonFamily {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
-            key_field: "key123".to_string(),
+            data: TestObjectSingletonFamilyData {
+                key_field: "key123".to_string(),
+            },
         };
         let parent_pk = "any_pk";
         let parent_sk = "any_sk";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk).unwrap();
+        let result =
+            generate_pk_sk::<TestObjectSingletonFamily>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, "ROOT");
         assert_eq!(result.1, "@FAMILY[key123]");
     }
@@ -513,12 +511,14 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_invalid_parent_sk_format() {
         let obj = TestObjectTopLevelChildOfParent {
-            id: None,
+            id: PkSk::root(),
             auto_fields: AutoFields::default(),
+            data: TestObjectTopLevelChildOfParentData::default(),
         };
         let parent_pk = "any_pk";
         let parent_sk = "INVALIDFORMAT";
-        let result = generate_pk_sk(&obj, parent_pk, parent_sk);
+        let result =
+            generate_pk_sk::<TestObjectTopLevelChildOfParent>(&obj.data, parent_pk, parent_sk);
         assert!(result.is_err());
         if let Err(err) = result {
             let err_msg = err.to_string();

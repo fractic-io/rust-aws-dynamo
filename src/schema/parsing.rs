@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_generic_server_error::{common::CriticalError, GenericServerError};
+use serde::Serialize;
 
 use crate::{errors::DynamoItemParsingError, schema::DynamoObject, util::DynamoMap};
 
@@ -14,9 +15,32 @@ pub enum IdKeys {
     None,
 }
 
-pub fn build_dynamo_map<T: DynamoObject>(
+pub fn build_dynamo_map_for_new_obj<T: DynamoObject>(
+    data: &T::Data,
+    pk: String,
+    sk: String,
+    overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
+) -> Result<DynamoMap, GenericServerError> {
+    build_dynamo_map_internal(data, Some(pk), Some(sk), overrides)
+}
+
+pub fn build_dynamo_map_for_existing_obj<T: DynamoObject>(
     object: &T,
     id_keys: IdKeys,
+    overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
+) -> Result<DynamoMap, GenericServerError> {
+    let (pk, sk) = match id_keys {
+        IdKeys::Override(pk, sk) => (Some(pk), Some(sk)),
+        IdKeys::CopyFromObject => (Some(object.id().pk.clone()), Some(object.id().sk.clone())),
+        IdKeys::None => (None, None),
+    };
+    build_dynamo_map_internal(object, pk, sk, overrides)
+}
+
+fn build_dynamo_map_internal<T: Serialize>(
+    object: &T,
+    pk: Option<String>,
+    sk: Option<String>,
     overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
 ) -> Result<DynamoMap, GenericServerError> {
     let dbg_cxt: &'static str = "build_dynamo_map";
@@ -49,32 +73,11 @@ pub fn build_dynamo_map<T: DynamoObject>(
     }
 
     // Set ID keys.
-    match id_keys {
-        IdKeys::Override(pk, sk) => {
-            attribute_values.insert("pk".to_string(), AttributeValue::S(pk));
-            attribute_values.insert("sk".to_string(), AttributeValue::S(sk));
-        }
-        IdKeys::CopyFromObject => {
-            attribute_values.insert(
-                "pk".to_string(),
-                AttributeValue::S(
-                    object
-                        .pk()
-                        .ok_or(DynamoItemParsingError::new(dbg_cxt, "object missing pk"))?
-                        .to_string(),
-                ),
-            );
-            attribute_values.insert(
-                "sk".to_string(),
-                AttributeValue::S(
-                    object
-                        .sk()
-                        .ok_or(DynamoItemParsingError::new(dbg_cxt, "object missing sk"))?
-                        .to_string(),
-                ),
-            );
-        }
-        IdKeys::None => {}
+    if let Some(pk) = pk {
+        attribute_values.insert("pk".to_string(), AttributeValue::S(pk));
+    }
+    if let Some(sk) = sk {
+        attribute_values.insert("sk".to_string(), AttributeValue::S(sk));
     }
 
     // Set overrides.
@@ -201,8 +204,10 @@ fn attribute_value_to_serde_value(
 mod tests {
     use super::*;
     use crate::{
-        impl_dynamo_object,
-        schema::{AutoFields, IdLogic, NestingLogic, PkSk, Timestamp},
+        dynamo_object,
+        schema::{
+            AutoFields, DynamoObject, DynamoObjectData, IdLogic, NestingLogic, PkSk, Timestamp,
+        },
         util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT},
     };
     use aws_sdk_dynamodb::types::AttributeValue;
@@ -212,12 +217,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
-    struct TestDynamoObject {
-        id: Option<PkSk>,
-
-        #[serde(flatten)]
-        auto_fields: AutoFields,
-
+    pub struct TestDynamoObjectData {
         name: String,
         name_nullable: Option<String>,
         num: u32,
@@ -226,25 +226,81 @@ mod tests {
         nested_vec: Vec<String>,
     }
 
-    impl_dynamo_object!(TestDynamoObject, "TEST", IdLogic::Uuid, NestingLogic::Root);
+    dynamo_object!(
+        TestDynamoObject,
+        TestDynamoObjectData,
+        "TEST",
+        IdLogic::Uuid,
+        NestingLogic::Root
+    );
+
+    #[test]
+    fn test_build_dynamo_map_for_new_obj() {
+        let input = TestDynamoObject {
+            id: PkSk {
+                pk: "123".to_string(),
+                sk: "456".to_string(),
+            },
+            auto_fields: AutoFields::default(),
+            data: TestDynamoObjectData {
+                name: "Test".to_string(),
+                name_nullable: Some("TestNonNull".to_string()),
+                num: 42,
+                float: 3.14,
+                nested_map: [("key".to_string(), "value".to_string())]
+                    .iter()
+                    .cloned()
+                    .collect(),
+                nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+            },
+        };
+
+        let output = build_dynamo_map_for_new_obj::<TestDynamoObject>(
+            &input.data,
+            "pk_override".to_string(),
+            "sk_override".to_string(),
+            None,
+        )
+        .unwrap();
+
+        let expected_output = collection!(
+            "pk".to_string() => AttributeValue::S("pk_override".to_string()),
+            "sk".to_string() => AttributeValue::S("sk_override".to_string()),
+            "name".to_string() => AttributeValue::S("Test".to_string()),
+            "name_nullable".to_string() => AttributeValue::S("TestNonNull".to_string()),
+            "num".to_string() => AttributeValue::N("42".to_string()),
+            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "nested_map".to_string() => AttributeValue::M(collection!(
+                "key".to_string() => AttributeValue::S("value".to_string())
+            )),
+            "nested_vec".to_string() => AttributeValue::L(vec![
+                AttributeValue::S("elem1".to_string()),
+                AttributeValue::S("elem2".to_string()),
+            ]),
+        );
+        assert_eq!(output, expected_output);
+    }
 
     #[test]
     fn test_build_dynamo_map_copy_id_from_object() {
         let input = TestDynamoObject {
-            id: Some(PkSk {
+            id: PkSk {
                 pk: "123".to_string(),
                 sk: "456".to_string(),
-            }),
+            },
             auto_fields: AutoFields::default(),
-            name: "Test".to_string(),
-            name_nullable: None,
-            num: 42,
-            float: 3.14,
-            nested_map: collection!(),
-            nested_vec: vec![],
+            data: TestDynamoObjectData {
+                name: "Test".to_string(),
+                name_nullable: None,
+                num: 42,
+                float: 3.14,
+                nested_map: collection!(),
+                nested_vec: vec![],
+            },
         };
 
-        let output = build_dynamo_map(&input, IdKeys::CopyFromObject, None).unwrap();
+        let output =
+            build_dynamo_map_for_existing_obj(&input, IdKeys::CopyFromObject, None).unwrap();
 
         let expected_output = collection!(
             "pk".to_string() => AttributeValue::S("123".to_string()),
@@ -262,23 +318,25 @@ mod tests {
     #[test]
     fn test_build_dynamo_map_override_id() {
         let input = TestDynamoObject {
-            id: Some(PkSk {
+            id: PkSk {
                 pk: "123".to_string(),
                 sk: "456".to_string(),
-            }),
+            },
             auto_fields: AutoFields::default(),
-            name: "Test".to_string(),
-            name_nullable: Some("TestNonNull".to_string()),
-            num: 42,
-            float: 3.14,
-            nested_map: [("key".to_string(), "value".to_string())]
-                .iter()
-                .cloned()
-                .collect(),
-            nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+            data: TestDynamoObjectData {
+                name: "Test".to_string(),
+                name_nullable: Some("TestNonNull".to_string()),
+                num: 42,
+                float: 3.14,
+                nested_map: [("key".to_string(), "value".to_string())]
+                    .iter()
+                    .cloned()
+                    .collect(),
+                nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+            },
         };
 
-        let output = build_dynamo_map(
+        let output = build_dynamo_map_for_existing_obj(
             &input,
             IdKeys::Override("pk_override".to_string(), "sk_override".to_string()),
             None,
@@ -306,17 +364,20 @@ mod tests {
     #[test]
     fn test_build_dynamo_map_no_ids() {
         let input = TestDynamoObject {
-            id: Some(PkSk {
+            id: PkSk {
                 pk: "123".to_string(),
                 sk: "456".to_string(),
-            }),
-            name: "Test".to_string(),
-            num: 42,
-            float: 3.14,
-            ..Default::default()
+            },
+            auto_fields: AutoFields::default(),
+            data: TestDynamoObjectData {
+                name: "Test".to_string(),
+                num: 42,
+                float: 3.14,
+                ..Default::default()
+            },
         };
 
-        let output = build_dynamo_map(&input, IdKeys::None, None).unwrap();
+        let output = build_dynamo_map_for_existing_obj(&input, IdKeys::None, None).unwrap();
 
         let expected_output = collection!(
             // No id fields.
@@ -335,10 +396,10 @@ mod tests {
         let sample_timestamp = Timestamp::now();
 
         let input = TestDynamoObject {
-            id: Some(PkSk {
+            id: PkSk {
                 pk: "123".to_string(),
                 sk: "456".to_string(),
-            }),
+            },
             // These fields should always be skipped in serialization,
             // to make them effectively read-only. They should be manually
             // overrided by DynamoUtil logic.
@@ -350,15 +411,17 @@ mod tests {
                     "unknown_field".to_string() => Value::String("unknown_value".to_string())
                 ),
             },
-            name: "Test".to_string(),
-            name_nullable: None,
-            num: 42,
-            float: 3.14,
-            nested_map: collection!(),
-            nested_vec: vec![],
+            data: TestDynamoObjectData {
+                name: "Test".to_string(),
+                name_nullable: None,
+                num: 42,
+                float: 3.14,
+                nested_map: collection!(),
+                nested_vec: vec![],
+            },
         };
 
-        let output = build_dynamo_map(&input, IdKeys::None, None).unwrap();
+        let output = build_dynamo_map_for_existing_obj(&input, IdKeys::None, None).unwrap();
 
         let expected_output = collection!(
             // - No id fields.
@@ -379,17 +442,20 @@ mod tests {
         let sample_timestamp_2 = Timestamp::now();
 
         let input = TestDynamoObject {
-            id: Some(PkSk {
+            id: PkSk {
                 pk: "123".to_string(),
                 sk: "456".to_string(),
-            }),
-            name: "Test".to_string(),
-            num: 42,
-            float: 3.14,
-            ..Default::default()
+            },
+            auto_fields: AutoFields::default(),
+            data: TestDynamoObjectData {
+                name: "Test".to_string(),
+                num: 42,
+                float: 3.14,
+                ..Default::default()
+            },
         };
 
-        let output = build_dynamo_map(
+        let output = build_dynamo_map_for_existing_obj(
             &input,
             IdKeys::None,
             Some(vec![
@@ -453,10 +519,10 @@ mod tests {
         let output: TestDynamoObject = parse_dynamo_map(&input).unwrap();
 
         let expected_output = TestDynamoObject {
-            id: Some(PkSk {
+            id: PkSk {
                 pk: "123".to_string(),
                 sk: "456".to_string(),
-            }),
+            },
             auto_fields: AutoFields {
                 created_at: Some(sample_timestamp_1.clone()),
                 updated_at: Some(sample_timestamp_2.clone()),
@@ -465,16 +531,20 @@ mod tests {
                     "unknown_field".to_string() => Value::String("unknown_value".to_string())
                 ),
             },
-            name: "Test".to_string(),
-            name_nullable: None,
-            num: 42,
-            float: 3.14,
-            nested_map: [("key".to_string(), "value".to_string())]
-                .iter()
-                .cloned()
-                .collect(),
-            nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+            data: TestDynamoObjectData {
+                name: "Test".to_string(),
+                name_nullable: None,
+                num: 42,
+                float: 3.14,
+                nested_map: [("key".to_string(), "value".to_string())]
+                    .iter()
+                    .cloned()
+                    .collect(),
+                nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+            },
         };
-        assert_eq!(output, expected_output);
+        assert_eq!(output.id, expected_output.id);
+        assert_eq!(output.auto_fields, expected_output.auto_fields);
+        assert_eq!(output.data, expected_output.data);
     }
 }

@@ -16,8 +16,11 @@ use crate::{
     errors::{DynamoConnectionError, DynamoInvalidOperation, DynamoNotFound},
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
-        parsing::{build_dynamo_map, parse_dynamo_map, IdKeys},
-        DynamoObject, PkSk, Timestamp,
+        parsing::{
+            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, parse_dynamo_map,
+            IdKeys,
+        },
+        DynamoObject, IdLogic, PkSk, Timestamp,
     },
 };
 
@@ -155,14 +158,15 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn create_item<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        object: &T,
+        data: T::Data,
         custom_sort: Option<f64>,
-    ) -> Result<PkSk, GenericServerError> {
+    ) -> Result<T, GenericServerError> {
         let dbg_cxt: &'static str = "create_item";
-        let (new_pk, new_sk) = generate_pk_sk(object, &parent_id.pk, &parent_id.sk)?;
-        let map = build_dynamo_map::<T>(
-            &object,
-            IdKeys::Override(new_pk.clone(), new_sk.clone()),
+        let (new_pk, new_sk) = generate_pk_sk::<T>(&data, &parent_id.pk, &parent_id.sk)?;
+        let map = build_dynamo_map_for_new_obj::<T>(
+            &data,
+            new_pk.clone(),
+            new_sk.clone(),
             Some(vec![
                 (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
                 (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
@@ -173,34 +177,43 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .put_item(self.table.clone(), map)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
-        Ok(PkSk {
-            pk: new_pk,
-            sk: new_sk,
-        })
+        Ok(T::new(
+            PkSk {
+                pk: new_pk,
+                sk: new_sk,
+            },
+            data,
+        ))
     }
 
     pub async fn batch_create_item<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        objects_and_custom_sorts: Vec<(&T, Option<f64>)>,
-    ) -> Result<Vec<PkSk>, GenericServerError> {
+        data_and_custom_sorts: Vec<(T::Data, Option<f64>)>,
+    ) -> Result<Vec<T>, GenericServerError> {
         let dbg_cxt: &'static str = "batch_create_item";
-        // TODO: Disallow timestamp-based IDs in batch_create_item.
-        if objects_and_custom_sorts.is_empty() {
+        if matches!(T::id_logic(), IdLogic::Timestamp) {
+            return Err(DynamoInvalidOperation::new(
+                dbg_cxt,
+                "batch_create_item is not allowed with timestamp-based IDs, since all items would get the same ID and only one item would be written.",
+            ));
+        }
+        if data_and_custom_sorts.is_empty() {
             return Ok(Vec::new());
         }
-        let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = objects_and_custom_sorts
-            .into_iter()
-            .map(|(object, custom_sort)| {
-                let (new_pk, new_sk) = generate_pk_sk(object, &parent_id.pk, &parent_id.sk)?;
+        let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_custom_sorts
+            .iter()
+            .map(|(data, custom_sort)| {
+                let (new_pk, new_sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
                 Ok((
-                    build_dynamo_map::<T>(
-                        &object,
-                        IdKeys::Override(new_pk.clone(), new_sk.clone()),
+                    build_dynamo_map_for_new_obj::<T>(
+                        data,
+                        new_pk.clone(),
+                        new_sk.clone(),
                         Some(vec![
                             (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
                             (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
-                            (AUTO_FIELDS_SORT, Box::new(custom_sort)),
+                            (AUTO_FIELDS_SORT, Box::new(custom_sort.clone())),
                         ]),
                     )?,
                     PkSk {
@@ -219,7 +232,11 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 .await
                 .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
         }
-        Ok(ids)
+        Ok(ids
+            .into_iter()
+            .zip(data_and_custom_sorts.into_iter())
+            .map(|(id, (data, _))| T::new(id, data))
+            .collect())
     }
 
     // Use when complex ordering is required
@@ -242,43 +259,43 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        object: &T,
+        data: T::Data,
         insert_position: DynamoInsertPosition,
-    ) -> Result<PkSk, GenericServerError> {
+    ) -> Result<T, GenericServerError> {
         let dbg_cxt: &'static str = "create_item_ordered";
-        let sort_val = calculate_sort_values(self, parent_id.clone(), object, insert_position, 1)
-            .await?
-            .pop()
-            .ok_or(DynamoInvalidOperation::new(
-                dbg_cxt,
-                "failed to generate new ordered ID",
-            ))?;
-        self.create_item(parent_id, object, Some(sort_val)).await
+        let sort_val =
+            calculate_sort_values::<T, _>(self, parent_id.clone(), &data, insert_position, 1)
+                .await?
+                .pop()
+                .ok_or(DynamoInvalidOperation::new(
+                    dbg_cxt,
+                    "failed to generate new ordered ID",
+                ))?;
+        self.create_item::<T>(parent_id, data, Some(sort_val)).await
     }
 
     pub async fn batch_create_item_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        objects: Vec<&T>,
+        data: Vec<T::Data>,
         insert_position: DynamoInsertPosition,
-    ) -> Result<Vec<PkSk>, GenericServerError> {
-        if objects.is_empty() {
+    ) -> Result<Vec<T>, GenericServerError> {
+        if data.is_empty() {
             return Ok(Vec::new());
         }
-        let new_ids = calculate_sort_values(
+        let new_ids = calculate_sort_values::<T, _>(
             self,
             parent_id.clone(),
-            *objects.first().unwrap(),
+            data.first().unwrap(),
             insert_position,
-            objects.len(),
+            data.len(),
         )
         .await?;
-        self.batch_create_item(
+        self.batch_create_item::<T>(
             parent_id,
-            objects
-                .into_iter()
+            data.into_iter()
                 .zip(new_ids.into_iter())
-                .map(|(object, sort_val)| (object, Some(sort_val)))
+                .map(|(d, sort_val)| (d, Some(sort_val)))
                 .collect(),
         )
         .await
@@ -289,16 +306,12 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     // item does not exist, an error is returned.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "update_item";
+        _validate_id::<T>(dbg_cxt, object.id())?;
         let key = collection! {
-            "pk".to_string() => AttributeValue::S(object.pk().ok_or(
-                DynamoInvalidOperation::new(
-                    dbg_cxt, "pk required"))?.to_string()),
-            "sk".to_string() => AttributeValue::S(object.sk().ok_or(
-                DynamoInvalidOperation::new(
-                    dbg_cxt, "sk required"))?.to_string()),
+            "pk".to_string() => AttributeValue::S(object.pk().to_string()),
+            "sk".to_string() => AttributeValue::S(object.sk().to_string()),
         };
-        _validate_id::<T>(dbg_cxt, object.id_or_critical()?)?;
-        let map = build_dynamo_map::<T>(
+        let map = build_dynamo_map_for_existing_obj::<T>(
             &object,
             IdKeys::None,
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),

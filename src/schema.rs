@@ -126,21 +126,24 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     }
 }
 
-pub trait DynamoObjectData: Serialize + DeserializeOwned + std::fmt::Debug + Default {}
+pub trait DynamoObjectData:
+    Serialize + DeserializeOwned + std::fmt::Debug + Default + Clone
+{
+}
 
 #[macro_export]
 macro_rules! dynamo_object {
     ($type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {
-        #[derive(Debug, Serialize, Deserialize)]
+        #[derive(Debug, Serialize, Deserialize, Clone)]
         pub struct $type {
-            id: PkSk,
+            pub id: PkSk,
 
             #[serde(flatten)]
             pub data: $datatype,
 
             // Must be last to capture unknown fields.
             #[serde(flatten)]
-            auto_fields: AutoFields,
+            pub auto_fields: AutoFields,
         }
 
         impl DynamoObjectData for $datatype {}

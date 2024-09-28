@@ -272,7 +272,7 @@ mod tests {
     // --------------------------------------------------
 
     // Test case 1: NestingLogic::Root with IdLogic::Uuid
-    #[derive(Debug, Serialize, Deserialize, Default)]
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
     pub struct TestObjectRootUuidData {}
     dynamo_object!(
         TestObjectRootUuid,
@@ -298,7 +298,7 @@ mod tests {
     }
 
     // Test case 2: NestingLogic::Root with IdLogic::Timestamp
-    #[derive(Debug, Serialize, Deserialize, Default)]
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
     pub struct TestObjectRootTimestampData {}
     dynamo_object!(
         TestObjectRootTimestamp,
@@ -325,7 +325,7 @@ mod tests {
     }
 
     // Test case 3: NestingLogic::TopLevelChildOfAny with IdLogic::Uuid
-    #[derive(Debug, Serialize, Deserialize, Default)]
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
     pub struct TestObjectTopLevelChildUuidData {}
     dynamo_object!(
         TestObjectTopLevelChildUuid,
@@ -352,7 +352,7 @@ mod tests {
     }
 
     // Test case 4: NestingLogic::InlineChildOfAny with IdLogic::Uuid
-    #[derive(Debug, Serialize, Deserialize, Default)]
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
     pub struct TestObjectInlineChildUuidData {}
     dynamo_object!(
         TestObjectInlineChildUuid,
@@ -401,7 +401,7 @@ mod tests {
     }
 
     // Test case 6: NestingLogic::TopLevelChildOf("PARENT") with matching parent type
-    #[derive(Debug, Serialize, Deserialize, Default)]
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
     pub struct TestObjectTopLevelChildOfParentData {}
     dynamo_object!(
         TestObjectTopLevelChildOfParent,
@@ -450,7 +450,7 @@ mod tests {
     }
 
     // Test case 8: IdLogic::Singleton
-    #[derive(Debug, Serialize, Deserialize, Default)]
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
     pub struct TestObjectSingletonData {}
     dynamo_object!(
         TestObjectSingleton,
@@ -476,7 +476,7 @@ mod tests {
     }
 
     // Test case 9: IdLogic::SingletonFamily
-    #[derive(Debug, Serialize, Deserialize, Default)]
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
     pub struct TestObjectSingletonFamilyData {
         key_field: String,
     }

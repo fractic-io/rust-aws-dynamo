@@ -216,7 +216,7 @@ mod tests {
     use serde_json::Value;
     use std::collections::HashMap;
 
-    #[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
     pub struct TestDynamoObjectData {
         name: String,
         name_nullable: Option<String>,

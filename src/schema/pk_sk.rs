@@ -11,8 +11,10 @@ use crate::{
 };
 
 use super::{
-    id_calculations::{get_object_type, get_pk_sk_from_string, is_singleton, set_pk_sk_in_map},
-    PkSk,
+    id_calculations::{
+        generate_pk_sk, get_object_type, get_pk_sk_from_string, is_singleton, set_pk_sk_in_map,
+    },
+    DynamoObject, PkSk,
 };
 
 impl PkSk {
@@ -21,6 +23,14 @@ impl PkSk {
             pk: "ROOT".to_string(),
             sk: "ROOT".to_string(),
         }
+    }
+
+    pub fn generate<T: DynamoObject>(
+        object: &T,
+        parent_id: &PkSk,
+    ) -> Result<PkSk, GenericServerError> {
+        let (pk, sk) = generate_pk_sk(object, &parent_id.pk, &parent_id.sk)?;
+        Ok(PkSk { pk, sk })
     }
 
     pub fn from_string(s: &str) -> Result<PkSk, GenericServerError> {

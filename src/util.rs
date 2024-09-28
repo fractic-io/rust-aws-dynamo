@@ -358,11 +358,17 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         keys: Vec<PkSk>,
     ) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "batch_delete_item";
-        if keys.is_empty() {
-            return Ok(());
-        }
         for key in &keys {
             _validate_id::<T>(dbg_cxt, key)?;
+        }
+        self.raw_batch_delete_ids(keys).await
+    }
+
+    // Performs no checks and directly deletes the given IDs from the database.
+    pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), GenericServerError> {
+        let dbg_cxt: &'static str = "raw_batch_delete_ids";
+        if keys.is_empty() {
+            return Ok(());
         }
         let items = keys
             .into_iter()

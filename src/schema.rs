@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+pub mod add_ons;
 pub(crate) mod id_calculations;
 pub mod parsing;
 pub mod pk_sk;
@@ -180,6 +181,14 @@ macro_rules! dynamo_object {
             }
         }
     };
+}
+
+// Dynamic trait to hold either committed (with ID) or uncommitted (only data)
+// versions of a DynamoObject. See 'with_maybe_committed_scaffolding!' add-on.
+pub trait MaybeCommittedDynamoObject<T: DynamoObject> {
+    fn id(&self) -> Option<&PkSk>;
+    fn data(&self) -> &T::Data;
+    fn data_mut(&mut self) -> &mut T::Data;
 }
 
 // Standard sub-structs:

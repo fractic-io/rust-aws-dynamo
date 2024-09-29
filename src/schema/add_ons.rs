@@ -1,5 +1,7 @@
-// Optional add-on to implement fmt::Display
-// (requires T::Data implements fmt::Display).
+// Optional add-on to implement fmt::Display for DynamoObject or
+// MaybeCommittedDynamoObject types.
+//
+// Requires T::Data implements fmt::Display.
 // ---------------------------------------------------------------------------
 
 #[macro_export]
@@ -7,7 +9,7 @@ macro_rules! with_impl_display {
     ($type:ident) => {
         impl std::fmt::Display for $type {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", self.data)
+                write!(f, "{}", self.data())
             }
         }
     };
@@ -48,15 +50,6 @@ macro_rules! with_maybe_committed_scaffolding {
                     $type::Committed(object) => &mut object.data,
                     $type::Uncommitted(data) => data,
                 }
-            }
-        }
-
-        impl std::fmt::Display for $type
-        where
-            $datatype: std::fmt::Display,
-        {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", self.data())
             }
         }
     };

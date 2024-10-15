@@ -36,12 +36,21 @@ pub const AUTO_FIELDS_SORT: &str = "sort";
 pub enum DynamoQueryMatchType {
     BeginsWith,
     Equals,
+    GreaterThan,
+    GreaterThanOrEquals,
 }
 
 pub enum DynamoInsertPosition {
     First,
     Last,
     After(PkSk),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IndexConfig {
+    pub name: &'static str,
+    pub partition_field: &'static str,
+    pub sort_field: &'static str,
 }
 
 fn _validate_id<T: DynamoObject>(
@@ -58,6 +67,7 @@ fn _validate_id<T: DynamoObject>(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
 pub struct DynamoUtil<B: DynamoBackendImpl> {
     pub backend: B,
     pub table: String,
@@ -65,7 +75,7 @@ pub struct DynamoUtil<B: DynamoBackendImpl> {
 impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn query<T: DynamoObject>(
         &self,
-        index: Option<String>,
+        index: Option<IndexConfig>,
         id: PkSk,
         match_type: DynamoQueryMatchType,
     ) -> Result<Vec<T>, GenericServerError> {
@@ -93,15 +103,39 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn query_generic(
         &self,
-        index: Option<String>,
+        index: Option<IndexConfig>,
         id: PkSk,
         match_type: DynamoQueryMatchType,
     ) -> Result<Vec<DynamoMap>, GenericServerError> {
         let dbg_cxt: &'static str = "query_generic";
+        let (index_name, partition_field, sort_field) = match index {
+            Some(index) => (
+                Some(index.name.to_string()),
+                index.partition_field,
+                index.sort_field,
+            ),
+            None => (None, "pk", "sk"),
+        };
         let condition = match match_type {
-            DynamoQueryMatchType::BeginsWith if id.sk.is_empty() => "pk = :pk_val",
-            DynamoQueryMatchType::BeginsWith => "pk = :pk_val AND begins_with(sk, :sk_val)",
-            DynamoQueryMatchType::Equals => "pk = :pk_val AND sk = :sk_val",
+            DynamoQueryMatchType::BeginsWith if id.sk.is_empty() => {
+                format!("{} = :pk_val", partition_field)
+            }
+            DynamoQueryMatchType::BeginsWith => format!(
+                "{} = :pk_val AND begins_with({}, :sk_val)",
+                partition_field, sort_field
+            ),
+            DynamoQueryMatchType::Equals => {
+                format!("{} = :pk_val AND {} = :sk_val", partition_field, sort_field)
+            }
+            DynamoQueryMatchType::GreaterThan => {
+                format!("{} = :pk_val AND {} > :sk_val", partition_field, sort_field)
+            }
+            DynamoQueryMatchType::GreaterThanOrEquals => {
+                format!(
+                    "{} = :pk_val AND {} >= :sk_val",
+                    partition_field, sort_field
+                )
+            }
         }
         .to_string();
         let mut attribute_values = HashMap::new();
@@ -111,7 +145,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         }
         let response = self
             .backend
-            .query(self.table.clone(), index, condition, attribute_values)
+            .query(self.table.clone(), index_name, condition, attribute_values)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
         let mut items = response.items().to_vec();

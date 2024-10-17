@@ -127,10 +127,7 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     }
 }
 
-pub trait DynamoObjectData:
-    Serialize + DeserializeOwned + std::fmt::Debug + Default + Clone
-{
-}
+pub trait DynamoObjectData: Serialize + DeserializeOwned + std::fmt::Debug + Clone {}
 
 #[macro_export]
 macro_rules! dynamo_object {

@@ -25,7 +25,8 @@ mod tests {
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
     pub struct TestDynamoObjectData {
-        val: Option<String>,
+        val_non_null: String,
+        val_nullable: Option<String>,
     }
     dynamo_object!(
         TestDynamoObject,
@@ -48,6 +49,9 @@ mod tests {
             collection! {
                 "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                 "sk".to_string() => AttributeValue::S("GROUP#123#TEST#1".to_string()),
+                "val_non_null".to_string() => AttributeValue::S("".to_string()),
+                // "val_nullable" should not be present, since keys with null
+                // values are skipped.
             },
         )
     }
@@ -64,14 +68,17 @@ mod tests {
                     ..Default::default()
                 },
                 data: TestDynamoObjectData {
-                    val: Some("high_sort".to_string()),
+                    val_non_null: "high_sort".to_string(),
+                    val_nullable: None,
                 },
             },
             collection! {
                 "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                 "sk".to_string() => AttributeValue::S("GROUP#123#TEST#2".to_string()),
                 "sort".to_string() => AttributeValue::N("0.75".to_string()),
-                "val".to_string() => AttributeValue::S("high_sort".to_string()),
+                "val_non_null".to_string() => AttributeValue::S("high_sort".to_string()),
+                // "val_nullable" should not be present, since keys with null
+                // values are skipped.
             },
         )
     }
@@ -88,14 +95,17 @@ mod tests {
                     ..Default::default()
                 },
                 data: TestDynamoObjectData {
-                    val: Some("low_sort".to_string()),
+                    val_non_null: "low_sort".to_string(),
+                    val_nullable: None,
                 },
             },
             collection! {
                 "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                 "sk".to_string() => AttributeValue::S("GROUP#123#TEST#3".to_string()),
                 "sort".to_string() => AttributeValue::N("0.10001".to_string()),
-                "val".to_string() => AttributeValue::S("low_sort".to_string()),
+                "val_non_null".to_string() => AttributeValue::S("low_sort".to_string()),
+                // "val_nullable" should not be present, since keys with null
+                // values are skipped.
             },
         )
     }
@@ -239,7 +249,8 @@ mod tests {
         let item = result.unwrap();
         assert_eq!(item.pk(), "ROOT");
         assert_eq!(item.sk(), "GROUP#123#TEST#2");
-        assert_eq!(item.data.val, Some("high_sort".to_string()));
+        assert_eq!(item.data.val_non_null, "high_sort".to_string());
+        assert_eq!(item.data.val_nullable, None);
     }
 
     #[tokio::test]
@@ -251,7 +262,8 @@ mod tests {
                 item.get(AUTO_FIELDS_CREATED_AT).is_some()
                     && item.get(AUTO_FIELDS_UPDATED_AT).is_some()
                     && item.get(AUTO_FIELDS_SORT).is_some()
-                    && item.get("val").is_some()
+                    && item.get("val_non_null").is_some()
+                    && item.get("val_nullable").is_none()
             })
             .returning(|_, _| Ok(PutItemOutput::builder().build()));
 
@@ -288,7 +300,8 @@ mod tests {
                         item.get(AUTO_FIELDS_CREATED_AT).is_some()
                             && item.get(AUTO_FIELDS_UPDATED_AT).is_some()
                             && item.get(AUTO_FIELDS_SORT).is_some()
-                            && item.get("val").is_some()
+                            && item.get("val_non_null").is_some()
+                            && item.get("val_nullable").is_none()
                     })
             })
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
@@ -317,21 +330,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_item() {
+    async fn test_update_item_with_null() {
         let mut backend = MockDynamoBackendImpl::new();
         backend
             .expect_update_item()
             .withf(|_, id, update_expr, values, keys, condition| {
                 id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
                     && id.get("sk").unwrap().as_s().unwrap() == "TEST#321"
-                    && update_expr == "SET #k1 = :v1, #k2 = :v2"
+                    && update_expr.trim() == "SET #k1 = :v1, #k2 = :v2 REMOVE #rmk1"
                     && values.get(":v1").is_some()
                     && values.get(":v2").is_some()
+                    && values.get(":v3").is_none()
                     && {
                         let mut v = vec![keys.get("#k1").unwrap(), keys.get("#k2").unwrap()];
                         v.sort();
                         v
-                    } == vec![&"updated_at".to_string(), &"val".to_string()]
+                    } == vec![&"updated_at".to_string(), &"val_non_null".to_string()]
+                    && keys.get("#rmk1").unwrap() == "val_nullable"
                     && matches!(condition, Some(c) if c == "attribute_exists(pk)")
             })
             .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
@@ -348,7 +363,59 @@ mod tests {
             },
             auto_fields: Default::default(),
             data: TestDynamoObjectData {
-                val: Some("new_data".to_string()),
+                val_non_null: "new_data".into(),
+                val_nullable: None,
+            },
+        };
+
+        let result = util.update_item(&update_item).await.unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_non_null() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "TEST#321"
+                    && update_expr.trim() == "SET #k1 = :v1, #k2 = :v2, #k3 = :v3"
+                    && values.get(":v1").is_some()
+                    && values.get(":v2").is_some()
+                    && values.get(":v3").is_some()
+                    && {
+                        let mut v = vec![
+                            keys.get("#k1").unwrap(),
+                            keys.get("#k2").unwrap(),
+                            keys.get("#k3").unwrap(),
+                        ];
+                        v.sort();
+                        v
+                    } == vec![
+                        &"updated_at".to_string(),
+                        &"val_non_null".to_string(),
+                        &"val_nullable".to_string(),
+                    ]
+                    && keys.get("#rmk1").is_none()
+                    && matches!(condition, Some(c) if c == "attribute_exists(pk)")
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let update_item = TestDynamoObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "TEST#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: TestDynamoObjectData {
+                val_non_null: "new_data".into(),
+                val_nullable: Some("non_null".into()),
             },
         };
 

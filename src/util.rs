@@ -337,7 +337,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     // Updates fields of an existing item. Since this logic internally uses
     // update_item instead of put_item, unrecognized fields unaffected. If the
-    // item does not exist, an error is returned.
+    // item does not exist, an error is returned. Fields will null values are
+    // removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "update_item";
         _validate_id::<T>(dbg_cxt, object.id())?;
@@ -345,26 +346,48 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
         };
-        let map = build_dynamo_map_for_existing_obj::<T>(
+        let (map, null_keys) = build_dynamo_map_for_existing_obj::<T>(
             &object,
             IdKeys::None,
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
         )?;
         let mut expression_attribute_names = HashMap::new();
         let mut expression_attribute_values = HashMap::new();
-        let update_expression = "SET ".to_string()
-            + &map
-                .iter()
-                .enumerate()
-                .map(|(idx, (key, _))| {
-                    let key_placeholder = format!("#k{}", idx + 1);
-                    let value_placeholder = format!(":v{}", idx + 1);
-                    expression_attribute_names.insert(key_placeholder.clone(), key.to_string());
-                    expression_attribute_values.insert(value_placeholder.clone(), map[key].clone());
-                    format!("{} = {}", key_placeholder, value_placeholder)
-                })
-                .collect::<Vec<String>>()
-                .join(", ");
+        let set_expression = match map.is_empty() {
+            true => "".to_string(),
+            false => {
+                "SET ".to_string()
+                    + &map
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, (key, value))| {
+                            let key_placeholder = format!("#k{}", idx + 1);
+                            let value_placeholder = format!(":v{}", idx + 1);
+                            expression_attribute_names.insert(key_placeholder.clone(), key);
+                            expression_attribute_values.insert(value_placeholder.clone(), value);
+                            format!("{} = {}", key_placeholder, value_placeholder)
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+            }
+        };
+        let remove_expression = match null_keys.is_empty() {
+            true => "".to_string(),
+            false => {
+                "REMOVE ".to_string()
+                    + &null_keys
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, key)| {
+                            let key_placeholder = format!("#rmk{}", idx + 1);
+                            expression_attribute_names.insert(key_placeholder.clone(), key);
+                            key_placeholder
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+            }
+        };
+        let update_expression = format!("{} {}", set_expression, remove_expression);
         self.backend
             .update_item(
                 self.table.clone(),

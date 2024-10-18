@@ -21,14 +21,22 @@ pub fn build_dynamo_map_for_new_obj<T: DynamoObject>(
     sk: String,
     overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
 ) -> Result<DynamoMap, GenericServerError> {
-    build_dynamo_map_internal(data, Some(pk), Some(sk), overrides)
+    // For new objects, skipped null keys are not important.
+    let (dynamo_map, _skipped_null_keys) =
+        build_dynamo_map_internal(data, Some(pk), Some(sk), overrides)?;
+    Ok(dynamo_map)
 }
 
+// IMPORTANT:
+//   In addition to the resulting dynamo map, this function also returns a list
+//   of keys that were skipped because they were null. If updating an existing
+//   item in the database, these keys should be included in the update query as
+//   REMOVE operations, to avoid existing non-null values being left untouched.
 pub fn build_dynamo_map_for_existing_obj<T: DynamoObject>(
     object: &T,
     id_keys: IdKeys,
     overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
-) -> Result<DynamoMap, GenericServerError> {
+) -> Result<(DynamoMap, Vec<String>), GenericServerError> {
     let (pk, sk) = match id_keys {
         IdKeys::Override(pk, sk) => (Some(pk), Some(sk)),
         IdKeys::CopyFromObject => (Some(object.id().pk.clone()), Some(object.id().sk.clone())),
@@ -42,8 +50,11 @@ fn build_dynamo_map_internal<T: Serialize>(
     pk: Option<String>,
     sk: Option<String>,
     overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
-) -> Result<DynamoMap, GenericServerError> {
+) -> Result<(DynamoMap, Vec<String>), GenericServerError> {
     let dbg_cxt: &'static str = "build_dynamo_map";
+
+    // Keep track of skipped null values, as they may be important to the caller.
+    let mut skipped_null_keys: Vec<String> = Vec::new();
 
     // DynamoObject -> Serde value.
     let json_value = serde_json::to_value(&object).map_err(|e| {
@@ -60,7 +71,11 @@ fn build_dynamo_map_internal<T: Serialize>(
                     // and properly set pk/sk separately.
                     continue;
                 }
-                attribute_values.insert(key, serde_value_to_attribute_value(value)?);
+                if let Some(v) = serde_value_to_attribute_value(value)? {
+                    attribute_values.insert(key, v);
+                } else {
+                    skipped_null_keys.push(key);
+                }
             }
         }
         unsupported => {
@@ -90,11 +105,15 @@ fn build_dynamo_map_internal<T: Serialize>(
                     e.to_string(),
                 )
             })?;
-            attribute_values.insert(key.into(), serde_value_to_attribute_value(json_value)?);
+            if let Some(v) = serde_value_to_attribute_value(json_value)? {
+                attribute_values.insert(key.into(), v);
+            } else {
+                skipped_null_keys.push(key.into());
+            }
         }
     }
 
-    Ok(attribute_values)
+    Ok((attribute_values, skipped_null_keys))
 }
 
 pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, GenericServerError> {
@@ -108,7 +127,9 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, GenericSe
             // properly pk/sk into id field.
             continue;
         }
-        serde_map.insert(key.clone(), attribute_value_to_serde_value(value.clone())?);
+        if let Some(v) = attribute_value_to_serde_value(value.clone())? {
+            serde_map.insert(key.clone(), v);
+        }
     }
 
     // Set ID key from pk/sk.
@@ -141,54 +162,71 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, GenericSe
 
 fn serde_value_to_attribute_value(
     value: serde_json::Value,
-) -> Result<AttributeValue, GenericServerError> {
+) -> Result<Option<AttributeValue>, GenericServerError> {
     match value {
-        serde_json::Value::Null => Ok(AttributeValue::Null(true)),
-        serde_json::Value::String(s) => Ok(AttributeValue::S(s)),
-        serde_json::Value::Number(n) => Ok(AttributeValue::N(n.to_string())),
-        serde_json::Value::Bool(b) => Ok(AttributeValue::Bool(b)),
-        serde_json::Value::Object(map) => {
-            let mut attribute_map: HashMap<String, AttributeValue> = HashMap::new();
-            for (key, value) in map.into_iter() {
-                attribute_map.insert(key, serde_value_to_attribute_value(value)?);
-            }
-            Ok(AttributeValue::M(attribute_map)) // DynamoDB M type is for Map
-        }
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(s) => Ok(Some(AttributeValue::S(s))),
+        serde_json::Value::Number(n) => Ok(Some(AttributeValue::N(n.to_string()))),
+        serde_json::Value::Bool(b) => Ok(Some(AttributeValue::Bool(b))),
+        serde_json::Value::Object(map) => Ok(Some(AttributeValue::M(
+            map.into_iter()
+                // Convert SerdeValue to AttributeValue for each key-value pair,
+                // filtering all pairs where value is None.
+                .filter_map(|(k, v)| Some((k, serde_value_to_attribute_value(v).transpose()?)))
+                // Catch any conversion errors.
+                .map(|(k, v)| Ok((k, v?)))
+                .collect::<Result<HashMap<String, AttributeValue>, GenericServerError>>()?,
+        ))),
         serde_json::Value::Array(array) => {
-            let mut attribute_array: Vec<AttributeValue> = Vec::new();
-            for value in array.into_iter() {
-                attribute_array.push(serde_value_to_attribute_value(value)?);
-            }
-            Ok(AttributeValue::L(attribute_array)) // DynamoDB L type is for List
+            Ok(Some(AttributeValue::L(
+                array
+                    .into_iter()
+                    .map(|v| {
+                        serde_value_to_attribute_value(v).map(|v| match v {
+                            Some(v) => v,
+                            // For arrays, we want to keep explicit nulls:
+                            None => AttributeValue::Null(true),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, GenericServerError>>()?,
+            )))
         }
     }
 }
 
 fn attribute_value_to_serde_value(
     value: AttributeValue,
-) -> Result<serde_json::Value, GenericServerError> {
+) -> Result<Option<serde_json::Value>, GenericServerError> {
     let dbg_cxt: &'static str = "attribute_value_to_serde_value";
     match value {
-        AttributeValue::Null(_) => Ok(serde_json::Value::Null),
-        AttributeValue::S(s) => Ok(serde_json::Value::String(s)),
-        AttributeValue::N(n) => Ok(serde_json::Value::Number(n.parse().map_err(|e| {
+        AttributeValue::Null(_) => Ok(None),
+        AttributeValue::S(s) => Ok(Some(serde_json::Value::String(s))),
+        AttributeValue::N(n) => Ok(Some(serde_json::Value::Number(n.parse().map_err(|e| {
             DynamoItemParsingError::with_debug(dbg_cxt, "failed to parse number", format!("{}", e))
-        })?)),
-        AttributeValue::Bool(b) => Ok(serde_json::Value::Bool(b)),
-        AttributeValue::M(map) => {
-            let mut serde_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-            for (key, value) in map.into_iter() {
-                serde_map.insert(key, attribute_value_to_serde_value(value)?);
-            }
-            Ok(serde_json::Value::Object(serde_map))
-        }
-        AttributeValue::L(array) => {
-            let mut serde_array: Vec<serde_json::Value> = Vec::new();
-            for value in array.into_iter() {
-                serde_array.push(attribute_value_to_serde_value(value)?);
-            }
-            Ok(serde_json::Value::Array(serde_array))
-        }
+        })?))),
+        AttributeValue::Bool(b) => Ok(Some(serde_json::Value::Bool(b))),
+        AttributeValue::M(map) => Ok(Some(serde_json::Value::Object(
+            map.into_iter()
+                // Convert AttributeValue to SerdeValue for each key-value pair,
+                // filtering all pairs where value is None.
+                .filter_map(|(k, v)| Some((k, attribute_value_to_serde_value(v).transpose()?)))
+                // Catch any conversion errors.
+                .map(|(k, v)| Ok((k, v?)))
+                .collect::<Result<serde_json::Map<String, serde_json::Value>, GenericServerError>>(
+                )?,
+        ))),
+        AttributeValue::L(array) => Ok(Some(serde_json::Value::Array(
+            array
+                .into_iter()
+                .map(|v| {
+                    attribute_value_to_serde_value(v).map(|v| match v {
+                        Some(v) => v,
+                        // For arrays, we want to keep explicit nulls:
+                        None => serde_json::Value::Null,
+                    })
+                })
+                .collect::<Result<Vec<_>, GenericServerError>>()?,
+        ))),
         unsupported => Err(DynamoItemParsingError::with_debug(
             dbg_cxt,
             "unsupported AttributeValue type",
@@ -220,10 +258,13 @@ mod tests {
     pub struct TestDynamoObjectData {
         name: String,
         name_nullable: Option<String>,
+        null: Option<String>,
         num: u32,
         float: f64,
         nested_map: HashMap<String, String>,
+        nested_map_with_null: HashMap<String, Option<String>>,
         nested_vec: Vec<String>,
+        nested_vec_with_null: Vec<Option<String>>,
     }
 
     dynamo_object!(
@@ -245,13 +286,19 @@ mod tests {
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
                 name_nullable: Some("TestNonNull".to_string()),
+                null: None,
                 num: 42,
                 float: 3.14,
                 nested_map: [("key".to_string(), "value".to_string())]
                     .iter()
                     .cloned()
                     .collect(),
+                nested_map_with_null: collection!(
+                    "null".to_string() => None,
+                    "non-null".to_string() => Some("value".to_string())
+                ),
                 nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+                nested_vec_with_null: vec![Some("elem1".to_string()), None],
             },
         };
 
@@ -273,9 +320,16 @@ mod tests {
             "nested_map".to_string() => AttributeValue::M(collection!(
                 "key".to_string() => AttributeValue::S("value".to_string())
             )),
+            "nested_map_with_null".to_string() => AttributeValue::M(collection!(
+                "non-null".to_string() => AttributeValue::S("value".to_string())
+            )),
             "nested_vec".to_string() => AttributeValue::L(vec![
                 AttributeValue::S("elem1".to_string()),
                 AttributeValue::S("elem2".to_string()),
+            ]),
+            "nested_vec_with_null".to_string() => AttributeValue::L(vec![
+                AttributeValue::S("elem1".to_string()),
+                AttributeValue::Null(true),
             ]),
         );
         assert_eq!(output, expected_output);
@@ -291,28 +345,30 @@ mod tests {
             auto_fields: AutoFields::default(),
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
-                name_nullable: None,
                 num: 42,
                 float: 3.14,
-                nested_map: collection!(),
-                nested_vec: vec![],
+                ..Default::default()
             },
         };
 
-        let output =
+        let (output, skipped_null_keys) =
             build_dynamo_map_for_existing_obj(&input, IdKeys::CopyFromObject, None).unwrap();
 
         let expected_output = collection!(
             "pk".to_string() => AttributeValue::S("123".to_string()),
             "sk".to_string() => AttributeValue::S("456".to_string()),
             "name".to_string() => AttributeValue::S("Test".to_string()),
-            "name_nullable".to_string() => AttributeValue::Null(true),
             "num".to_string() => AttributeValue::N("42".to_string()),
             "float".to_string() => AttributeValue::N("3.14".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!()),
+            "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
+            "nested_vec_with_null".to_string() => AttributeValue::L(vec![]),
         );
+        let expected_skipped_null_keys = vec!["name_nullable".to_string(), "null".to_string()];
+
         assert_eq!(output, expected_output);
+        assert_eq!(skipped_null_keys, expected_skipped_null_keys);
     }
 
     #[test]
@@ -326,17 +382,23 @@ mod tests {
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
                 name_nullable: Some("TestNonNull".to_string()),
+                null: None,
                 num: 42,
                 float: 3.14,
                 nested_map: [("key".to_string(), "value".to_string())]
                     .iter()
                     .cloned()
                     .collect(),
+                nested_map_with_null: collection!(
+                    "null".to_string() => None,
+                    "non-null".to_string() => Some("value".to_string())
+                ),
                 nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+                nested_vec_with_null: vec![None, Some("elem1".to_string()), None],
             },
         };
 
-        let output = build_dynamo_map_for_existing_obj(
+        let (output, skipped_null_keys) = build_dynamo_map_for_existing_obj(
             &input,
             IdKeys::Override("pk_override".to_string(), "sk_override".to_string()),
             None,
@@ -353,12 +415,23 @@ mod tests {
             "nested_map".to_string() => AttributeValue::M(collection!(
                 "key".to_string() => AttributeValue::S("value".to_string())
             )),
+            "nested_map_with_null".to_string() => AttributeValue::M(collection!(
+                "non-null".to_string() => AttributeValue::S("value".to_string())
+            )),
             "nested_vec".to_string() => AttributeValue::L(vec![
                 AttributeValue::S("elem1".to_string()),
                 AttributeValue::S("elem2".to_string()),
             ]),
+            "nested_vec_with_null".to_string() => AttributeValue::L(vec![
+                AttributeValue::Null(true),
+                AttributeValue::S("elem1".to_string()),
+                AttributeValue::Null(true),
+            ]),
         );
+        let expected_skipped_null_keys = vec!["null".to_string()];
+
         assert_eq!(output, expected_output);
+        assert_eq!(skipped_null_keys, expected_skipped_null_keys);
     }
 
     #[test]
@@ -377,18 +450,23 @@ mod tests {
             },
         };
 
-        let output = build_dynamo_map_for_existing_obj(&input, IdKeys::None, None).unwrap();
+        let (output, skipped_null_keys) =
+            build_dynamo_map_for_existing_obj(&input, IdKeys::None, None).unwrap();
 
         let expected_output = collection!(
             // No id fields.
             "name".to_string() => AttributeValue::S("Test".to_string()),
-            "name_nullable".to_string() => AttributeValue::Null(true),
             "num".to_string() => AttributeValue::N("42".to_string()),
             "float".to_string() => AttributeValue::N("3.14".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!()),
+            "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
+            "nested_vec_with_null".to_string() => AttributeValue::L(vec![]),
         );
+        let expected_skipped_null_keys = vec!["name_nullable".to_string(), "null".to_string()];
+
         assert_eq!(output, expected_output);
+        assert_eq!(skipped_null_keys, expected_skipped_null_keys);
     }
 
     #[test]
@@ -413,27 +491,30 @@ mod tests {
             },
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
-                name_nullable: None,
                 num: 42,
                 float: 3.14,
-                nested_map: collection!(),
-                nested_vec: vec![],
+                ..Default::default()
             },
         };
 
-        let output = build_dynamo_map_for_existing_obj(&input, IdKeys::None, None).unwrap();
+        let (output, skipped_null_keys) =
+            build_dynamo_map_for_existing_obj(&input, IdKeys::None, None).unwrap();
 
         let expected_output = collection!(
             // - No id fields.
             // - No auto fields.
             "name".to_string() => AttributeValue::S("Test".to_string()),
-            "name_nullable".to_string() => AttributeValue::Null(true),
             "num".to_string() => AttributeValue::N("42".to_string()),
             "float".to_string() => AttributeValue::N("3.14".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!()),
+            "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
+            "nested_vec_with_null".to_string() => AttributeValue::L(vec![]),
         );
+        let expected_skipped_null_keys = vec!["name_nullable".to_string(), "null".to_string()];
+
         assert_eq!(output, expected_output);
+        assert_eq!(skipped_null_keys, expected_skipped_null_keys);
     }
 
     #[test]
@@ -455,7 +536,7 @@ mod tests {
             },
         };
 
-        let output = build_dynamo_map_for_existing_obj(
+        let (output, skipped_null_keys) = build_dynamo_map_for_existing_obj(
             &input,
             IdKeys::None,
             Some(vec![
@@ -468,11 +549,12 @@ mod tests {
 
         let expected_output = collection!(
             "name".to_string() => AttributeValue::S("Test".to_string()),
-            "name_nullable".to_string() => AttributeValue::Null(true),
             "num".to_string() => AttributeValue::N("42".to_string()),
             "float".to_string() => AttributeValue::N("3.14".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!()),
+            "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
+            "nested_vec_with_null".to_string() => AttributeValue::L(vec![]),
             AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::M(collection!(
                 "seconds".to_string() => AttributeValue::N(sample_timestamp_1.seconds.to_string()),
                 "nanos".to_string() => AttributeValue::N(sample_timestamp_1.nanos.to_string())
@@ -483,7 +565,10 @@ mod tests {
             )),
             AUTO_FIELDS_SORT.to_string() => AttributeValue::N("1.2345".to_string())
         );
+        let expected_skipped_null_keys = vec!["name_nullable".to_string(), "null".to_string()];
+
         assert_eq!(output, expected_output);
+        assert_eq!(skipped_null_keys, expected_skipped_null_keys);
     }
 
     #[test]
@@ -500,9 +585,17 @@ mod tests {
             "nested_map".to_string() => AttributeValue::M(collection!(
                 "key".to_string() => AttributeValue::S("value".to_string())
             )),
+            "nested_map_with_null".to_string() => AttributeValue::M(collection!(
+                "non-null".to_string() => AttributeValue::S("value".to_string()),
+            )),
             "nested_vec".to_string() => AttributeValue::L(vec![
                 AttributeValue::S("elem1".to_string()),
                 AttributeValue::S("elem2".to_string()),
+            ]),
+            "nested_vec_with_null".to_string() => AttributeValue::L(vec![
+                AttributeValue::Null(true),
+                AttributeValue::S("elem1".to_string()),
+                AttributeValue::Null(true),
             ]),
             AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::M(collection!(
                 "seconds".to_string() => AttributeValue::N(sample_timestamp_1.seconds.to_string()),
@@ -534,13 +627,92 @@ mod tests {
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
                 name_nullable: None,
+                null: None,
                 num: 42,
                 float: 3.14,
-                nested_map: [("key".to_string(), "value".to_string())]
-                    .iter()
-                    .cloned()
-                    .collect(),
+                nested_map: collection!("key".to_string() => "value".to_string()),
+                nested_map_with_null: collection!(
+                    "non-null".to_string() => Some("value".to_string()),
+                ),
                 nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+                nested_vec_with_null: vec![None, Some("elem1".to_string()), None],
+            },
+        };
+        assert_eq!(output.id, expected_output.id);
+        assert_eq!(output.auto_fields, expected_output.auto_fields);
+        assert_eq!(output.data, expected_output.data);
+    }
+
+    // Null-values shouldn't really be encountered since they are skipped in
+    // serialization. They should still work, however, so test it here.
+    #[test]
+    fn test_parse_dynamo_map_with_null_values() {
+        let sample_timestamp_1 = Timestamp::now();
+        let sample_timestamp_2 = Timestamp::now();
+
+        let input = collection!(
+            "pk".to_string() => AttributeValue::S("123".to_string()),
+            "sk".to_string() => AttributeValue::S("456".to_string()),
+            "name".to_string() => AttributeValue::S("Test".to_string()),
+            "name_nullable".to_string() => AttributeValue::Null(true),
+            "null".to_string() => AttributeValue::Null(true),
+            "num".to_string() => AttributeValue::N("42".to_string()),
+            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "nested_map".to_string() => AttributeValue::M(collection!(
+                "key".to_string() => AttributeValue::S("value".to_string())
+            )),
+            "nested_map_with_null".to_string() => AttributeValue::M(collection!(
+                "non-null".to_string() => AttributeValue::S("value".to_string()),
+                "null".to_string() => AttributeValue::Null(true)
+            )),
+            "nested_vec".to_string() => AttributeValue::L(vec![
+                AttributeValue::S("elem1".to_string()),
+                AttributeValue::S("elem2".to_string()),
+            ]),
+            "nested_vec_with_null".to_string() => AttributeValue::L(vec![
+                AttributeValue::Null(true),
+                AttributeValue::S("elem1".to_string()),
+                AttributeValue::Null(true),
+            ]),
+            AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::M(collection!(
+                "seconds".to_string() => AttributeValue::N(sample_timestamp_1.seconds.to_string()),
+                "nanos".to_string() => AttributeValue::N(sample_timestamp_1.nanos.to_string())
+            )),
+            AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::M(collection!(
+                "seconds".to_string() => AttributeValue::N(sample_timestamp_2.seconds.to_string()),
+                "nanos".to_string() => AttributeValue::N(sample_timestamp_2.nanos.to_string())
+            )),
+            AUTO_FIELDS_SORT.to_string() => AttributeValue::N("1.2345".to_string()),
+            "unknown_field".to_string() => AttributeValue::S("unknown_value".to_string()),
+        );
+
+        let output: TestDynamoObject = parse_dynamo_map(&input).unwrap();
+
+        let expected_output = TestDynamoObject {
+            id: PkSk {
+                pk: "123".to_string(),
+                sk: "456".to_string(),
+            },
+            auto_fields: AutoFields {
+                created_at: Some(sample_timestamp_1.clone()),
+                updated_at: Some(sample_timestamp_2.clone()),
+                sort: Some(1.2345),
+                unknown_fields: collection!(
+                    "unknown_field".to_string() => Value::String("unknown_value".to_string())
+                ),
+            },
+            data: TestDynamoObjectData {
+                name: "Test".to_string(),
+                name_nullable: None,
+                null: None,
+                num: 42,
+                float: 3.14,
+                nested_map: collection!("key".to_string() => "value".to_string()),
+                nested_map_with_null: collection!(
+                    "non-null".to_string() => Some("value".to_string()),
+                ),
+                nested_vec: vec!["elem1".to_string(), "elem2".to_string()],
+                nested_vec_with_null: vec![None, Some("elem1".to_string()), None],
             },
         };
         assert_eq!(output.id, expected_output.id);

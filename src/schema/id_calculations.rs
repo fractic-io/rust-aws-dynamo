@@ -110,11 +110,10 @@ pub(crate) fn get_object_type<'a>(
 // Helper function to grab the pk/sk from a "pk|sk" string.
 pub(crate) fn get_pk_sk_from_string(id: &str) -> Result<(&str, &str), GenericServerError> {
     let dbg_cxt: &'static str = "get_pk_sk_from_string";
-    let split: Vec<&str> = id.split('|').collect();
-    if split.len() != 2 {
-        Err(DynamoInvalidId::new(dbg_cxt, "not in format pk|sk"))
+    if let Some((pk, sk)) = id.split_once('|') {
+        Ok((pk, sk))
     } else {
-        Ok((split[0], split[1]))
+        Err(DynamoInvalidId::new(dbg_cxt, "not in format pk|sk"))
     }
 }
 

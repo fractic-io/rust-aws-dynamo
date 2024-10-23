@@ -555,13 +555,13 @@ mod tests {
             "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
             "nested_vec_with_null".to_string() => AttributeValue::L(vec![]),
-            AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::M(collection!(
-                "seconds".to_string() => AttributeValue::N(sample_timestamp_1.seconds.to_string()),
-                "nanos".to_string() => AttributeValue::N(sample_timestamp_1.nanos.to_string())
+            AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::S(format!(
+                "{:011}.{:09}",
+                sample_timestamp_1.seconds, sample_timestamp_1.nanos
             )),
-            AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::M(collection!(
-                "seconds".to_string() => AttributeValue::N(sample_timestamp_2.seconds.to_string()),
-                "nanos".to_string() => AttributeValue::N(sample_timestamp_2.nanos.to_string())
+            AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(format!(
+                "{:011}.{:09}",
+                sample_timestamp_2.seconds, sample_timestamp_2.nanos
             )),
             AUTO_FIELDS_SORT.to_string() => AttributeValue::N("1.2345".to_string())
         );
@@ -597,13 +597,14 @@ mod tests {
                 AttributeValue::S("elem1".to_string()),
                 AttributeValue::Null(true),
             ]),
+            // Test both string and map formats for storing Timestamp:
             AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::M(collection!(
                 "seconds".to_string() => AttributeValue::N(sample_timestamp_1.seconds.to_string()),
                 "nanos".to_string() => AttributeValue::N(sample_timestamp_1.nanos.to_string())
             )),
-            AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::M(collection!(
-                "seconds".to_string() => AttributeValue::N(sample_timestamp_2.seconds.to_string()),
-                "nanos".to_string() => AttributeValue::N(sample_timestamp_2.nanos.to_string())
+            AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(format!(
+                "{:011}.{:09}",
+                sample_timestamp_2.seconds, sample_timestamp_2.nanos
             )),
             AUTO_FIELDS_SORT.to_string() => AttributeValue::N("1.2345".to_string()),
             "unknown_field".to_string() => AttributeValue::S("unknown_value".to_string()),

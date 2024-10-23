@@ -1,4 +1,5 @@
 use fractic_generic_server_error::{common::CriticalError, GenericServerError};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::Timestamp;
 
@@ -33,6 +34,66 @@ impl std::fmt::Display for Timestamp {
                 .map_err(|_| std::fmt::Error)?
                 .format("%Y-%m-%d %H:%M:%S %Z")
         )
+    }
+}
+
+impl Serialize for Timestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        format!("{:011}.{:09}", self.seconds, self.nanos).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Timestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Timestamp, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(TimestampVisitor)
+    }
+}
+
+// The main serialization format is "seconds.nanos" as a string. However, it was
+// previously stored directly as the map. For now, support either form of
+// deserialization.
+struct TimestampVisitor;
+impl<'de> serde::de::Visitor<'de> for TimestampVisitor {
+    type Value = Timestamp;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a timestamp as a string or a map")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Timestamp, E>
+    where
+        E: serde::de::Error,
+    {
+        let parts: Vec<&str> = value.split('.').collect();
+        if parts.len() != 2 {
+            return Err(serde::de::Error::custom("invalid timestamp format"));
+        }
+        let seconds = parts[0].parse().map_err(serde::de::Error::custom)?;
+        let nanos = parts[1].parse().map_err(serde::de::Error::custom)?;
+        Ok(Timestamp { seconds, nanos })
+    }
+
+    fn visit_map<A>(self, map: A) -> Result<Timestamp, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        #[derive(Deserialize)]
+        struct LegacyMap {
+            seconds: i64,
+            nanos: u32,
+        }
+        let legacy_map: LegacyMap =
+            Deserialize::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+        Ok(Timestamp {
+            seconds: legacy_map.seconds,
+            nanos: legacy_map.nanos,
+        })
     }
 }
 
@@ -90,12 +151,116 @@ mod tests {
     }
 
     #[test]
-    fn test_display() {
+    fn test_serialize_zero_padding() {
         let timestamp = Timestamp {
-            seconds: 1_000_000_000,
-            nanos: 0,
+            seconds: 1, // Should be zero-padded.
+            nanos: 123, // Should be zero-padded.
         };
 
-        assert_eq!(format!("{}", timestamp), "2001-09-09 01:46:40 UTC");
+        let serialized = serde_json::to_string(&timestamp).unwrap();
+        assert_eq!(serialized, "\"00000000001.000000123\"");
+    }
+
+    #[test]
+    fn test_serialize_full_padding() {
+        let timestamp = Timestamp {
+            seconds: 21630000000, // No padding needed.
+            nanos: 123456789,     // No padding needed.
+        };
+
+        let serialized = serde_json::to_string(&timestamp).unwrap();
+        assert_eq!(serialized, "\"21630000000.123456789\"");
+    }
+
+    #[test]
+    fn test_deserialize_string_format() {
+        let json = "\"01630000000.123456789\"";
+        let timestamp: Timestamp = serde_json::from_str(json).unwrap();
+
+        assert_eq!(timestamp.seconds, 1630000000);
+        assert_eq!(timestamp.nanos, 123456789);
+    }
+
+    #[test]
+    fn test_deserialize_legacy_map_format() {
+        let json = "{\"seconds\": 1630000000, \"nanos\": 123456789}";
+        let timestamp: Timestamp = serde_json::from_str(json).unwrap();
+
+        assert_eq!(timestamp.seconds, 1630000000);
+        assert_eq!(timestamp.nanos, 123456789);
+    }
+
+    #[test]
+    fn test_deserialize_invalid_string_format() {
+        let json = "\"invalid.timestamp\"";
+        let result: Result<Timestamp, _> = serde_json::from_str(json);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_deserialize_invalid_map_format() {
+        let json = "{\"invalid_field\": 123}";
+        let result: Result<Timestamp, _> = serde_json::from_str(json);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_display_with_zero_padded_seconds_and_nanos() {
+        let timestamp = Timestamp {
+            seconds: 1,
+            nanos: 123,
+        };
+
+        assert_eq!(format!("{}", timestamp), "1970-01-01 00:00:01 UTC");
+    }
+
+    #[test]
+    fn test_display_full_precision() {
+        let timestamp = Timestamp {
+            seconds: 1630000000,
+            nanos: 123456789,
+        };
+
+        assert_eq!(format!("{}", timestamp), "2021-08-26 17:46:40 UTC");
+    }
+
+    #[test]
+    fn test_serialize_and_deserialize_string_format() {
+        let original = Timestamp {
+            seconds: 1630000000,
+            nanos: 123456789,
+        };
+
+        // Serialize to string format.
+        let serialized = serde_json::to_string(&original).unwrap();
+
+        // Deserialize back to Timestamp.
+        let deserialized: Timestamp = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(original.seconds, deserialized.seconds);
+        assert_eq!(original.nanos, deserialized.nanos);
+    }
+
+    #[test]
+    fn test_serialize_and_deserialize_legacy_map_format() {
+        let original = Timestamp {
+            seconds: 1630000000,
+            nanos: 123456789,
+        };
+
+        // Serialize to legacy map format.
+        let serialized = serde_json::json!({
+            "seconds": original.seconds,
+            "nanos": original.nanos
+        })
+        .to_string();
+
+        // Deserialize back to Timestamp.
+        let deserialized: Timestamp = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(original.seconds, deserialized.seconds);
+        assert_eq!(original.nanos, deserialized.nanos);
     }
 }

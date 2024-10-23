@@ -226,7 +226,7 @@ pub struct AutoFields {
     pub unknown_fields: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Timestamp {
     pub seconds: i64,
     pub nanos: u32,

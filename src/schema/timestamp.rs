@@ -23,6 +23,12 @@ impl Timestamp {
             )),
         }
     }
+    // Print as "YYYY-MM-DDTHH:MM:SSZ".
+    pub fn to_iso_8601_string(&self) -> Result<String, GenericServerError> {
+        Ok(self
+            .to_utc_datetime()?
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+    }
 }
 
 impl std::fmt::Display for Timestamp {
@@ -135,7 +141,7 @@ mod tests {
                     dt.timestamp_subsec_nanos()
                 );
             }
-            Err(_) => panic!("Conversion failed"),
+            Err(_) => panic!("Conversion failed."),
         }
     }
 
@@ -148,6 +154,18 @@ mod tests {
         let result = timestamp.to_utc_datetime();
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_to_iso_8601_string() {
+        let timestamp = Timestamp {
+            seconds: 1630000000,
+            nanos: 123456789,
+        };
+        let result = timestamp.to_iso_8601_string();
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "2021-08-26T17:46:40Z".to_string());
     }
 
     #[test]

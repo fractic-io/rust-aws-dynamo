@@ -362,6 +362,7 @@ mod tests {
                         item.get(AUTO_FIELDS_CREATED_AT).is_some()
                             && item.get(AUTO_FIELDS_UPDATED_AT).is_some()
                             && item.get(AUTO_FIELDS_SORT).is_some()
+                            && item.get(AUTO_FIELDS_TTL).is_none()
                             && item.get("val_non_null").is_some()
                             && item.get("val_nullable").is_none()
                     })
@@ -498,6 +499,87 @@ mod tests {
 
         let result = util.update_item(&update_item).await.unwrap();
         assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_transaction() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
+                    "sk".to_string() => AttributeValue::S("TEST#321".to_string())
+                }),
+            )
+            .returning(|_, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(collection! {
+                        // ID & auto fields should /not/ be included in the
+                        // condition expression of the transaction update:
+                        "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
+                        "sk".to_string() => AttributeValue::S("TEST#321".to_string()),
+                        "sort".to_string() => AttributeValue::N("0.75".to_string()),
+
+                        // Non-null data fields /should/ be checked for changes
+                        // in the transaction update condition expression:
+                        "val_non_null".to_string() => AttributeValue::S("old_data".to_string()),
+                    }))
+                    .build())
+            });
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "TEST#321"
+                    && update_expr.trim() == "SET #k1 = :v1, #k2 = :v2, #k3 = :v3"
+                    && values.get(":v1").is_some()
+                    && values.get(":v2").is_some()
+                    && values.get(":v3").is_some()
+                    && {
+                        let mut v = vec![
+                            keys.get("#k1").unwrap(),
+                            keys.get("#k2").unwrap(),
+                            keys.get("#k3").unwrap(),
+                        ];
+                        v.sort();
+                        v
+                    } == vec![
+                        &"updated_at".to_string(),
+                        &"val_non_null".to_string(),
+                        &"val_nullable".to_string(),
+                    ]
+                    && keys.get("#rmk1").is_none()
+                    && *condition == Some("attribute_exists(pk) AND #c1 = :cv1".to_string())
+                    && keys.get("#c1").unwrap() == "val_non_null"
+                    && values.get(":cv1").unwrap().as_s().unwrap() == "old_data"
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let result = util
+            .update_item_transaction::<TestDynamoObject>(
+                PkSk {
+                    pk: "ABC#123".to_string(),
+                    sk: "TEST#321".to_string(),
+                },
+                |mut item| {
+                    item.data.val_non_null = "new_data".into();
+                    item.data.val_nullable = Some("non_null".into());
+                    Ok(item)
+                },
+            )
+            .await;
+        assert!(result.is_ok());
+
+        let object_after = result.unwrap();
+        assert_eq!(object_after.data.val_non_null, "new_data");
+        assert_eq!(object_after.data.val_nullable, Some("non_null".into()));
     }
 
     #[tokio::test]

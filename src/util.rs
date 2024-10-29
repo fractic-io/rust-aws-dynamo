@@ -404,7 +404,36 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     /// item does not exist, an error is returned. Fields with null values are
     /// removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), GenericServerError> {
-        let dbg_cxt: &'static str = "update_item";
+        self.update_item_with_conditions(object, HashMap::default())
+            .await
+    }
+
+    /// Updates an object in an all-or-nothing transaction. If the object has
+    /// changed since it was fetched, the update is not written. If 'op' returns
+    /// an error, the transaction is aborted.
+    pub async fn update_item_transaction<T: DynamoObject>(
+        &self,
+        id: PkSk,
+        op: impl FnOnce(T) -> Result<T, GenericServerError>,
+    ) -> Result<T, GenericServerError> {
+        let object_before = self
+            .get_item::<T>(id)
+            .await?
+            .ok_or_else(|| DynamoNotFound::default())?;
+        let (map_before, _) =
+            build_dynamo_map_for_existing_obj::<T>(&object_before, IdKeys::None, None)?;
+        let object_after = op(object_before)?;
+        self.update_item_with_conditions::<T>(&object_after, map_before)
+            .await?;
+        Ok(object_after)
+    }
+
+    async fn update_item_with_conditions<T: DynamoObject>(
+        &self,
+        object: &T,
+        conditions: HashMap<String, AttributeValue>,
+    ) -> Result<(), GenericServerError> {
+        let dbg_cxt: &'static str = "update_item_with_conditions";
         validate_id::<T>(dbg_cxt, object.id())?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
@@ -415,6 +444,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             IdKeys::None,
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
         )?;
+
+        // Build update expression:
         let mut expression_attribute_names = HashMap::new();
         let mut expression_attribute_values = HashMap::new();
         let set_expression = match map.is_empty() {
@@ -452,6 +483,24 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             }
         };
         let update_expression = format!("{} {}", set_expression, remove_expression);
+
+        // Ensure item exists, and any additional custom conditions:
+        let condition_expression = std::iter::once("attribute_exists(pk)".to_string())
+            .chain(
+                conditions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (key, value))| {
+                        let key_placeholder = format!("#c{}", idx + 1);
+                        let value_placeholder = format!(":cv{}", idx + 1);
+                        expression_attribute_names.insert(key_placeholder.clone(), key);
+                        expression_attribute_values.insert(value_placeholder.clone(), value);
+                        format!("{} = {}", key_placeholder, value_placeholder)
+                    }),
+            )
+            .collect::<Vec<String>>()
+            .join(" AND ");
+
         self.backend
             .update_item(
                 self.table.clone(),
@@ -459,8 +508,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 update_expression,
                 expression_attribute_values,
                 expression_attribute_names,
-                // Ensure item exists:
-                Some("attribute_exists(pk)".to_string()),
+                Some(condition_expression),
             )
             .await
             .map_err(|e| match e.into_service_error() {

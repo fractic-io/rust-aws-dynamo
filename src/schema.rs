@@ -127,6 +127,10 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     }
 }
 
+// The reason we require Default is to be maximally tolerant during
+// deserialization. This way, for example, if we are querying a GSI which only
+// projects some of the keys, we are still guaranteed to successfully
+// deserialize the resulting objects.
 pub trait DynamoObjectData:
     Serialize + DeserializeOwned + std::fmt::Debug + Default + Clone
 {

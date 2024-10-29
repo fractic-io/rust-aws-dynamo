@@ -246,7 +246,7 @@ mod tests {
         schema::{
             AutoFields, DynamoObject, DynamoObjectData, IdLogic, NestingLogic, PkSk, Timestamp,
         },
-        util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT},
+        util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT},
     };
     use aws_sdk_dynamodb::types::AttributeValue;
     use fractic_core::collection;
@@ -485,6 +485,7 @@ mod tests {
                 created_at: Some(sample_timestamp.clone()),
                 updated_at: Some(sample_timestamp.clone()),
                 sort: Some(0.65),
+                ttl: Some(1234567890),
                 unknown_fields: collection!(
                     "unknown_field".to_string() => Value::String("unknown_value".to_string())
                 ),
@@ -607,6 +608,7 @@ mod tests {
                 sample_timestamp_2.seconds, sample_timestamp_2.nanos
             )),
             AUTO_FIELDS_SORT.to_string() => AttributeValue::N("1.2345".to_string()),
+            AUTO_FIELDS_TTL.to_string() => AttributeValue::N("1234567890".to_string()),
             "unknown_field".to_string() => AttributeValue::S("unknown_value".to_string()),
         );
 
@@ -621,6 +623,7 @@ mod tests {
                 created_at: Some(sample_timestamp_1.clone()),
                 updated_at: Some(sample_timestamp_2.clone()),
                 sort: Some(1.2345),
+                ttl: Some(1234567890),
                 unknown_fields: collection!(
                     "unknown_field".to_string() => Value::String("unknown_value".to_string())
                 ),
@@ -684,6 +687,7 @@ mod tests {
                 "nanos".to_string() => AttributeValue::N(sample_timestamp_2.nanos.to_string())
             )),
             AUTO_FIELDS_SORT.to_string() => AttributeValue::N("1.2345".to_string()),
+            AUTO_FIELDS_TTL.to_string() => AttributeValue::N("1234567890".to_string()),
             "unknown_field".to_string() => AttributeValue::S("unknown_value".to_string()),
         );
 
@@ -698,6 +702,7 @@ mod tests {
                 created_at: Some(sample_timestamp_1.clone()),
                 updated_at: Some(sample_timestamp_2.clone()),
                 sort: Some(1.2345),
+                ttl: Some(1234567890),
                 unknown_fields: collection!(
                     "unknown_field".to_string() => Value::String("unknown_value".to_string())
                 ),

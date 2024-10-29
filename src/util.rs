@@ -9,6 +9,7 @@ use aws_sdk_dynamodb::{
 };
 use backend::DynamoBackendImpl;
 use calculate_sort::calculate_sort_values;
+use chrono::{DateTime, Duration, Utc};
 use fractic_core::collection;
 use fractic_generic_server_error::GenericServerError;
 
@@ -32,7 +33,9 @@ pub type DynamoMap = HashMap<String, AttributeValue>;
 pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
 pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
 pub const AUTO_FIELDS_SORT: &str = "sort";
+pub const AUTO_FIELDS_TTL: &str = "ttl";
 
+#[derive(Debug)]
 pub enum DynamoQueryMatchType {
     BeginsWith,
     Equals,
@@ -40,10 +43,20 @@ pub enum DynamoQueryMatchType {
     GreaterThanOrEquals,
 }
 
+#[derive(Debug)]
 pub enum DynamoInsertPosition {
     First,
     Last,
     After(PkSk),
+}
+
+#[derive(Debug)]
+pub enum TtlConfig {
+    OneWeek,
+    OneMonth,
+    OneYear,
+    CustomDuration(Duration),
+    CustomDate(DateTime<Utc>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +66,18 @@ pub struct IndexConfig {
     pub sort_field: &'static str,
 }
 
-fn _validate_id<T: DynamoObject>(
+#[derive(Debug, Default)]
+pub struct CreateOptions {
+    pub custom_sort: Option<f64>,
+    /// If provided, the given item is automatically deleted by Dynamo after the
+    /// expiry time, usually within a day or two.
+    ///
+    /// IMPORTANT: This requires TTL to be enabled on the table, using attribute
+    /// name 'ttl'.
+    pub ttl: Option<TtlConfig>,
+}
+
+fn validate_id<T: DynamoObject>(
     dbg_cxt: &'static str,
     id: &PkSk,
 ) -> Result<(), GenericServerError> {
@@ -65,6 +89,18 @@ fn _validate_id<T: DynamoObject>(
         ));
     }
     Ok(())
+}
+
+impl TtlConfig {
+    fn compute_timestamp(&self) -> i64 {
+        match self {
+            TtlConfig::OneWeek => (Utc::now() + Duration::weeks(1)).timestamp(),
+            TtlConfig::OneMonth => (Utc::now() + Duration::days(30)).timestamp(),
+            TtlConfig::OneYear => (Utc::now() + Duration::days(365)).timestamp(),
+            TtlConfig::CustomDuration(duration) => (Utc::now() + *duration).timestamp(),
+            TtlConfig::CustomDate(date) => date.timestamp(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -173,7 +209,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         id: PkSk,
     ) -> Result<Option<T>, GenericServerError> {
         let dbg_cxt: &'static str = "get_item";
-        _validate_id::<T>(dbg_cxt, &id)?;
+        validate_id::<T>(dbg_cxt, &id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
@@ -193,10 +229,15 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         &self,
         parent_id: PkSk,
         data: T::Data,
-        custom_sort: Option<f64>,
+        options: Option<CreateOptions>,
     ) -> Result<T, GenericServerError> {
         let dbg_cxt: &'static str = "create_item";
         let (new_pk, new_sk) = generate_pk_sk::<T>(&data, &parent_id.pk, &parent_id.sk)?;
+        let sort: Option<f64> = options.as_ref().and_then(|o| o.custom_sort);
+        let ttl: Option<i64> = options
+            .as_ref()
+            .and_then(|o| o.ttl.as_ref())
+            .map(|ttl| ttl.compute_timestamp());
         let map = build_dynamo_map_for_new_obj::<T>(
             &data,
             new_pk.clone(),
@@ -204,7 +245,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             Some(vec![
                 (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
                 (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
-                (AUTO_FIELDS_SORT, Box::new(custom_sort)),
+                (AUTO_FIELDS_SORT, Box::new(sort)),
+                (AUTO_FIELDS_TTL, Box::new(ttl)),
             ]),
         )?;
         self.backend
@@ -223,7 +265,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn batch_create_item<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        data_and_custom_sorts: Vec<(T::Data, Option<f64>)>,
+        data_and_options: Vec<(T::Data, Option<CreateOptions>)>,
     ) -> Result<Vec<T>, GenericServerError> {
         let dbg_cxt: &'static str = "batch_create_item";
         if matches!(T::id_logic(), IdLogic::Timestamp) {
@@ -232,13 +274,18 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 "batch_create_item is not allowed with timestamp-based IDs, since all items would get the same ID and only one item would be written.",
             ));
         }
-        if data_and_custom_sorts.is_empty() {
+        if data_and_options.is_empty() {
             return Ok(Vec::new());
         }
-        let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_custom_sorts
+        let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_options
             .iter()
-            .map(|(data, custom_sort)| {
+            .map(|(data, options)| {
                 let (new_pk, new_sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
+                let sort: Option<f64> = options.as_ref().and_then(|o| o.custom_sort);
+                let ttl: Option<i64> = options
+                    .as_ref()
+                    .and_then(|o| o.ttl.as_ref())
+                    .map(|ttl| ttl.compute_timestamp());
                 Ok((
                     build_dynamo_map_for_new_obj::<T>(
                         data,
@@ -247,7 +294,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                         Some(vec![
                             (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
                             (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
-                            (AUTO_FIELDS_SORT, Box::new(custom_sort.clone())),
+                            (AUTO_FIELDS_SORT, Box::new(sort)),
+                            (AUTO_FIELDS_TTL, Box::new(ttl)),
                         ]),
                     )?,
                     PkSk {
@@ -268,28 +316,28 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         }
         Ok(ids
             .into_iter()
-            .zip(data_and_custom_sorts.into_iter())
+            .zip(data_and_options.into_iter())
             .map(|(id, (data, _))| T::new(id, data))
             .collect())
     }
 
-    // Use when complex ordering is required
-    // (for simple ordering, consider using timestamp-based IDs).
-    //
-    // Complex ordering works based on a 'sort' field, a floating point value
-    // such that a new item can always always be place in between any two
-    // existing items. Query functions in this util take this 'sort' field into
-    // account, always sorting the query results by it before returning the
-    // data.
-    //
-    // If this ordered insertion is used together with regular insertion, some
-    // items will have a 'sort' value while others will not. In this case, the
-    // ordered items will be placed before unordered items in query results.
-    //
-    // WARNING: This function requires checking all existing sort values to
-    // place the new item appropriately, which can be expensive. If inserting
-    // many ordered items, use batch_create_item_ordered (which only fetches
-    // sort values once), or consider using timestamp-based IDs instead.
+    /// Use when complex ordering is required (for simple ordering, consider
+    /// using timestamp-based IDs).
+    ///
+    /// Complex ordering works based on a 'sort' field, a floating point value
+    /// such that a new item can always always be place in between any two
+    /// existing items. Query functions in this util take this 'sort' field into
+    /// account, always sorting the query results by it before returning the
+    /// data.
+    ///
+    /// If this ordered insertion is used together with regular insertion, some
+    /// items will have a 'sort' value while others will not. In this case, the
+    /// ordered items will be placed before unordered items in query results.
+    ///
+    /// WARNING: This function requires checking all existing sort values to
+    /// place the new item appropriately, which can be expensive. If inserting
+    /// many ordered items, use batch_create_item_ordered (which only fetches
+    /// sort values once), or consider using timestamp-based IDs instead.
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
@@ -305,7 +353,15 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                     dbg_cxt,
                     "failed to generate new ordered ID",
                 ))?;
-        self.create_item::<T>(parent_id, data, Some(sort_val)).await
+        self.create_item::<T>(
+            parent_id,
+            data,
+            Some(CreateOptions {
+                custom_sort: Some(sort_val),
+                ..Default::default()
+            }),
+        )
+        .await
     }
 
     pub async fn batch_create_item_ordered<T: DynamoObject>(
@@ -329,19 +385,27 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             parent_id,
             data.into_iter()
                 .zip(new_ids.into_iter())
-                .map(|(d, sort_val)| (d, Some(sort_val)))
+                .map(|(d, sort_val)| {
+                    (
+                        d,
+                        Some(CreateOptions {
+                            custom_sort: Some(sort_val),
+                            ..Default::default()
+                        }),
+                    )
+                })
                 .collect(),
         )
         .await
     }
 
-    // Updates fields of an existing item. Since this logic internally uses
-    // update_item instead of put_item, unrecognized fields unaffected. If the
-    // item does not exist, an error is returned. Fields will null values are
-    // removed from the item.
+    /// Updates fields of an existing item. Since this logic internally uses
+    /// update_item instead of put_item, unrecognized fields unaffected. If the
+    /// item does not exist, an error is returned. Fields with null values are
+    /// removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "update_item";
-        _validate_id::<T>(dbg_cxt, object.id())?;
+        validate_id::<T>(dbg_cxt, object.id())?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
@@ -408,7 +472,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
 
     pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "delete_item";
-        _validate_id::<T>(dbg_cxt, &id)?;
+        validate_id::<T>(dbg_cxt, &id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
@@ -429,12 +493,12 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     ) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "batch_delete_item";
         for key in &keys {
-            _validate_id::<T>(dbg_cxt, key)?;
+            validate_id::<T>(dbg_cxt, key)?;
         }
         self.raw_batch_delete_ids(keys).await
     }
 
-    // Performs no checks and directly deletes the given IDs from the database.
+    /// Performs no checks and directly deletes the given IDs from the database.
     pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "raw_batch_delete_ids";
         if keys.is_empty() {
@@ -464,13 +528,14 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(())
     }
 
-    // Performs no checks and directly writes the given DynamoMaps to the database.
-    // If the item exists, it is updated. If it does not exist, it is created.
-    //
-    // This does not check or update auto fields (updated_at, sort, etc.). The map values
-    // are just directly written.
-    //
-    // Should only be used internally for efficient low-level DB actions.
+    /// Performs no checks and directly writes the given DynamoMaps to the
+    /// database. If the item exists, it is updated. If it does not exist, it is
+    /// created.
+    ///
+    /// This does not check or update auto fields (updated_at, sort, etc.). The
+    /// map values are just directly written.
+    ///
+    /// Should only be used internally for efficient low-level DB actions.
     pub async fn raw_batch_put_item(
         &self,
         items: Vec<DynamoMap>,

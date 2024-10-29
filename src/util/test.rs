@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::schema::IdLogic;
+    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL};
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, DynamoObjectData, NestingLogic, PkSk},
@@ -18,6 +19,7 @@ mod tests {
         },
         types::AttributeValue,
     };
+    use chrono::{DateTime, Utc};
     use fractic_core::collection;
     use mockall::predicate::*;
     use serde::{Deserialize, Serialize};
@@ -262,6 +264,8 @@ mod tests {
                 item.get(AUTO_FIELDS_CREATED_AT).is_some()
                     && item.get(AUTO_FIELDS_UPDATED_AT).is_some()
                     && item.get(AUTO_FIELDS_SORT).is_some()
+                    && item.get(AUTO_FIELDS_SORT).unwrap().as_n().unwrap() == "0.75"
+                    && item.get(AUTO_FIELDS_TTL).is_none()
                     && item.get("val_non_null").is_some()
                     && item.get("val_nullable").is_none()
             })
@@ -281,7 +285,65 @@ mod tests {
                     sk: "GROUP#123".to_string(),
                 },
                 new_item.data,
-                Some(0.75),
+                Some(CreateOptions {
+                    custom_sort: Some(0.75),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.pk(), "GROUP#123".to_string());
+    }
+
+    #[tokio::test]
+    async fn test_create_item_with_ttl() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_put_item()
+            .withf(|_, item| {
+                item.get(AUTO_FIELDS_CREATED_AT).is_some()
+                    && item.get(AUTO_FIELDS_UPDATED_AT).is_some()
+                    && item.get(AUTO_FIELDS_SORT).is_none()
+                    && item.get(AUTO_FIELDS_TTL).is_some()
+                    && DateTime::from_timestamp(
+                        item.get(AUTO_FIELDS_TTL)
+                            .unwrap()
+                            .as_n()
+                            .unwrap()
+                            .parse()
+                            .unwrap(),
+                        0,
+                    )
+                    .unwrap()
+                    .format("%Y-%m-%d")
+                    .to_string()
+                        == (Utc::now() + chrono::Duration::days(365))
+                            .format("%Y-%m-%d")
+                            .to_string()
+                    && item.get("val_non_null").is_some()
+                    && item.get("val_nullable").is_none()
+            })
+            .returning(|_, _| Ok(PutItemOutput::builder().build()));
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let new_item = build_item_high_sort().0;
+
+        let result = util
+            .create_item::<TestDynamoObject>(
+                PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: "GROUP#123".to_string(),
+                },
+                new_item.data,
+                Some(CreateOptions {
+                    ttl: Some(TtlConfig::OneYear),
+                    ..Default::default()
+                }),
             )
             .await
             .unwrap();
@@ -313,7 +375,22 @@ mod tests {
 
         let item1 = build_item_no_data().0;
         let item2 = build_item_no_data().0;
-        let items = vec![(item1.data, Some(0.1200000)), (item2.data, Some(12.0))];
+        let items = vec![
+            (
+                item1.data,
+                Some(CreateOptions {
+                    custom_sort: Some(0.12),
+                    ..Default::default()
+                }),
+            ),
+            (
+                item2.data,
+                Some(CreateOptions {
+                    custom_sort: Some(12.0),
+                    ..Default::default()
+                }),
+            ),
+        ];
 
         let result = util
             .batch_create_item::<TestDynamoObject>(

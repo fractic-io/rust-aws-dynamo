@@ -119,6 +119,9 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     fn sort(&self) -> Option<f64> {
         self.auto_fields().sort
     }
+    fn ttl(&self) -> Option<i64> {
+        self.auto_fields().ttl
+    }
     fn has_unknown_fields(&self) -> bool {
         !self.auto_fields().unknown_fields.is_empty()
     }
@@ -226,6 +229,8 @@ pub struct AutoFields {
     pub updated_at: Option<Timestamp>,
     #[serde(skip_serializing)] // Read-only.
     pub sort: Option<f64>,
+    #[serde(skip_serializing)] // Read-only.
+    pub ttl: Option<i64>,
     #[serde(flatten, skip_serializing)] // Read-only.
     pub unknown_fields: HashMap<String, serde_json::Value>,
 }
@@ -291,6 +296,7 @@ mod tests {
         assert!(obj.auto_fields.created_at.is_none());
         assert!(obj.auto_fields.updated_at.is_none());
         assert!(obj.auto_fields.sort.is_none());
+        assert!(obj.auto_fields.ttl.is_none());
         assert!(obj.auto_fields.unknown_fields.is_empty());
     }
 
@@ -325,6 +331,7 @@ mod tests {
                 nanos: 0,
             }),
             sort: Some(1.0),
+            ttl: Some(1625247602),
             unknown_fields,
         };
 
@@ -337,6 +344,7 @@ mod tests {
         assert_eq!(obj.created_at().unwrap().seconds, 1625247600);
         assert_eq!(obj.updated_at().unwrap().seconds, 1625247601);
         assert_eq!(obj.sort().unwrap(), 1.0);
+        assert_eq!(obj.ttl().unwrap(), 1625247602);
         assert!(obj.has_unknown_fields());
         assert_eq!(obj.unknown_field_keys(), vec![&String::from("key")]);
     }

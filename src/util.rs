@@ -109,6 +109,9 @@ pub struct DynamoUtil<B: DynamoBackendImpl> {
     pub table: String,
 }
 impl<C: DynamoBackendImpl> DynamoUtil<C> {
+    const ITEM_EXISTS_CONDITION: &'static str = "attribute_exists(pk)";
+    const ITEM_DOES_NOT_EXIST_CONDITION: &'static str = "attribute_not_exists(pk)";
+
     pub async fn query<T: DynamoObject>(
         &self,
         index: Option<IndexConfig>,
@@ -404,26 +407,38 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     /// item does not exist, an error is returned. Fields with null values are
     /// removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), GenericServerError> {
-        self.update_item_with_conditions(object, HashMap::default())
-            .await
+        self.update_item_with_conditions(
+            object,
+            HashMap::default(),
+            vec![Self::ITEM_EXISTS_CONDITION.to_string()],
+        )
+        .await
     }
 
     /// Updates an object in an all-or-nothing transaction. If the object has
-    /// changed since it was fetched, the update is not written. If 'op' returns
-    /// an error, the transaction is aborted.
+    /// changed since it was fetched, the update is aborted and returns an
+    /// error. If 'op' returns an error, the transaction is also aborted. If the
+    /// object does not exist, the result of 'op' will be created as a new
+    /// object, and the transaction condition will ensure another object with
+    /// the same ID wasn't created in the meantime.
     pub async fn update_item_transaction<T: DynamoObject>(
         &self,
         id: PkSk,
-        op: impl FnOnce(T) -> Result<T, GenericServerError>,
+        op: impl FnOnce(Option<T>) -> Result<T, GenericServerError>,
     ) -> Result<T, GenericServerError> {
-        let object_before = self
-            .get_item::<T>(id)
-            .await?
-            .ok_or_else(|| DynamoNotFound::default())?;
-        let (map_before, _) =
-            build_dynamo_map_for_existing_obj::<T>(&object_before, IdKeys::None, None)?;
+        let object_before = self.get_item::<T>(id).await?;
+        let (map_before, existance_condition) = match object_before {
+            Some(ref o) => (
+                build_dynamo_map_for_existing_obj::<T>(o, IdKeys::None, None)?.0,
+                Self::ITEM_EXISTS_CONDITION.to_string(),
+            ),
+            None => (
+                HashMap::default(),
+                Self::ITEM_DOES_NOT_EXIST_CONDITION.to_string(),
+            ),
+        };
         let object_after = op(object_before)?;
-        self.update_item_with_conditions::<T>(&object_after, map_before)
+        self.update_item_with_conditions::<T>(&object_after, map_before, vec![existance_condition])
             .await?;
         Ok(object_after)
     }
@@ -431,7 +446,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     async fn update_item_with_conditions<T: DynamoObject>(
         &self,
         object: &T,
-        conditions: HashMap<String, AttributeValue>,
+        attribute_conditions: HashMap<String, AttributeValue>,
+        custom_conditions: Vec<String>,
     ) -> Result<(), GenericServerError> {
         let dbg_cxt: &'static str = "update_item_with_conditions";
         validate_id::<T>(dbg_cxt, object.id())?;
@@ -485,9 +501,10 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let update_expression = format!("{} {}", set_expression, remove_expression);
 
         // Ensure item exists, and any additional custom conditions:
-        let condition_expression = std::iter::once("attribute_exists(pk)".to_string())
+        let condition_expression = custom_conditions
+            .into_iter()
             .chain(
-                conditions
+                attribute_conditions
                     .into_iter()
                     .enumerate()
                     .map(|(idx, (key, value))| {

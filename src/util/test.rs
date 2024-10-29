@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::errors::DynamoNotFound;
     use crate::schema::IdLogic;
     use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL};
     use crate::{
@@ -20,6 +21,7 @@ mod tests {
         types::AttributeValue,
     };
     use chrono::{DateTime, Utc};
+    use core::panic;
     use fractic_core::collection;
     use mockall::predicate::*;
     use serde::{Deserialize, Serialize};
@@ -502,7 +504,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_item_transaction() {
+    async fn test_update_item_transaction_existing() {
         let mut backend = MockDynamoBackendImpl::new();
         backend
             .expect_get_item()
@@ -568,10 +570,85 @@ mod tests {
                     pk: "ABC#123".to_string(),
                     sk: "TEST#321".to_string(),
                 },
-                |mut item| {
+                |item| {
+                    let Some(mut item) = item else {
+                        return Err(DynamoNotFound::default());
+                    };
                     item.data.val_non_null = "new_data".into();
                     item.data.val_nullable = Some("non_null".into());
                     Ok(item)
+                },
+            )
+            .await;
+        assert!(result.is_ok());
+
+        let object_after = result.unwrap();
+        assert_eq!(object_after.data.val_non_null, "new_data");
+        assert_eq!(object_after.data.val_nullable, Some("non_null".into()));
+    }
+
+    #[tokio::test]
+    async fn test_update_item_transaction_new() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_get_item()
+            .withf(|table, _key| table == "my_table")
+            .returning(|_, _| Ok(GetItemOutput::builder().set_item(None).build()));
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "TEST#321"
+                    && update_expr.trim() == "SET #k1 = :v1, #k2 = :v2, #k3 = :v3"
+                    && values.get(":v1").is_some()
+                    && values.get(":v2").is_some()
+                    && values.get(":v3").is_some()
+                    && {
+                        let mut v = vec![
+                            keys.get("#k1").unwrap(),
+                            keys.get("#k2").unwrap(),
+                            keys.get("#k3").unwrap(),
+                        ];
+                        v.sort();
+                        v
+                    } == vec![
+                        &"updated_at".to_string(),
+                        &"val_non_null".to_string(),
+                        &"val_nullable".to_string(),
+                    ]
+                    && keys.get("#rmk1").is_none()
+                    && *condition == Some("attribute_not_exists(pk)".to_string())
+                    && keys.get("#c1").is_none()
+                    && values.get(":cv1").is_none()
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let result = util
+            .update_item_transaction::<TestDynamoObject>(
+                PkSk {
+                    pk: "ABC#123".to_string(),
+                    sk: "TEST#321".to_string(),
+                },
+                |item| {
+                    if item.is_some() {
+                        panic!("Item should not exist");
+                    }
+                    Ok(TestDynamoObject {
+                        id: PkSk {
+                            pk: "ABC#123".to_string(),
+                            sk: "TEST#321".to_string(),
+                        },
+                        data: TestDynamoObjectData {
+                            val_non_null: "new_data".into(),
+                            val_nullable: Some("non_null".into()),
+                        },
+                        auto_fields: Default::default(),
+                    })
                 },
             )
             .await;

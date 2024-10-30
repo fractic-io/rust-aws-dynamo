@@ -249,6 +249,23 @@ pub struct Timestamp {
     pub nanos: u32,
 }
 
+/// Can be used to represent a rare state that can be used in a sparse index
+/// GSI.
+///
+/// Instead of:
+///   #[serde(default)]
+///  pub is_processing: bool,
+///
+/// Can use:
+///   pub is_processing: Option<True>,
+///
+/// Thereby allowing the GSI to only store the rare items that are processing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum True {
+    #[serde(rename = "true")]
+    Unit,
+}
+
 // Tests.
 // ---------------------------
 

@@ -574,8 +574,8 @@ mod tests {
                     let Some(mut item) = item else {
                         return Err(DynamoNotFound::default());
                     };
-                    item.data.val_non_null = "new_data".into();
-                    item.data.val_nullable = Some("non_null".into());
+                    item.val_non_null = "new_data".into();
+                    item.val_nullable = Some("non_null".into());
                     Ok(item)
                 },
             )
@@ -638,16 +638,9 @@ mod tests {
                     if item.is_some() {
                         panic!("Item should not exist");
                     }
-                    Ok(TestDynamoObject {
-                        id: PkSk {
-                            pk: "ABC#123".to_string(),
-                            sk: "TEST#321".to_string(),
-                        },
-                        data: TestDynamoObjectData {
-                            val_non_null: "new_data".into(),
-                            val_nullable: Some("non_null".into()),
-                        },
-                        auto_fields: Default::default(),
+                    Ok(TestDynamoObjectData {
+                        val_non_null: "new_data".into(),
+                        val_nullable: Some("non_null".into()),
                     })
                 },
             )

@@ -7,6 +7,9 @@ impl Timestamp {
     pub fn now() -> Self {
         Self::from_utc_datetime(&chrono::Utc::now())
     }
+    pub fn from_seconds(seconds: i64) -> Self {
+        Self { seconds, nanos: 0 }
+    }
     pub fn from_utc_datetime(dt: &chrono::DateTime<chrono::Utc>) -> Self {
         Self {
             seconds: dt.timestamp(),

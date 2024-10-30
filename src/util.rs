@@ -424,9 +424,9 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn update_item_transaction<T: DynamoObject>(
         &self,
         id: PkSk,
-        op: impl FnOnce(Option<T>) -> Result<T, GenericServerError>,
+        op: impl FnOnce(Option<T::Data>) -> Result<T::Data, GenericServerError>,
     ) -> Result<T, GenericServerError> {
-        let object_before = self.get_item::<T>(id).await?;
+        let object_before = self.get_item::<T>(id.clone()).await?;
         let (map_before, existance_condition) = match object_before {
             Some(ref o) => (
                 build_dynamo_map_for_existing_obj::<T>(o, IdKeys::None, None)?.0,
@@ -437,7 +437,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 Self::ITEM_DOES_NOT_EXIST_CONDITION.to_string(),
             ),
         };
-        let object_after = op(object_before)?;
+        let object_after = T::new(id, op(object_before.map(|o| o.into_data()))?);
         self.update_item_with_conditions::<T>(&object_after, map_before, vec![existance_condition])
             .await?;
         Ok(object_after)

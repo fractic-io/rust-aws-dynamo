@@ -35,12 +35,14 @@ pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
 pub const AUTO_FIELDS_SORT: &str = "sort";
 pub const AUTO_FIELDS_TTL: &str = "ttl";
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
     BeginsWith,
     Equals,
     GreaterThan,
     GreaterThanOrEquals,
+    SuffixGreaterThan(char),
+    SuffixGreaterThanOrEquals(char),
 }
 
 #[derive(Debug)]
@@ -175,10 +177,46 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                     partition_field, sort_field
                 )
             }
+            DynamoQueryMatchType::SuffixGreaterThan(_) => {
+                format!(
+                    "{pk} = :pk_val AND begins_with({sk}, :sk_prefix) AND {sk} > :sk_val",
+                    pk = partition_field,
+                    sk = sort_field
+                )
+            }
+            DynamoQueryMatchType::SuffixGreaterThanOrEquals(_) => {
+                format!(
+                    "{pk} = :pk_val AND begins_with({sk}, :sk_prefix) AND {sk} >= :sk_val",
+                    pk = partition_field,
+                    sk = sort_field
+                )
+            }
         }
         .to_string();
         let mut attribute_values = HashMap::new();
         attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
+        match match_type {
+            DynamoQueryMatchType::SuffixGreaterThan(delim)
+            | DynamoQueryMatchType::SuffixGreaterThanOrEquals(delim) => {
+                attribute_values.insert(
+                ":sk_prefix".to_string(),
+                AttributeValue::S(
+                    id.sk
+                        .rsplit_once(delim)
+                        .ok_or_else(|| {
+                            DynamoInvalidOperation::with_debug(
+                                dbg_cxt,
+                                "Sort field filter did not contain the delimiter char, so could not extract the prefix for matching.",
+                                id.sk.clone(),
+                            )
+                        })?
+                        .0
+                        .to_string(),
+                ),
+            );
+            }
+            _ => {}
+        }
         if !id.sk.is_empty() {
             attribute_values.insert(":sk_val".to_string(), AttributeValue::S(id.sk));
         }

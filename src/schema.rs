@@ -107,6 +107,8 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
 
     // Data:
     fn data(&self) -> &Self::Data;
+    fn data_mut(&mut self) -> &mut Self::Data;
+    fn into_data(self) -> Self::Data;
 
     // Auto-fields accessors:
     fn auto_fields(&self) -> &AutoFields;
@@ -172,6 +174,12 @@ macro_rules! dynamo_object {
             }
             fn data(&self) -> &Self::Data {
                 &self.data
+            }
+            fn data_mut(&mut self) -> &mut Self::Data {
+                &mut self.data
+            }
+            fn into_data(self) -> Self::Data {
+                self.data
             }
             fn auto_fields(&self) -> &AutoFields {
                 &self.auto_fields

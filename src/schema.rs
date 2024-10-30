@@ -15,16 +15,16 @@ pub enum IdLogic<T: DynamoObjectData> {
     // <new-obj-id>: LABEL#<uuid>
     Uuid,
 
-    // New IDs are generated based on epoch timestamp. Can be used for efficient
-    // date-based ordering and filtering, since the date range can be directly
-    // filtered in the query.
+    // New IDs are generated based on epoch timestamp in milliseconds. Can be
+    // used for efficient date-based ordering and filtering, since the date
+    // range can be directly filtered in the query.
     //
     // However, a couple important things to consider:
     // - Object creation date is leaked to users by object ID.
     // - IDs are "guessable", which could be a security concern.
     // - If multiple children for the same parent are written in the same
-    // second, they will have the same ID, and the second write will overwrite
-    // the first.
+    // millisecond, they will have the same ID, and the second write will
+    // overwrite the first.
     // - Changing ID logic later can be very risky / complex, so should consider
     // all future use-cases from the beginning.
     //

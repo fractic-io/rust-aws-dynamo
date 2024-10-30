@@ -29,7 +29,7 @@ fn _uuid_16_chars() -> String {
 }
 
 fn _epoch_timestamp_16_chars() -> String {
-    let timestamp = chrono::Utc::now().timestamp();
+    let timestamp = chrono::Utc::now().timestamp_millis();
     format!("{:016}", timestamp)
 }
 
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn test_generate_timestamp() {
         let timestamp_1 = _epoch_timestamp_16_chars();
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_millis(2));
         let timestamp_2 = _epoch_timestamp_16_chars();
         assert_eq!(timestamp_1.len(), 16);
         assert_eq!(timestamp_2.len(), 16);

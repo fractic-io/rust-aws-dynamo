@@ -41,8 +41,10 @@ pub enum DynamoQueryMatchType {
     Equals,
     GreaterThan,
     GreaterThanOrEquals,
-    SuffixGreaterThan(char),
+    LessThan,
+    LessThanOrEquals,
     SuffixGreaterThanOrEquals(char),
+    SuffixLessThanOrEquals(char),
 }
 
 #[derive(Debug)]
@@ -177,18 +179,25 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                     partition_field, sort_field
                 )
             }
-            DynamoQueryMatchType::SuffixGreaterThan(_) => {
+            DynamoQueryMatchType::LessThan => {
+                format!("{} = :pk_val AND {} < :sk_val", partition_field, sort_field)
+            }
+            DynamoQueryMatchType::LessThanOrEquals => {
                 format!(
-                    "{pk} = :pk_val AND begins_with({sk}, :sk_prefix) AND {sk} > :sk_val",
-                    pk = partition_field,
-                    sk = sort_field
+                    "{} = :pk_val AND {} <= :sk_val",
+                    partition_field, sort_field
                 )
             }
             DynamoQueryMatchType::SuffixGreaterThanOrEquals(_) => {
                 format!(
-                    "{pk} = :pk_val AND begins_with({sk}, :sk_prefix) AND {sk} >= :sk_val",
-                    pk = partition_field,
-                    sk = sort_field
+                    "{} = :pk_val AND {} BETWEEN :sk_val AND :sk_max",
+                    partition_field, sort_field
+                )
+            }
+            DynamoQueryMatchType::SuffixLessThanOrEquals(_) => {
+                format!(
+                    "{} = :pk_val AND {} BETWEEN :sk_min AND :sk_val",
+                    partition_field, sort_field
                 )
             }
         }
@@ -196,24 +205,46 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         let mut attribute_values = HashMap::new();
         attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
         match match_type {
-            DynamoQueryMatchType::SuffixGreaterThan(delim)
-            | DynamoQueryMatchType::SuffixGreaterThanOrEquals(delim) => {
+            DynamoQueryMatchType::SuffixGreaterThanOrEquals(delim) => {
+                // '~' is the last ASCII character, so we can use it as an upper
+                // bound to limit the query to a given prefix (similar to using
+                // begins_with). Since queries can only have one condition per
+                // key, this allows us to effectively do >= and begins_with at
+                // the same time, by using a BETWEEN condition.
                 attribute_values.insert(
-                ":sk_prefix".to_string(),
-                AttributeValue::S(
-                    id.sk
-                        .rsplit_once(delim)
-                        .ok_or_else(|| {
-                            DynamoInvalidOperation::with_debug(
-                                dbg_cxt,
-                                "Sort field filter did not contain the delimiter char, so could not extract the prefix for matching.",
-                                id.sk.clone(),
-                            )
-                        })?
-                        .0
-                        .to_string(),
-                ),
-            );
+                    ":sk_max".to_string(),
+                    AttributeValue::S(format!(
+                        "{}~",
+                        id.sk
+                            .rsplit_once(delim)
+                            .ok_or_else(|| {
+                                DynamoInvalidOperation::with_debug(
+                                    dbg_cxt,
+                                    "Sort field filter did not contain the delimiter char, so could not extract the prefix for matching.",
+                                    id.sk.clone(),
+                                )
+                            })?
+                            .0
+                    )),
+                );
+            }
+            DynamoQueryMatchType::SuffixLessThanOrEquals(delim) => {
+                attribute_values.insert(
+                    ":sk_min".to_string(),
+                    AttributeValue::S(format!(
+                        "{}",
+                        id.sk
+                            .rsplit_once(delim)
+                            .ok_or_else(|| {
+                                DynamoInvalidOperation::with_debug(
+                                    dbg_cxt,
+                                    "Sort field filter did not contain the delimiter char, so could not extract the prefix for matching.",
+                                    id.sk.clone(),
+                                )
+                            })?
+                            .0
+                    )),
+                );
             }
             _ => {}
         }

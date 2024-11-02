@@ -229,8 +229,9 @@ mod tests {
                     "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                     "sk".to_string() => AttributeValue::S("GROUP#123#TEST#2".to_string())
                 }),
+                eq(None),
             )
-            .returning(|_, _| {
+            .returning(|_, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(build_item_high_sort().1))
                     .build())
@@ -255,6 +256,62 @@ mod tests {
         assert_eq!(item.sk(), "GROUP#123#TEST#2");
         assert_eq!(item.data.val_non_null, "high_sort".to_string());
         assert_eq!(item.data.val_nullable, None);
+    }
+
+    #[tokio::test]
+    async fn test_item_exists() {
+        let mut backend = MockDynamoBackendImpl::new();
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("GROUP#123#TEST#2".to_string())
+                }),
+                eq(Some("pk".to_string())),
+            )
+            .returning(|_, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    }))
+                    .build())
+            });
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("NOT_EXISTS#456".to_string())
+                }),
+                eq(Some("pk".to_string())),
+            )
+            .returning(|_, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
+
+        let util = DynamoUtil {
+            backend,
+            table: "my_table".to_string(),
+        };
+
+        let expect_exists = util
+            .item_exists(PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123#TEST#2".to_string(),
+            })
+            .await;
+        let expect_not_exists = util
+            .item_exists(PkSk {
+                pk: "ROOT".to_string(),
+                sk: "NOT_EXISTS#456".to_string(),
+            })
+            .await;
+
+        assert!(expect_exists.is_ok());
+        assert!(expect_not_exists.is_ok());
+        assert!(expect_exists.unwrap());
+        assert!(!expect_not_exists.unwrap());
     }
 
     #[tokio::test]
@@ -514,8 +571,9 @@ mod tests {
                     "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
                     "sk".to_string() => AttributeValue::S("TEST#321".to_string())
                 }),
+                eq(None),
             )
-            .returning(|_, _| {
+            .returning(|_, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
                         // ID & auto fields should /not/ be included in the
@@ -592,8 +650,8 @@ mod tests {
         let mut backend = MockDynamoBackendImpl::new();
         backend
             .expect_get_item()
-            .withf(|table, _key| table == "my_table")
-            .returning(|_, _| Ok(GetItemOutput::builder().set_item(None).build()));
+            .withf(|table, _key, _projection| table == "my_table")
+            .returning(|_, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
         backend
             .expect_update_item()
             .withf(|_, id, update_expr, values, keys, condition| {

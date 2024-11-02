@@ -43,6 +43,7 @@ pub trait DynamoBackendImpl {
         &self,
         table_name: String,
         key: HashMap<String, AttributeValue>,
+        projection_expression: Option<String>,
     ) -> Result<GetItemOutput, SdkError<GetItemError>>;
 
     async fn put_item(
@@ -125,10 +126,12 @@ impl DynamoBackendImpl for aws_sdk_dynamodb::Client {
         &self,
         table_name: String,
         key: HashMap<String, AttributeValue>,
+        projection_expression: Option<String>,
     ) -> Result<GetItemOutput, SdkError<GetItemError>> {
         self.get_item()
             .set_table_name(Some(table_name))
             .set_key(Some(key))
+            .set_projection_expression(projection_expression)
             .send()
             .await
     }

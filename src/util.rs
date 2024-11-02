@@ -288,13 +288,28 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         };
         let response = self
             .backend
-            .get_item(self.table.clone(), key)
+            .get_item(self.table.clone(), key, None)
             .await
             .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
         response
             .item
             .map(|item| parse_dynamo_map::<T>(&item))
             .transpose()
+    }
+
+    /// Efficiently checks if an item exists, without fetching item data.
+    pub async fn item_exists(&self, id: PkSk) -> Result<bool, GenericServerError> {
+        let dbg_cxt: &'static str = "item_exists";
+        let key = collection! {
+            "pk".to_string() => AttributeValue::S(id.pk),
+            "sk".to_string() => AttributeValue::S(id.sk),
+        };
+        let response = self
+            .backend
+            .get_item(self.table.clone(), key, Some("pk".to_string()))
+            .await
+            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+        Ok(response.item.is_some())
     }
 
     pub async fn create_item<T: DynamoObject>(

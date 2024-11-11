@@ -1,4 +1,4 @@
-use fractic_generic_server_error::{common::CriticalError, GenericServerError};
+use fractic_server_error::{common::CriticalError, GenericServerError};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::Timestamp;

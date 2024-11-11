@@ -11,7 +11,7 @@ use backend::DynamoBackendImpl;
 use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
 use fractic_core::collection;
-use fractic_generic_server_error::GenericServerError;
+use fractic_server_error::GenericServerError;
 
 use crate::{
     errors::{DynamoConnectionError, DynamoInvalidOperation, DynamoNotFound},

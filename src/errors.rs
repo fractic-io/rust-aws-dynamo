@@ -1,4 +1,4 @@
-use fractic_generic_server_error::{
+use fractic_server_error::{
     define_internal_error_type, define_user_visible_error_type, GenericServerError,
     GenericServerErrorTrait,
 };

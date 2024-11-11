@@ -1,7 +1,7 @@
 // Internal ID calculations. Clients should use PkSk instead.
 
 use aws_sdk_dynamodb::types::AttributeValue;
-use fractic_generic_server_error::{common::CriticalError, GenericServerError};
+use fractic_server_error::{common::CriticalError, GenericServerError};
 
 use crate::{
     errors::{DynamoInvalidId, DynamoInvalidParent},

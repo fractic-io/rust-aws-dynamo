@@ -1,6 +1,6 @@
 use std::fmt;
 
-use fractic_generic_server_error::GenericServerError;
+use fractic_server_error::GenericServerError;
 use serde::{
     de::{self},
     Deserialize, Deserializer, Serialize, Serializer,

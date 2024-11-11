@@ -16,7 +16,7 @@ use aws_sdk_dynamodb::{
 };
 use fractic_core::collection;
 use fractic_env_config::EnvVariables;
-use fractic_generic_server_error::GenericServerError;
+use fractic_server_error::GenericServerError;
 use mockall::automock;
 
 use crate::env::DynamoEnvConfig;

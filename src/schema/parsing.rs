@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use aws_sdk_dynamodb::types::AttributeValue;
-use fractic_generic_server_error::{common::CriticalError, GenericServerError};
+use fractic_server_error::{common::CriticalError, GenericServerError};
 use serde::Serialize;
 
 use crate::{errors::DynamoItemParsingError, schema::DynamoObject, util::DynamoMap};

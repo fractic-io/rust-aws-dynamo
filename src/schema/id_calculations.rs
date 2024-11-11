@@ -113,7 +113,11 @@ pub(crate) fn get_pk_sk_from_string(id: &str) -> Result<(&str, &str), GenericSer
     if let Some((pk, sk)) = id.split_once('|') {
         Ok((pk, sk))
     } else {
-        Err(DynamoInvalidId::new(dbg_cxt, "not in format pk|sk"))
+        Err(DynamoInvalidId::with_debug(
+            dbg_cxt,
+            "not in format pk|sk",
+            id.to_string(),
+        ))
     }
 }
 

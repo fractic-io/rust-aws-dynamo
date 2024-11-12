@@ -630,7 +630,7 @@ mod tests {
                 },
                 |item| {
                     let Some(mut item) = item else {
-                        return Err(DynamoNotFound::default());
+                        return Err(DynamoNotFound::new());
                     };
                     item.val_non_null = "new_data".into();
                     item.val_nullable = Some("non_null".into());

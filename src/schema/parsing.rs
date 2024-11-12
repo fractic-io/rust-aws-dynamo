@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use aws_sdk_dynamodb::types::AttributeValue;
-use fractic_server_error::{common::CriticalError, GenericServerError};
+use fractic_server_error::{CriticalError, ServerError};
 use serde::Serialize;
 
 use crate::{errors::DynamoItemParsingError, schema::DynamoObject, util::DynamoMap};
@@ -20,7 +20,7 @@ pub fn build_dynamo_map_for_new_obj<T: DynamoObject>(
     pk: String,
     sk: String,
     overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
-) -> Result<DynamoMap, GenericServerError> {
+) -> Result<DynamoMap, ServerError> {
     // For new objects, skipped null keys are not important.
     let (dynamo_map, _skipped_null_keys) =
         build_dynamo_map_internal(data, Some(pk), Some(sk), overrides)?;
@@ -36,7 +36,7 @@ pub fn build_dynamo_map_for_existing_obj<T: DynamoObject>(
     object: &T,
     id_keys: IdKeys,
     overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
-) -> Result<(DynamoMap, Vec<String>), GenericServerError> {
+) -> Result<(DynamoMap, Vec<String>), ServerError> {
     let (pk, sk) = match id_keys {
         IdKeys::Override(pk, sk) => (Some(pk), Some(sk)),
         IdKeys::CopyFromObject => (Some(object.id().pk.clone()), Some(object.id().sk.clone())),
@@ -50,16 +50,13 @@ fn build_dynamo_map_internal<T: Serialize>(
     pk: Option<String>,
     sk: Option<String>,
     overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
-) -> Result<(DynamoMap, Vec<String>), GenericServerError> {
-    let dbg_cxt: &'static str = "build_dynamo_map";
-
+) -> Result<(DynamoMap, Vec<String>), ServerError> {
     // Keep track of skipped null values, as they may be important to the caller.
     let mut skipped_null_keys: Vec<String> = Vec::new();
 
     // DynamoObject -> Serde value.
-    let json_value = serde_json::to_value(&object).map_err(|e| {
-        DynamoItemParsingError::with_debug(dbg_cxt, "failed to serialize object", e.to_string())
-    })?;
+    let json_value = serde_json::to_value(&object)
+        .map_err(|e| DynamoItemParsingError::with_debug("failed to serialize object", &e))?;
 
     // Serde value -> DynamoMap.
     let mut attribute_values: HashMap<String, AttributeValue> = HashMap::new();
@@ -79,11 +76,10 @@ fn build_dynamo_map_internal<T: Serialize>(
             }
         }
         unsupported => {
-            return Err(DynamoItemParsingError::with_debug(
-                dbg_cxt,
-                "can't build DynamoMap from object",
-                format!("{:?}", unsupported),
-            ))
+            return Err(DynamoItemParsingError::new(&format!(
+                "can't build DynamoMap from type '{:?}'",
+                unsupported
+            )))
         }
     }
 
@@ -99,11 +95,7 @@ fn build_dynamo_map_internal<T: Serialize>(
     if let Some(overrides) = overrides {
         for (key, value) in overrides.into_iter() {
             let json_value = serde_json::to_value(&value).map_err(|e| {
-                DynamoItemParsingError::with_debug(
-                    dbg_cxt,
-                    "failed to serialize override object",
-                    e.to_string(),
-                )
+                DynamoItemParsingError::with_debug("failed to serialize override object", &e)
             })?;
             if let Some(v) = serde_value_to_attribute_value(json_value)? {
                 attribute_values.insert(key.into(), v);
@@ -116,9 +108,7 @@ fn build_dynamo_map_internal<T: Serialize>(
     Ok((attribute_values, skipped_null_keys))
 }
 
-pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, GenericServerError> {
-    let dbg_cxt: &'static str = "parse_dynamo_map";
-
+pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerError> {
     // DynamoMap -> Serde value.
     let mut serde_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     for (key, value) in map.iter() {
@@ -139,22 +129,17 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, GenericSe
             (Some(pk), Some(sk)) => serde_json::Value::String(format!(
                 "{}|{}",
                 pk.as_s()
-                    .map_err(|_| CriticalError::new(dbg_cxt, "pk was not string"))?,
+                    .map_err(|_| CriticalError::new("pk was not string"))?,
                 sk.as_s()
-                    .map_err(|_| CriticalError::new(dbg_cxt, "sk was not string"))?,
+                    .map_err(|_| CriticalError::new("sk was not string"))?,
             )),
             _ => serde_json::Value::Null,
         },
     );
 
     // Serde value -> DynamoObject.
-    serde_json::from_value(serde_json::Value::Object(serde_map)).map_err(|e| {
-        DynamoItemParsingError::with_debug(
-            dbg_cxt,
-            "failed to convert from Serde value",
-            e.to_string(),
-        )
-    })
+    serde_json::from_value(serde_json::Value::Object(serde_map))
+        .map_err(|e| DynamoItemParsingError::with_debug("failed to convert from Serde value", &e))
 }
 
 // Inner recursive functions.
@@ -162,7 +147,7 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, GenericSe
 
 fn serde_value_to_attribute_value(
     value: serde_json::Value,
-) -> Result<Option<AttributeValue>, GenericServerError> {
+) -> Result<Option<AttributeValue>, ServerError> {
     match value {
         serde_json::Value::Null => Ok(None),
         serde_json::Value::String(s) => Ok(Some(AttributeValue::S(s))),
@@ -175,7 +160,7 @@ fn serde_value_to_attribute_value(
                 .filter_map(|(k, v)| Some((k, serde_value_to_attribute_value(v).transpose()?)))
                 // Catch any conversion errors.
                 .map(|(k, v)| Ok((k, v?)))
-                .collect::<Result<HashMap<String, AttributeValue>, GenericServerError>>()?,
+                .collect::<Result<HashMap<String, AttributeValue>, ServerError>>()?,
         ))),
         serde_json::Value::Array(array) => {
             Ok(Some(AttributeValue::L(
@@ -188,7 +173,7 @@ fn serde_value_to_attribute_value(
                             None => AttributeValue::Null(true),
                         })
                     })
-                    .collect::<Result<Vec<_>, GenericServerError>>()?,
+                    .collect::<Result<Vec<_>, ServerError>>()?,
             )))
         }
     }
@@ -196,14 +181,15 @@ fn serde_value_to_attribute_value(
 
 fn attribute_value_to_serde_value(
     value: AttributeValue,
-) -> Result<Option<serde_json::Value>, GenericServerError> {
-    let dbg_cxt: &'static str = "attribute_value_to_serde_value";
+) -> Result<Option<serde_json::Value>, ServerError> {
     match value {
         AttributeValue::Null(_) => Ok(None),
         AttributeValue::S(s) => Ok(Some(serde_json::Value::String(s))),
-        AttributeValue::N(n) => Ok(Some(serde_json::Value::Number(n.parse().map_err(|e| {
-            DynamoItemParsingError::with_debug(dbg_cxt, "failed to parse number", format!("{}", e))
-        })?))),
+        AttributeValue::N(n) => {
+            Ok(Some(serde_json::Value::Number(n.parse().map_err(|e| {
+                DynamoItemParsingError::with_debug("failed to parse number", &e)
+            })?)))
+        }
         AttributeValue::Bool(b) => Ok(Some(serde_json::Value::Bool(b))),
         AttributeValue::M(map) => Ok(Some(serde_json::Value::Object(
             map.into_iter()
@@ -212,8 +198,7 @@ fn attribute_value_to_serde_value(
                 .filter_map(|(k, v)| Some((k, attribute_value_to_serde_value(v).transpose()?)))
                 // Catch any conversion errors.
                 .map(|(k, v)| Ok((k, v?)))
-                .collect::<Result<serde_json::Map<String, serde_json::Value>, GenericServerError>>(
-                )?,
+                .collect::<Result<serde_json::Map<String, serde_json::Value>, ServerError>>()?,
         ))),
         AttributeValue::L(array) => Ok(Some(serde_json::Value::Array(
             array
@@ -225,13 +210,12 @@ fn attribute_value_to_serde_value(
                         None => serde_json::Value::Null,
                     })
                 })
-                .collect::<Result<Vec<_>, GenericServerError>>()?,
+                .collect::<Result<Vec<_>, ServerError>>()?,
         ))),
-        unsupported => Err(DynamoItemParsingError::with_debug(
-            dbg_cxt,
-            "unsupported AttributeValue type",
-            format!("{:?}", unsupported),
-        )),
+        unsupported => Err(DynamoItemParsingError::new(&format!(
+            "unsupported AttributeValue type '{:?}'",
+            unsupported
+        ))),
     }
 }
 

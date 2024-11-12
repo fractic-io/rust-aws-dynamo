@@ -16,7 +16,7 @@ use aws_sdk_dynamodb::{
 };
 use fractic_core::collection;
 use fractic_env_config::EnvVariables;
-use fractic_server_error::GenericServerError;
+use fractic_server_error::ServerError;
 use mockall::automock;
 
 use crate::env::DynamoEnvConfig;
@@ -89,7 +89,7 @@ impl DynamoUtil<aws_sdk_dynamodb::Client> {
     pub async fn new(
         env: EnvVariables<DynamoEnvConfig>,
         table: impl Into<String>,
-    ) -> Result<Self, GenericServerError> {
+    ) -> Result<Self, ServerError> {
         let region_str = env.get(&DynamoEnvConfig::DynamoRegion)?;
         let region = Region::new(region_str.clone());
         let shared_config = aws_config::defaults(BehaviorVersion::v2024_03_28())

@@ -1,14 +1,24 @@
-use fractic_server_error::{
-    define_internal_error_type, define_user_visible_error_type, GenericServerError,
-    GenericServerErrorTrait,
-};
+use fractic_server_error::{define_client_error, define_internal_error, define_user_error};
 
-define_user_visible_error_type!(DynamoNotFound, "Requested item does not exist.");
-define_internal_error_type!(DynamoConnectionError, "Generic DynamoDB error.");
-define_internal_error_type!(DynamoItemParsingError, "DynamoDB item parsing error.");
-define_internal_error_type!(DynamoInvalidOperation, "Invalid DynamoDB operation.");
-define_internal_error_type!(DynamoInvalidId, "DynamoDB invalid ID.");
-define_internal_error_type!(
+define_user_error!(DynamoNotFound, "Requested item does not exist.");
+define_internal_error!(DynamoCalloutError, "Generic DynamoDB error.");
+define_internal_error!(
+    DynamoItemParsingError,
+    "DynamoDB item parsing error: {details}.",
+    { details: &str }
+);
+define_client_error!(
+    DynamoInvalidId,
+    "DynamoDB invalid ID: {details}.",
+    { details: &str }
+);
+define_client_error!(
+    DynamoInvalidOperation,
+    "Invalid DynamoDB operation: {details}.",
+    { details: &str }
+);
+define_client_error!(
     DynamoInvalidParent,
-    "Invalid DynamoDB operation: invalid parent object type."
+    "Invalid parent object type: {details}.",
+    { details: &str }
 );

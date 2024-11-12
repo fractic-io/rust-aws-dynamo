@@ -1,7 +1,7 @@
 // Internal ID calculations. Clients should use PkSk instead.
 
 use aws_sdk_dynamodb::types::AttributeValue;
-use fractic_server_error::{common::CriticalError, GenericServerError};
+use fractic_server_error::{CriticalError, ServerError};
 
 use crate::{
     errors::{DynamoInvalidId, DynamoInvalidParent},
@@ -37,24 +37,19 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     data: &T::Data,
     parent_pk: &str,
     parent_sk: &str,
-) -> Result<(String, String), GenericServerError> {
-    let dbg_cxt: &'static str = "generate_pk_sk";
+) -> Result<(String, String), ServerError> {
     // Validate parent ID:
     if is_singleton(parent_pk, parent_sk) {
-        return Err(DynamoInvalidParent::new(
-            dbg_cxt,
-            "Singletons cannot have children.",
-        ));
+        return Err(DynamoInvalidParent::new("singletons cannot have children"));
     }
     match T::nesting_logic() {
         NestingLogic::InlineChildOf(ptype_req) | NestingLogic::TopLevelChildOf(ptype_req) => {
             let ptype = get_object_type(parent_pk, parent_sk)?;
             if ptype != ptype_req {
-                return Err(DynamoInvalidParent::with_debug(
-                    dbg_cxt,
-                    "",
-                    format!("{} != {}", ptype, ptype_req),
-                ));
+                return Err(DynamoInvalidParent::new(&format!(
+                    "{} != {}",
+                    ptype, ptype_req
+                )));
             }
         }
         _ => {}
@@ -82,11 +77,7 @@ pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
     sk.contains('@')
 }
 
-pub(crate) fn get_object_type<'a>(
-    _pk: &'a str,
-    sk: &'a str,
-) -> Result<&'a str, GenericServerError> {
-    let dbg_cxt: &'static str = "get_object_type";
+pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, ServerError> {
     if let Some(pos) = sk.find('@') {
         // '@' indicates object is a singleton. In this case, the only label
         // that matters is the @LABEL, which can by extracted by getting the
@@ -100,7 +91,10 @@ pub(crate) fn get_object_type<'a>(
         // PARENT#uuid#CHILD#uuid#... format.
         let split: Vec<&str> = sk.split('#').collect();
         if split.len() < 2 {
-            Err(DynamoInvalidId::new(dbg_cxt, "sk not in LABEL#uuid format"))
+            Err(DynamoInvalidId::with_debug(
+                "sk not in LABEL#uuid format",
+                &sk.to_string(),
+            ))
         } else {
             Ok(split[split.len() - 2])
         }
@@ -108,23 +102,17 @@ pub(crate) fn get_object_type<'a>(
 }
 
 // Helper function to grab the pk/sk from a "pk|sk" string.
-pub(crate) fn get_pk_sk_from_string(id: &str) -> Result<(&str, &str), GenericServerError> {
-    let dbg_cxt: &'static str = "get_pk_sk_from_string";
+pub(crate) fn get_pk_sk_from_string(id: &str) -> Result<(&str, &str), ServerError> {
     if let Some((pk, sk)) = id.split_once('|') {
         Ok((pk, sk))
     } else {
-        Err(DynamoInvalidId::with_debug(
-            dbg_cxt,
-            "not in format pk|sk",
-            id.to_string(),
-        ))
+        Err(DynamoInvalidId::with_debug("not in format pk|sk", &id))
     }
 }
 
 // Helper function to grab or update the pk/sk from a DynamoMap.
-pub(crate) fn get_pk_sk_from_map(map: &DynamoMap) -> Result<(&str, &str), GenericServerError> {
-    let dbg_cxt: &'static str = "get_pk_sk_from_map";
-    let gen_err = || CriticalError::new(dbg_cxt, "DynamoMap did not contain pk/sk fields!");
+pub(crate) fn get_pk_sk_from_map(map: &DynamoMap) -> Result<(&str, &str), ServerError> {
+    let gen_err = || CriticalError::new("DynamoMap did not contain pk/sk fields!");
     Ok((
         map.get("pk")
             .ok_or_else(|| gen_err())?
@@ -397,7 +385,7 @@ mod tests {
         assert!(result.is_err());
         if let Err(err) = result {
             let err_msg = err.to_string();
-            assert!(err_msg.contains("Singletons cannot have children."));
+            assert!(err_msg.contains("singletons cannot have children"));
         } else {
             panic!("Expected error but got Ok");
         }

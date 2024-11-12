@@ -11,10 +11,10 @@ use backend::DynamoBackendImpl;
 use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
 use fractic_core::collection;
-use fractic_server_error::GenericServerError;
+use fractic_server_error::ServerError;
 
 use crate::{
-    errors::{DynamoConnectionError, DynamoInvalidOperation, DynamoNotFound},
+    errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoNotFound},
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
         parsing::{
@@ -81,16 +81,14 @@ pub struct CreateOptions {
     pub ttl: Option<TtlConfig>,
 }
 
-fn validate_id<T: DynamoObject>(
-    dbg_cxt: &'static str,
-    id: &PkSk,
-) -> Result<(), GenericServerError> {
+#[track_caller]
+fn validate_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError> {
     if id.object_type()? != T::id_label() {
-        return Err(DynamoInvalidOperation::with_debug(
-            dbg_cxt,
-            "ID does not match object type.",
-            format!("Expected object type: {}, got ID: {}", T::id_label(), id),
-        ));
+        return Err(DynamoInvalidOperation::new(&format!(
+            "ID does not match object type; expected object type '{}', got ID '{}'",
+            T::id_label(),
+            id
+        )));
     }
     Ok(())
 }
@@ -121,13 +119,13 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         index: Option<IndexConfig>,
         id: PkSk,
         match_type: DynamoQueryMatchType,
-    ) -> Result<Vec<T>, GenericServerError> {
+    ) -> Result<Vec<T>, ServerError> {
         self.query_generic(index, id, match_type)
             .await?
             .into_iter()
             .filter_map(|item| {
                 let (pk, sk) =
-                    get_pk_sk_from_map(&item).expect("Query result item did not have pk/sk.");
+                    get_pk_sk_from_map(&item).expect("query result item did not have pk/sk.");
                 match get_object_type(pk, sk) {
                     Ok(label) if label == T::id_label() => {
                         // Item is of type T.
@@ -141,7 +139,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                     }
                 }
             })
-            .collect::<Result<Vec<T>, GenericServerError>>()
+            .collect::<Result<Vec<T>, ServerError>>()
     }
 
     pub async fn query_generic(
@@ -149,8 +147,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         index: Option<IndexConfig>,
         id: PkSk,
         match_type: DynamoQueryMatchType,
-    ) -> Result<Vec<DynamoMap>, GenericServerError> {
-        let dbg_cxt: &'static str = "query_generic";
+    ) -> Result<Vec<DynamoMap>, ServerError> {
         let (index_name, partition_field, sort_field) = match index {
             Some(index) => (
                 Some(index.name.to_string()),
@@ -219,9 +216,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                             .rsplit_once(delim)
                             .ok_or_else(|| {
                                 DynamoInvalidOperation::with_debug(
-                                    dbg_cxt,
-                                    "Sort field filter did not contain the delimiter char, so could not extract the prefix for matching.",
-                                    id.sk.clone(),
+                                    "sort field filter did not contain the delimiter char, so could not extract the prefix for matching",
+                                    &id.sk,
                                 )
                             })?
                             .0
@@ -237,9 +233,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                             .rsplit_once(delim)
                             .ok_or_else(|| {
                                 DynamoInvalidOperation::with_debug(
-                                    dbg_cxt,
-                                    "Sort field filter did not contain the delimiter char, so could not extract the prefix for matching.",
-                                    id.sk.clone(),
+                                    "sort field filter did not contain the delimiter char, so could not extract the prefix for matching",
+                                    &id.sk,
                                 )
                             })?
                             .0
@@ -255,7 +250,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .backend
             .query(self.table.clone(), index_name, condition, attribute_values)
             .await
-            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         let mut items = response.items().to_vec();
         items.sort_by(|a, b| {
             let a_sort = a
@@ -276,12 +271,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         Ok(items.to_vec())
     }
 
-    pub async fn get_item<T: DynamoObject>(
-        &self,
-        id: PkSk,
-    ) -> Result<Option<T>, GenericServerError> {
-        let dbg_cxt: &'static str = "get_item";
-        validate_id::<T>(dbg_cxt, &id)?;
+    pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {
+        validate_id::<T>(&id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
@@ -290,7 +281,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .backend
             .get_item(self.table.clone(), key, None)
             .await
-            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         response
             .item
             .map(|item| parse_dynamo_map::<T>(&item))
@@ -298,8 +289,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     }
 
     /// Efficiently checks if an item exists, without fetching item data.
-    pub async fn item_exists(&self, id: PkSk) -> Result<bool, GenericServerError> {
-        let dbg_cxt: &'static str = "item_exists";
+    pub async fn item_exists(&self, id: PkSk) -> Result<bool, ServerError> {
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
@@ -308,7 +298,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .backend
             .get_item(self.table.clone(), key, Some("pk".to_string()))
             .await
-            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         Ok(response.item.is_some())
     }
 
@@ -317,8 +307,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         parent_id: PkSk,
         data: T::Data,
         options: Option<CreateOptions>,
-    ) -> Result<T, GenericServerError> {
-        let dbg_cxt: &'static str = "create_item";
+    ) -> Result<T, ServerError> {
         let (new_pk, new_sk) = generate_pk_sk::<T>(&data, &parent_id.pk, &parent_id.sk)?;
         let sort: Option<f64> = options.as_ref().and_then(|o| o.custom_sort);
         let ttl: Option<i64> = options
@@ -339,7 +328,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         self.backend
             .put_item(self.table.clone(), map)
             .await
-            .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         Ok(T::new(
             PkSk {
                 pk: new_pk,
@@ -353,12 +342,10 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         &self,
         parent_id: PkSk,
         data_and_options: Vec<(T::Data, Option<CreateOptions>)>,
-    ) -> Result<Vec<T>, GenericServerError> {
-        let dbg_cxt: &'static str = "batch_create_item";
+    ) -> Result<Vec<T>, ServerError> {
         if matches!(T::id_logic(), IdLogic::Timestamp) {
             return Err(DynamoInvalidOperation::new(
-                dbg_cxt,
-                "batch_create_item is not allowed with timestamp-based IDs, since all items would get the same ID and only one item would be written.",
+                "batch_create_item is not allowed with timestamp-based IDs, since all items would get the same ID and only one item would be written",
             ));
         }
         if data_and_options.is_empty() {
@@ -391,7 +378,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                     },
                 ))
             })
-            .collect::<Result<Vec<(DynamoMap, PkSk)>, GenericServerError>>()?
+            .collect::<Result<Vec<(DynamoMap, PkSk)>, ServerError>>()?
             .into_iter()
             .unzip();
         // Split into 25-item chunks (max supported by DynamoDB).
@@ -399,7 +386,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             self.backend
                 .batch_put_item(self.table.clone(), chunk.to_vec())
                 .await
-                .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         }
         Ok(ids
             .into_iter()
@@ -430,14 +417,12 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         parent_id: PkSk,
         data: T::Data,
         insert_position: DynamoInsertPosition,
-    ) -> Result<T, GenericServerError> {
-        let dbg_cxt: &'static str = "create_item_ordered";
+    ) -> Result<T, ServerError> {
         let sort_val =
             calculate_sort_values::<T, _>(self, parent_id.clone(), &data, insert_position, 1)
                 .await?
                 .pop()
                 .ok_or(DynamoInvalidOperation::new(
-                    dbg_cxt,
                     "failed to generate new ordered ID",
                 ))?;
         self.create_item::<T>(
@@ -456,7 +441,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         parent_id: PkSk,
         data: Vec<T::Data>,
         insert_position: DynamoInsertPosition,
-    ) -> Result<Vec<T>, GenericServerError> {
+    ) -> Result<Vec<T>, ServerError> {
         if data.is_empty() {
             return Ok(Vec::new());
         }
@@ -490,7 +475,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     /// update_item instead of put_item, unrecognized fields unaffected. If the
     /// item does not exist, an error is returned. Fields with null values are
     /// removed from the item.
-    pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), GenericServerError> {
+    pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), ServerError> {
         self.update_item_with_conditions(
             object,
             HashMap::default(),
@@ -508,8 +493,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn update_item_transaction<T: DynamoObject>(
         &self,
         id: PkSk,
-        op: impl FnOnce(Option<T::Data>) -> Result<T::Data, GenericServerError>,
-    ) -> Result<T, GenericServerError> {
+        op: impl FnOnce(Option<T::Data>) -> Result<T::Data, ServerError>,
+    ) -> Result<T, ServerError> {
         let object_before = self.get_item::<T>(id.clone()).await?;
         let (map_before, existance_condition) = match object_before {
             Some(ref o) => (
@@ -532,9 +517,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         object: &T,
         attribute_conditions: HashMap<String, AttributeValue>,
         custom_conditions: Vec<String>,
-    ) -> Result<(), GenericServerError> {
-        let dbg_cxt: &'static str = "update_item_with_conditions";
-        validate_id::<T>(dbg_cxt, object.id())?;
+    ) -> Result<(), ServerError> {
+        validate_id::<T>(object.id())?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
@@ -613,15 +597,14 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             )
             .await
             .map_err(|e| match e.into_service_error() {
-                UpdateItemError::ResourceNotFoundException(_) => DynamoNotFound::default(),
-                other => DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other)),
+                UpdateItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
+                other => DynamoCalloutError::with_debug(&other),
             })?;
         Ok(())
     }
 
-    pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), GenericServerError> {
-        let dbg_cxt: &'static str = "delete_item";
-        validate_id::<T>(dbg_cxt, &id)?;
+    pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), ServerError> {
+        validate_id::<T>(&id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
@@ -630,8 +613,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             .delete_item(self.table.clone(), key)
             .await
             .map_err(|e| match e.into_service_error() {
-                DeleteItemError::ResourceNotFoundException(_) => DynamoNotFound::default(),
-                other => DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other)),
+                DeleteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
+                other => DynamoCalloutError::with_debug(&other),
             })?;
         Ok(())
     }
@@ -639,17 +622,15 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     pub async fn batch_delete_item<T: DynamoObject>(
         &self,
         keys: Vec<PkSk>,
-    ) -> Result<(), GenericServerError> {
-        let dbg_cxt: &'static str = "batch_delete_item";
+    ) -> Result<(), ServerError> {
         for key in &keys {
-            validate_id::<T>(dbg_cxt, key)?;
+            validate_id::<T>(key)?;
         }
         self.raw_batch_delete_ids(keys).await
     }
 
     /// Performs no checks and directly deletes the given IDs from the database.
-    pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), GenericServerError> {
-        let dbg_cxt: &'static str = "raw_batch_delete_ids";
+    pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), ServerError> {
         if keys.is_empty() {
             return Ok(());
         }
@@ -668,10 +649,8 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
                 .batch_delete_item(self.table.clone(), chunk.to_vec())
                 .await
                 .map_err(|e| match e.into_service_error() {
-                    BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::default(),
-                    other => {
-                        DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", other))
-                    }
+                    BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
+                    other => DynamoCalloutError::with_debug(&other),
                 })?;
         }
         Ok(())
@@ -685,11 +664,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
     /// map values are just directly written.
     ///
     /// Should only be used internally for efficient low-level DB actions.
-    pub async fn raw_batch_put_item(
-        &self,
-        items: Vec<DynamoMap>,
-    ) -> Result<(), GenericServerError> {
-        let dbg_cxt: &'static str = "raw_batch_put_item";
+    pub async fn raw_batch_put_item(&self, items: Vec<DynamoMap>) -> Result<(), ServerError> {
         if items.is_empty() {
             return Ok(());
         }
@@ -698,7 +673,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
             self.backend
                 .batch_put_item(self.table.clone(), chunk.to_vec())
                 .await
-                .map_err(|e| DynamoConnectionError::with_debug(dbg_cxt, "", format!("{:#?}", e)))?;
+                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         }
         Ok(())
     }

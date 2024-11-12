@@ -1,6 +1,6 @@
 use std::fmt;
 
-use fractic_server_error::GenericServerError;
+use fractic_server_error::ServerError;
 use serde::{
     de::{self},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -28,19 +28,17 @@ impl PkSk {
     pub fn generate<T: DynamoObject>(
         data: &T::Data,
         parent_id: &PkSk,
-    ) -> Result<PkSk, GenericServerError> {
+    ) -> Result<PkSk, ServerError> {
         let (pk, sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
         Ok(PkSk { pk, sk })
     }
 
-    pub fn from_string(s: &str) -> Result<PkSk, GenericServerError> {
-        let dbg_cxt = "PkSk::from_string";
-        serde_json::from_str(format!("\"{}\"", s).as_str()).map_err(|e| {
-            DynamoInvalidId::with_debug(dbg_cxt, "Invalid PkSk string.", e.to_string())
-        })
+    pub fn from_string(s: &str) -> Result<PkSk, ServerError> {
+        serde_json::from_str(format!("\"{}\"", s).as_str())
+            .map_err(|e| DynamoInvalidId::with_debug("invalid PkSk string", &e))
     }
 
-    pub fn from_map(map: &DynamoMap) -> Result<PkSk, GenericServerError> {
+    pub fn from_map(map: &DynamoMap) -> Result<PkSk, ServerError> {
         let (pk, sk) = get_pk_sk_from_map(map)?;
         Ok(PkSk {
             pk: pk.to_string(),
@@ -52,7 +50,7 @@ impl PkSk {
         set_pk_sk_in_map(map, self.pk.to_string(), self.sk.to_string());
     }
 
-    pub fn object_type(&self) -> Result<&str, GenericServerError> {
+    pub fn object_type(&self) -> Result<&str, ServerError> {
         get_object_type(&self.pk, &self.sk)
     }
 

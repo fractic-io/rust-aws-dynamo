@@ -1,4 +1,4 @@
-use fractic_server_error::GenericServerError;
+use fractic_server_error::ServerError;
 use ordered_float::NotNan;
 
 use crate::{
@@ -28,8 +28,7 @@ impl Ord for OrderedItem<'_> {
 fn _sk_strip_uuid<T: DynamoObject>(
     id_logic: IdLogic<T::Data>,
     sk: String,
-) -> Result<String, GenericServerError> {
-    let dbg_cxt: &'static str = "_sk_strip_uuid";
+) -> Result<String, ServerError> {
     Ok(match id_logic {
         // For Singleton, no ID to strip.
         IdLogic::Singleton => sk,
@@ -38,9 +37,8 @@ fn _sk_strip_uuid<T: DynamoObject>(
         // For Uuid and Timestamp, take ID until last '#' character.
         IdLogic::Uuid | IdLogic::Timestamp => sk[..sk.rfind('#').ok_or_else(|| {
             DynamoInvalidId::with_debug(
-                dbg_cxt,
-                "Can't strip Uuid/Timestamp since ID didn't contain '#'.",
-                sk.clone(),
+                "can't strip Uuid/Timestamp since ID didn't contain '#'",
+                &sk,
             )
         })?]
             .to_string(),
@@ -53,9 +51,7 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject, B: DynamoBackendImpl>
     data: &T::Data,
     insert_position: DynamoInsertPosition,
     num: usize,
-) -> Result<Vec<f64>, GenericServerError> {
-    let dbg_cxt = "generate_ordered_custom_ids";
-
+) -> Result<Vec<f64>, ServerError> {
     // Special 'sort' field is used to order elements. Use f64 so we can always
     // insert in between any two elements.
     let sort_value_init = NotNan::new(1.0).unwrap();
@@ -116,8 +112,7 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject, B: DynamoBackendImpl>
                 .iter()
                 .position(|item| item.id == id)
                 .ok_or(DynamoInvalidOperation::new(
-                    dbg_cxt,
-                    "The ID provided in DynamoInsertPosition::After(id) does not exist as a sorted item of type T in the database.",
+                    "the ID provided in DynamoInsertPosition::After(id) does not exist as a sorted item of type T in the database",
                 ))?;
             let insert_after = existing_vals.get(insert_after_index).unwrap();
             let insert_before = existing_vals.get(insert_after_index + 1);

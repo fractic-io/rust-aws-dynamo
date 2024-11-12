@@ -1,4 +1,4 @@
-use fractic_server_error::{common::CriticalError, GenericServerError};
+use fractic_server_error::{CriticalError, ServerError};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::Timestamp;
@@ -16,18 +16,16 @@ impl Timestamp {
             nanos: dt.timestamp_subsec_nanos(),
         }
     }
-    pub fn to_utc_datetime(&self) -> Result<chrono::DateTime<chrono::Utc>, GenericServerError> {
-        let dbg_cxt = "Timestamp::to_utc_datetime";
+    pub fn to_utc_datetime(&self) -> Result<chrono::DateTime<chrono::Utc>, ServerError> {
         match chrono::DateTime::from_timestamp(self.seconds, self.nanos) {
             Some(dt) => Ok(dt),
             None => Err(CriticalError::new(
-                dbg_cxt,
                 "failed to convert Timestamp to UTC DateTime",
             )),
         }
     }
     // Print as "YYYY-MM-DDTHH:MM:SSZ".
-    pub fn to_iso_8601_string(&self) -> Result<String, GenericServerError> {
+    pub fn to_iso_8601_string(&self) -> Result<String, ServerError> {
         Ok(self
             .to_utc_datetime()?
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true))

@@ -89,7 +89,9 @@ pub enum NestingLogic {
     InlineChildOf(&'static str), // Validates parent's object type.
 }
 
-pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
+pub trait DynamoObject:
+    Serialize + DeserializeOwned + std::fmt::Debug + Send + Sync + 'static
+{
     type Data: DynamoObjectData;
 
     fn new(id: PkSk, data: Self::Data) -> Self;
@@ -133,12 +135,15 @@ pub trait DynamoObject: Serialize + DeserializeOwned + std::fmt::Debug {
     }
 }
 
-// The reason we require Default is to be maximally tolerant during
-// deserialization. This way, for example, if we are querying a GSI which only
-// projects some of the keys, we are still guaranteed to successfully
-// deserialize the resulting objects.
+/// The reason we require Default is to be maximally tolerant during
+/// deserialization. This way, for example, if we are querying a GSI which only
+/// projects some of the keys, we are still guaranteed to successfully
+/// deserialize the resulting objects.
+///
+/// Strict data ownership / lifetime requirements are to allow DynamoObjects to
+/// easily be passed between threads.
 pub trait DynamoObjectData:
-    Serialize + DeserializeOwned + std::fmt::Debug + Default + Clone
+    Serialize + DeserializeOwned + std::fmt::Debug + Default + Clone + Send + Sync + 'static
 {
 }
 

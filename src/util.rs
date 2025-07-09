@@ -106,7 +106,7 @@ impl TtlConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct DynamoUtil<B: DynamoBackendImpl> {
+pub struct DynamoUtil<B: DynamoBackendImpl = aws_sdk_dynamodb::Client> {
     pub backend: B,
     pub table: String,
 }

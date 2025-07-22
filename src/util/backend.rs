@@ -15,11 +15,10 @@ use aws_sdk_dynamodb::{
     types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
 };
 use fractic_core::collection;
-use fractic_env_config::EnvVariables;
 use fractic_server_error::ServerError;
 use mockall::automock;
 
-use crate::env::DynamoEnvConfig;
+use crate::DynamoCtxView;
 
 use super::DynamoUtil;
 
@@ -87,10 +86,10 @@ pub trait DynamoBackendImpl {
 
 impl DynamoUtil<aws_sdk_dynamodb::Client> {
     pub async fn new(
-        env: EnvVariables<DynamoEnvConfig>,
+        ctx: &impl DynamoCtxView,
         table: impl Into<String>,
     ) -> Result<Self, ServerError> {
-        let region_str = env.get(&DynamoEnvConfig::DynamoRegion)?;
+        let region_str = ctx.dynamo_region();
         let region = Region::new(region_str.clone());
         let shared_config = aws_config::defaults(BehaviorVersion::v2025_01_17())
             .region(region)

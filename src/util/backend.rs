@@ -86,7 +86,7 @@ pub trait DynamoBackendImpl {
 
 impl DynamoUtil<aws_sdk_dynamodb::Client> {
     pub async fn new(
-        ctx: &impl DynamoCtxView,
+        ctx: &dyn DynamoCtxView,
         table: impl Into<String>,
     ) -> Result<Self, ServerError> {
         let region_str = ctx.dynamo_region();

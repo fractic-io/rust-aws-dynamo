@@ -6,6 +6,6 @@ define_ctx_view!(
         DYNAMO_REGION: String,
     },
     secrets {},
-    deps {},
+    deps_overlay {},
     req_impl {}
 );

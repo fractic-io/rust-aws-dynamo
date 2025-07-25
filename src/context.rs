@@ -6,6 +6,8 @@ define_ctx_view!(
         DYNAMO_REGION: String,
     },
     secrets {},
-    deps_overlay {},
+    deps_overlay {
+        dyn crate::util::backend::DynamoBackend,
+    },
     req_impl {}
 );

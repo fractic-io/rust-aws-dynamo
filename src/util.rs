@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use aws_sdk_dynamodb::{
     operation::{
@@ -7,7 +7,7 @@ use aws_sdk_dynamodb::{
     },
     types::AttributeValue,
 };
-use backend::DynamoBackendImpl;
+use backend::DynamoBackend;
 use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
 use fractic_core::collection;
@@ -16,12 +16,12 @@ use fractic_server_error::ServerError;
 use crate::{
     errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoNotFound},
     schema::{
+        DynamoObject, IdLogic, PkSk, Timestamp,
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
         parsing::{
-            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, parse_dynamo_map,
-            IdKeys,
+            IdKeys, build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
+            parse_dynamo_map,
         },
-        DynamoObject, IdLogic, PkSk, Timestamp,
     },
 };
 
@@ -105,12 +105,12 @@ impl TtlConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DynamoUtil<B: DynamoBackendImpl = aws_sdk_dynamodb::Client> {
-    pub backend: B,
+#[derive(Clone)]
+pub struct DynamoUtil {
+    pub backend: Arc<dyn DynamoBackend>,
     pub table: String,
 }
-impl<C: DynamoBackendImpl> DynamoUtil<C> {
+impl DynamoUtil {
     const ITEM_EXISTS_CONDITION: &'static str = "attribute_exists(pk)";
     const ITEM_DOES_NOT_EXIST_CONDITION: &'static str = "attribute_not_exists(pk)";
 
@@ -419,7 +419,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         insert_position: DynamoInsertPosition,
     ) -> Result<T, ServerError> {
         let sort_val =
-            calculate_sort_values::<T, _>(self, parent_id.clone(), &data, insert_position, 1)
+            calculate_sort_values::<T>(self, parent_id.clone(), &data, insert_position, 1)
                 .await?
                 .pop()
                 .ok_or(DynamoInvalidOperation::new(
@@ -445,7 +445,7 @@ impl<C: DynamoBackendImpl> DynamoUtil<C> {
         if data.is_empty() {
             return Ok(Vec::new());
         }
-        let new_ids = calculate_sort_values::<T, _>(
+        let new_ids = calculate_sort_values::<T>(
             self,
             parent_id.clone(),
             data.first().unwrap(),

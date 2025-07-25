@@ -7,7 +7,7 @@ mod tests {
         dynamo_object,
         schema::{AutoFields, DynamoObject, DynamoObjectData, NestingLogic, PkSk},
         util::{
-            backend::MockDynamoBackendImpl, DynamoQueryMatchType, DynamoUtil,
+            backend::MockDynamoBackend, DynamoQueryMatchType, DynamoUtil,
             AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
         },
     };
@@ -116,7 +116,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_query() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
             .with(
@@ -173,7 +173,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_generic() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
             .with(
@@ -220,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_item() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_get_item()
             .with(
@@ -260,7 +260,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_item_exists() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_get_item()
             .with(
@@ -316,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_item() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_put_item()
             .withf(|_, item| {
@@ -357,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_item_with_ttl() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_put_item()
             .withf(|_, item| {
@@ -412,7 +412,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_create_item() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_batch_put_item()
             .withf(|_, items| {
@@ -468,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_item_with_null() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_update_item()
             .withf(|_, id, update_expr, values, keys, condition| {
@@ -511,7 +511,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_item_non_null() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_update_item()
             .withf(|_, id, update_expr, values, keys, condition| {
@@ -562,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_item_transaction_existing() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_get_item()
             .with(
@@ -647,7 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_item_transaction_new() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_get_item()
             .withf(|table, _key, _projection| table == "my_table")
@@ -712,7 +712,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_item() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_delete_item()
             .with(
@@ -742,7 +742,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_item_invalid_type() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_delete_item()
             .with(
@@ -771,7 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_delete_item() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_batch_delete_item()
             .with(

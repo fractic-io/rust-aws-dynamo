@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use aws_config::{BehaviorVersion, Region};
@@ -14,6 +14,7 @@ use aws_sdk_dynamodb::{
     },
     types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
 };
+use fractic_context::register_ctx_singleton;
 use fractic_core::collection;
 use fractic_server_error::ServerError;
 use mockall::automock;
@@ -29,7 +30,7 @@ use super::DynamoUtil;
 // aws_sdk_dynamodb::Client, to minimize untestable code.
 #[automock]
 #[async_trait]
-pub trait DynamoBackendImpl {
+pub trait DynamoBackend {
     async fn query(
         &self,
         table_name: String,
@@ -84,27 +85,31 @@ pub trait DynamoBackendImpl {
 // making actual calls to AWS.
 // --------------------------------------------------
 
-impl DynamoUtil<aws_sdk_dynamodb::Client> {
+impl DynamoUtil {
     pub async fn new(
         ctx: &dyn DynamoCtxView,
         table: impl Into<String>,
     ) -> Result<Self, ServerError> {
-        let region_str = ctx.dynamo_region();
-        let region = Region::new(region_str.clone());
-        let shared_config = aws_config::defaults(BehaviorVersion::v2025_01_17())
-            .region(region)
-            .load()
-            .await;
-        let client = aws_sdk_dynamodb::Client::new(&shared_config);
         Ok(Self {
-            backend: client,
+            backend: ctx.dynamo_backend().await?,
             table: table.into(),
         })
     }
 }
 
+register_ctx_singleton!(dyn DynamoCtxView, dyn DynamoBackend, |ctx: Arc<
+    dyn DynamoCtxView,
+>| async move {
+    let region = Region::new(ctx.dynamo_region().clone());
+    let shared_config = aws_config::defaults(BehaviorVersion::v2025_01_17())
+        .region(region)
+        .load()
+        .await;
+    Ok(aws_sdk_dynamodb::Client::new(&shared_config))
+});
+
 #[async_trait]
-impl DynamoBackendImpl for aws_sdk_dynamodb::Client {
+impl DynamoBackend for aws_sdk_dynamodb::Client {
     async fn query(
         &self,
         table_name: String,

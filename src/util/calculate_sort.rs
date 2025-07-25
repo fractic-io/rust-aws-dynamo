@@ -6,7 +6,7 @@ use crate::{
     schema::{id_calculations::generate_pk_sk, DynamoObject, IdLogic, PkSk},
 };
 
-use super::{backend::DynamoBackendImpl, DynamoInsertPosition, DynamoQueryMatchType, DynamoUtil};
+use super::{DynamoInsertPosition, DynamoQueryMatchType, DynamoUtil};
 
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedItem<'a> {
@@ -45,8 +45,8 @@ fn _sk_strip_uuid<T: DynamoObject>(
     })
 }
 
-pub(crate) async fn calculate_sort_values<T: DynamoObject, B: DynamoBackendImpl>(
-    util: &DynamoUtil<B>,
+pub(crate) async fn calculate_sort_values<T: DynamoObject>(
+    util: &DynamoUtil,
     parent_id: PkSk,
     data: &T::Data,
     insert_position: DynamoInsertPosition,
@@ -147,7 +147,7 @@ mod tests {
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, DynamoObjectData, NestingLogic},
-        util::{backend::MockDynamoBackendImpl, DynamoUtil},
+        util::{backend::MockDynamoBackend, DynamoUtil},
     };
     use aws_sdk_dynamodb::{operation::query::QueryOutput, types::AttributeValue};
     use fractic_core::collection;
@@ -193,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_calculate_sort_values_first() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
             .withf(|_, _, _, _| true)
@@ -218,7 +218,7 @@ mod tests {
 
         let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
 
-        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
+        let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
             parent_id,
             &object.data,
@@ -236,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_calculate_sort_values_last() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
             .withf(|_, _, _, _| true)
@@ -261,7 +261,7 @@ mod tests {
 
         let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
 
-        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
+        let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
             parent_id,
             &object.data,
@@ -279,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_calculate_sort_values_after() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
             .withf(|_, _, _, _| true)
@@ -309,7 +309,7 @@ mod tests {
             sk: "GROUP#123#TEST#1".to_string(),
         };
 
-        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
+        let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
             parent_id,
             &object.data,
@@ -327,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_calculate_sort_values_after_last_item() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
             .withf(|_, _, _, _| true)
@@ -357,7 +357,7 @@ mod tests {
             sk: "GROUP#123#TEST#2".to_string(),
         };
 
-        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
+        let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
             parent_id,
             &object.data,
@@ -375,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_calculate_sort_values_empty_existing_items() {
-        let mut backend = MockDynamoBackendImpl::new();
+        let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
             .withf(|_, _, _, _| true)
@@ -393,7 +393,7 @@ mod tests {
 
         let object = build_test_item("ROOT", "GROUP#123#TEST#3", None);
 
-        let sort_values = calculate_sort_values::<TestDynamoObject, _>(
+        let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
             parent_id,
             &object.data,

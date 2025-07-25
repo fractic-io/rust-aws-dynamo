@@ -27,7 +27,7 @@ use crate::DynamoCtxView;
 // aws_sdk_dynamodb::Client, to minimize untestable code.
 #[automock]
 #[async_trait]
-pub trait DynamoBackend {
+pub trait DynamoBackend: Send + Sync {
     async fn query(
         &self,
         table_name: String,

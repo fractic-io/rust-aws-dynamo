@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
     use crate::schema::IdLogic;
     use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL};
@@ -7,8 +8,8 @@ mod tests {
         dynamo_object,
         schema::{AutoFields, DynamoObject, DynamoObjectData, NestingLogic, PkSk},
         util::{
-            backend::MockDynamoBackend, DynamoQueryMatchType, DynamoUtil,
-            AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
+            backend::MockDynamoBackend, DynamoQueryMatchType, DynamoUtil, AUTO_FIELDS_CREATED_AT,
+            AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
         },
     };
 
@@ -26,6 +27,7 @@ mod tests {
     use mockall::predicate::*;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
     pub struct TestDynamoObjectData {
@@ -39,6 +41,12 @@ mod tests {
         IdLogic::Uuid,
         NestingLogic::TopLevelChildOfAny
     );
+
+    async fn build_util(mock_backend: MockDynamoBackend) -> DynamoUtil {
+        let ctx = TestCtx::init_test("mock-region".to_string());
+        ctx.override_dynamo_backend(Arc::new(mock_backend)).await;
+        DynamoUtil::new(&*ctx, "my_table").await.unwrap()
+    }
 
     fn build_item_no_data() -> (TestDynamoObject, HashMap<String, AttributeValue>) {
         (
@@ -142,10 +150,7 @@ mod tests {
                     .build())
             });
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
         let result = util
             .query::<TestDynamoObject>(
                 None,
@@ -194,10 +199,7 @@ mod tests {
                     .build())
             });
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let result = util
             .query_generic(
@@ -237,10 +239,7 @@ mod tests {
                     .build())
             });
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let result = util
             .get_item::<TestDynamoObject>(PkSk {
@@ -290,10 +289,7 @@ mod tests {
             )
             .returning(|_, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let expect_exists = util
             .item_exists(PkSk {
@@ -330,10 +326,7 @@ mod tests {
             })
             .returning(|_, _| Ok(PutItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let new_item = build_item_high_sort().0;
 
@@ -385,10 +378,7 @@ mod tests {
             })
             .returning(|_, _| Ok(PutItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let new_item = build_item_high_sort().0;
 
@@ -428,10 +418,7 @@ mod tests {
             })
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let item1 = build_item_no_data().0;
         let item2 = build_item_no_data().0;
@@ -488,10 +475,7 @@ mod tests {
             })
             .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let update_item = TestDynamoObject {
             id: PkSk {
@@ -539,10 +523,7 @@ mod tests {
             })
             .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let update_item = TestDynamoObject {
             id: PkSk {
@@ -617,10 +598,7 @@ mod tests {
             })
             .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let result = util
             .update_item_transaction::<TestDynamoObject>(
@@ -681,10 +659,7 @@ mod tests {
             })
             .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let result = util
             .update_item_transaction::<TestDynamoObject>(
@@ -724,10 +699,7 @@ mod tests {
             )
             .returning(|_, _| Ok(DeleteItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let result = util
             .delete_item::<TestDynamoObject>(PkSk {
@@ -754,10 +726,7 @@ mod tests {
             )
             .returning(|_, _| Ok(DeleteItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let result = util
             .delete_item::<TestDynamoObject>(PkSk {
@@ -789,10 +758,7 @@ mod tests {
             )
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let keys = vec![
             PkSk {

@@ -141,9 +141,10 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
 
     use super::*;
+    use crate::context::test_ctx::TestCtx;
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, DynamoObjectData, NestingLogic},
@@ -165,6 +166,12 @@ mod tests {
         IdLogic::Uuid,
         NestingLogic::TopLevelChildOfAny
     );
+
+    async fn build_util(mock_backend: MockDynamoBackend) -> DynamoUtil {
+        let ctx = TestCtx::init_test("mock-region".to_string());
+        ctx.override_dynamo_backend(Arc::new(mock_backend)).await;
+        DynamoUtil::new(&*ctx, "my_table").await.unwrap()
+    }
 
     fn build_test_item(pk: &str, sk: &str, sort: Option<f64>) -> TestDynamoObject {
         TestDynamoObject {
@@ -206,10 +213,7 @@ mod tests {
                     .build())
             });
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let parent_id = PkSk {
             pk: "ROOT".to_string(),
@@ -249,10 +253,7 @@ mod tests {
                     .build())
             });
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let parent_id = PkSk {
             pk: "ROOT".to_string(),
@@ -292,10 +293,7 @@ mod tests {
                     .build())
             });
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let parent_id = PkSk {
             pk: "ROOT".to_string(),
@@ -340,10 +338,7 @@ mod tests {
                     .build())
             });
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let parent_id = PkSk {
             pk: "ROOT".to_string(),
@@ -381,10 +376,7 @@ mod tests {
             .withf(|_, _, _, _| true)
             .returning(|_, _, _, _| Ok(QueryOutput::builder().set_items(Some(vec![])).build()));
 
-        let util = DynamoUtil {
-            backend,
-            table: "my_table".to_string(),
-        };
+        let util = build_util(backend).await;
 
         let parent_id = PkSk {
             pk: "ROOT".to_string(),

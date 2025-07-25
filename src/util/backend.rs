@@ -16,12 +16,9 @@ use aws_sdk_dynamodb::{
 };
 use fractic_context::register_ctx_singleton;
 use fractic_core::collection;
-use fractic_server_error::ServerError;
 use mockall::automock;
 
 use crate::DynamoCtxView;
-
-use super::DynamoUtil;
 
 // Underlying backend, which performs the actual AWS operations. Kept generic so
 // that it can be swapped with a mock backend for testing.
@@ -84,29 +81,6 @@ pub trait DynamoBackend {
 // Real implementation,
 // making actual calls to AWS.
 // --------------------------------------------------
-
-impl DynamoUtil {
-    pub async fn new(
-        ctx: &dyn DynamoCtxView,
-        table: impl Into<String>,
-    ) -> Result<Self, ServerError> {
-        Ok(Self {
-            backend: ctx.dynamo_backend().await?,
-            table: table.into(),
-        })
-    }
-}
-
-register_ctx_singleton!(dyn DynamoCtxView, dyn DynamoBackend, |ctx: Arc<
-    dyn DynamoCtxView,
->| async move {
-    let region = Region::new(ctx.dynamo_region().clone());
-    let shared_config = aws_config::defaults(BehaviorVersion::v2025_01_17())
-        .region(region)
-        .load()
-        .await;
-    Ok(aws_sdk_dynamodb::Client::new(&shared_config))
-});
 
 #[async_trait]
 impl DynamoBackend for aws_sdk_dynamodb::Client {
@@ -230,3 +204,17 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .await
     }
 }
+
+// Register dependency, default to real AWS backend.
+// --------------------------------------------------
+
+register_ctx_singleton!(dyn DynamoCtxView, dyn DynamoBackend, |ctx: Arc<
+    dyn DynamoCtxView,
+>| async move {
+    let region = Region::new(ctx.dynamo_region().clone());
+    let shared_config = aws_config::defaults(BehaviorVersion::v2025_01_17())
+        .region(region)
+        .load()
+        .await;
+    Ok(aws_sdk_dynamodb::Client::new(&shared_config))
+});

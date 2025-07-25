@@ -16,13 +16,14 @@ use fractic_server_error::ServerError;
 use crate::{
     errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoNotFound},
     schema::{
-        DynamoObject, IdLogic, PkSk, Timestamp,
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
         parsing::{
-            IdKeys, build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
-            parse_dynamo_map,
+            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, parse_dynamo_map,
+            IdKeys,
         },
+        DynamoObject, IdLogic, PkSk, Timestamp,
     },
+    DynamoCtxView,
 };
 
 pub mod backend;
@@ -113,6 +114,16 @@ pub struct DynamoUtil {
 impl DynamoUtil {
     const ITEM_EXISTS_CONDITION: &'static str = "attribute_exists(pk)";
     const ITEM_DOES_NOT_EXIST_CONDITION: &'static str = "attribute_not_exists(pk)";
+
+    pub async fn new(
+        ctx: &dyn DynamoCtxView,
+        table: impl Into<String>,
+    ) -> Result<Self, ServerError> {
+        Ok(Self {
+            backend: ctx.dynamo_backend().await?,
+            table: table.into(),
+        })
+    }
 
     pub async fn query<T: DynamoObject>(
         &self,

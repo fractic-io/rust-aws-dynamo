@@ -18,8 +18,8 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::{
-        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidId,
-        DynamoInvalidOperation, DynamoNotFound,
+        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidOperation,
+        DynamoNotFound,
     },
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
@@ -192,10 +192,9 @@ impl DynamoUtil {
             .collect::<Result<Vec<T>, ServerError>>()
     }
 
-    pub async fn query_children_of_type<T: DynamoObject>(
-        &self,
-        parent_id: PkSk,
-    ) -> Result<Vec<T>, ServerError> {
+    /// Efficiently queries all children of type `T` belonging to the given
+    /// `parent_id`. Handles all nesting logic types.
+    pub async fn query_all<T: DynamoObject>(&self, parent_id: PkSk) -> Result<Vec<T>, ServerError> {
         validate_parent_id::<T>(&parent_id)?;
 
         // * Singleton / SingletonFamily →  "@LABEL"
@@ -767,7 +766,7 @@ impl DynamoUtil {
     ) -> Result<(), ServerError> {
         // Ensure we dedup IDs, since query logic expands chunks internally.
         let children_ids: HashSet<PkSk> = self
-            .query_children_of_type::<T>(parent_id)
+            .query_all::<T>(parent_id)
             .await?
             .into_iter()
             .map(|c| c.id().clone())
@@ -855,8 +854,7 @@ impl DynamoUtil {
         // Early exit – replacement with empty list means delete all children.
         if data.is_empty() {
             // Fetch existing chunk rows (if any) and delete them.
-            self._delete_all_batch_optimized_chunks::<T>(&parent_id)
-                .await?;
+            self.batch_delete_all::<T>(parent_id.clone()).await?;
             return Ok(Vec::new());
         }
 
@@ -985,8 +983,7 @@ impl DynamoUtil {
         }
 
         // Delete existing chunk rows for this parent.
-        self._delete_all_batch_optimized_chunks::<T>(&parent_id)
-            .await?;
+        self.batch_delete_all::<T>(parent_id.clone()).await?;
 
         // Write new chunk rows.
         self.raw_batch_put_item(chunk_rows).await?;

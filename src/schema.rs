@@ -49,6 +49,12 @@ pub enum IdLogic<T: DynamoObjectData> {
     //
     // <new-obj-id>: @LABEL[<key>]
     SingletonFamily(Box<dyn Fn(&T) -> String>),
+
+    // New IDs are generated in batches of a given size. This is useful for
+    // optimizing write throughput when writing multiple items to DynamoDB.
+    //
+    // <new-obj-id>: LABEL#<batch-size>
+    BatchOptimized(usize),
 }
 
 #[derive(Debug, PartialEq)]

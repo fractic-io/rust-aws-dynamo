@@ -60,6 +60,11 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
         IdLogic::Singleton => format!("@{}", T::id_label()),
         IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
+        IdLogic::BatchOptimized(_) => {
+            return Err(DynamoInvalidId::new(
+                "BatchOptimized IDs must be generated via DynamoUtil::batch_replace_all_ordered",
+            ));
+        }
     };
     match T::nesting_logic() {
         NestingLogic::Root => Ok(("ROOT".to_string(), new_obj_id)),

@@ -42,6 +42,12 @@ fn _sk_strip_uuid<T: DynamoObject>(
             )
         })?]
             .to_string(),
+        // BatchOptimized should not be used with ordered creation operations.
+        IdLogic::BatchOptimized(_) => {
+            return Err(DynamoInvalidOperation::new(
+                "calculate_sort_values cannot be used with BatchOptimized IdLogic",
+            ));
+        }
     })
 }
 

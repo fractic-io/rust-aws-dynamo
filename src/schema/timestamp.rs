@@ -3,6 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::Timestamp;
 
+// ---------- Convenience ----------
+
 impl Timestamp {
     pub fn now() -> Self {
         Self::from_utc_datetime(&chrono::Utc::now())
@@ -32,8 +34,13 @@ impl Timestamp {
     }
 }
 
+// ---------- Display ----------
+
+/// Human-readable format, **NOT** the same format as what is stored in the DB.
 impl std::fmt::Display for Timestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Example output:
+        //   2021-08-26 17:46:40 UTC
         write!(
             f,
             "{}",
@@ -43,6 +50,8 @@ impl std::fmt::Display for Timestamp {
         )
     }
 }
+
+// ---------- Sorting ----------
 
 impl PartialOrd for Timestamp {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -59,6 +68,8 @@ impl Ord for Timestamp {
     }
 }
 
+// ---------- Serialize ----------
+
 impl Serialize for Timestamp {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -67,6 +78,8 @@ impl Serialize for Timestamp {
         format!("{:011}.{:09}", self.seconds, self.nanos).serialize(serializer)
     }
 }
+
+// ---------- Deserialize ----------
 
 impl<'de> Deserialize<'de> for Timestamp {
     fn deserialize<D>(deserializer: D) -> Result<Timestamp, D::Error>
@@ -88,6 +101,7 @@ impl<'de> serde::de::Visitor<'de> for TimestampVisitor {
         formatter.write_str("a timestamp as a string or a map")
     }
 
+    // ---- New, compact format ------------------------------------------------
     fn visit_str<E>(self, value: &str) -> Result<Timestamp, E>
     where
         E: serde::de::Error,
@@ -101,6 +115,7 @@ impl<'de> serde::de::Visitor<'de> for TimestampVisitor {
         Ok(Timestamp { seconds, nanos })
     }
 
+    // ---- Legacy map format --------------------------------------------------
     fn visit_map<A>(self, map: A) -> Result<Timestamp, A::Error>
     where
         A: serde::de::MapAccess<'de>,
@@ -118,6 +133,8 @@ impl<'de> serde::de::Visitor<'de> for TimestampVisitor {
         })
     }
 }
+
+// ---------- Tests -----------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

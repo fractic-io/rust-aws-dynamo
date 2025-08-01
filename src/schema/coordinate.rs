@@ -118,7 +118,9 @@ impl<'de> de::Visitor<'de> for CoordinateVisitor {
     {
         #[derive(Deserialize)]
         struct Legacy {
+            #[serde(alias = "lat")]
             latitude: f64,
+            #[serde(alias = "lon", alias = "lng")]
             longitude: f64,
             #[serde(default)]
             zoom: Option<f64>,
@@ -239,6 +241,34 @@ mod tests {
                 latitude: 51.5074,
                 longitude: -0.1278,
                 zoom: Some(5.0),
+            },
+        );
+    }
+
+    #[test]
+    fn deserialize_legacy_map_lat_lon() {
+        let json = r#"{"lat":40.7128,"lon":-74.0060}"#;
+        let c: Coordinate = serde_json::from_str(json).unwrap();
+        assert_same(
+            &c,
+            &Coordinate {
+                latitude: 40.7128,
+                longitude: -74.0060,
+                zoom: None,
+            },
+        );
+    }
+
+    #[test]
+    fn deserialize_legacy_map_lat_lng_with_zoom() {
+        let json = r#"{"lat":34.0522,"lng":-118.2437,"zoom":7}"#;
+        let c: Coordinate = serde_json::from_str(json).unwrap();
+        assert_same(
+            &c,
+            &Coordinate {
+                latitude: 34.0522,
+                longitude: -118.2437,
+                zoom: Some(7.0),
             },
         );
     }

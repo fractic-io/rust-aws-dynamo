@@ -698,21 +698,15 @@ impl DynamoUtil {
         &self,
         keys: Vec<PkSk>,
     ) -> Result<(), ServerError> {
-        use std::collections::HashSet;
-
-        // Deduplicate keys so that we do not send duplicate deletes to Dynamo
-        // (which would otherwise cause unnecessary throughput consumption).
-        let mut unique: HashSet<String> = HashSet::new();
-        let mut deduped: Vec<PkSk> = Vec::new();
-        for key in keys.into_iter() {
-            validate_id::<T>(&key)?;
-            let sig = format!("{}|{}", key.pk, key.sk);
-            if unique.insert(sig) {
-                deduped.push(key);
-            }
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidOperation::new(
+                "delete_item is not supported for BatchOptimized IdLogic. Use batch_delete_item instead.",
+            ));
         }
-
-        self.raw_batch_delete_ids(deduped).await
+        for key in &keys {
+            validate_id::<T>(key)?;
+        }
+        self.raw_batch_delete_ids(keys).await
     }
 
     /// Performs no checks and directly deletes the given IDs from the database.

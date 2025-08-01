@@ -42,6 +42,8 @@ impl Serialize for Coordinate {
     where
         S: Serializer,
     {
+        validate_range(self.latitude, self.longitude).map_err(serde::ser::Error::custom)?;
+
         // Always emit the new compact string format.
         match self.zoom {
             Some(z) => format!("{},{},{}", self.latitude, self.longitude, z).serialize(serializer),
@@ -70,7 +72,7 @@ impl<'de> de::Visitor<'de> for CoordinateVisitor {
         formatter.write_str("a comma-separated coordinate string or a legacy map")
     }
 
-    // ---- New, compact format ------------------------------------------------
+    // ---- compact format -----------------------------------------------------
     fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
     where
         E: de::Error,
@@ -109,7 +111,7 @@ impl<'de> de::Visitor<'de> for CoordinateVisitor {
         }
     }
 
-    // ---- Legacy map format --------------------------------------------------
+    // ---- legacy map format --------------------------------------------------
     fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
     where
         A: de::MapAccess<'de>,
@@ -268,23 +270,45 @@ mod tests {
     // --- error handling ----------------------------------------------------
 
     #[test]
-    fn error_too_many_parts() {
+    fn deserialize_error_too_many_parts() {
         let json = "\"1,2,3,4\"";
         let err: Result<Coordinate, _> = serde_json::from_str(json);
         assert!(err.is_err());
     }
 
     #[test]
-    fn error_invalid_number() {
+    fn deserialize_error_invalid_number() {
         let json = "\"a,b\"";
         let err: Result<Coordinate, _> = serde_json::from_str(json);
         assert!(err.is_err());
     }
 
     #[test]
-    fn error_out_of_range() {
+    fn deserialize_error_out_of_range() {
         let json = "\"100,0\""; // latitude > 90
         let err: Result<Coordinate, _> = serde_json::from_str(json);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn serialize_error_out_of_range_latitude() {
+        let coord = Coordinate {
+            latitude: 100.0, // invalid
+            longitude: 0.0,
+            zoom: None,
+        };
+        let err = serde_json::to_string(&coord);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn serialize_error_out_of_range_longitude() {
+        let coord = Coordinate {
+            latitude: 0.0,
+            longitude: 200.0, // invalid
+            zoom: None,
+        };
+        let err = serde_json::to_string(&coord);
         assert!(err.is_err());
     }
 }

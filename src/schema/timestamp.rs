@@ -101,7 +101,7 @@ impl<'de> serde::de::Visitor<'de> for TimestampVisitor {
         formatter.write_str("a timestamp as a string or a map")
     }
 
-    // ---- New, compact format ------------------------------------------------
+    // ---- compact format -----------------------------------------------------
     fn visit_str<E>(self, value: &str) -> Result<Timestamp, E>
     where
         E: serde::de::Error,
@@ -115,7 +115,7 @@ impl<'de> serde::de::Visitor<'de> for TimestampVisitor {
         Ok(Timestamp { seconds, nanos })
     }
 
-    // ---- Legacy map format --------------------------------------------------
+    // ---- legacy map format --------------------------------------------------
     fn visit_map<A>(self, map: A) -> Result<Timestamp, A::Error>
     where
         A: serde::de::MapAccess<'de>,

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub mod add_ons;
+pub mod coordinate;
 pub mod display;
 pub(crate) mod id_calculations;
 pub mod parsing;
@@ -253,6 +254,17 @@ pub struct AutoFields {
 pub struct Timestamp {
     pub seconds: i64,
     pub nanos: u32,
+}
+
+/// Geographic coordinate (WGS-84) with optional zoom level.
+///
+/// * `latitude`  ∈ [-90.0, 90.0]
+/// * `longitude` ∈ [-180.0, 180.0]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Coordinate {
+    pub latitude: f64,
+    pub longitude: f64,
+    pub zoom: Option<f64>,
 }
 
 /// Can be used to represent a rare state that can be used in a sparse index

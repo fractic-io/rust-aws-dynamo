@@ -14,7 +14,10 @@ use fractic_core::collection;
 use fractic_server_error::ServerError;
 
 use crate::{
-    errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoNotFound},
+    errors::{
+        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidOperation,
+        DynamoNotFound,
+    },
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
         parsing::{
@@ -349,9 +352,7 @@ impl DynamoUtil {
         options: Option<CreateOptions>,
     ) -> Result<T, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidOperation::new(
-                "create_item is not supported for BatchOptimized IdLogic. Use batch_replace_all_ordered instead.",
-            ));
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         let (new_pk, new_sk) = generate_pk_sk::<T>(&data, &parent_id.pk, &parent_id.sk)?;
         let sort: Option<f64> = options.as_ref().and_then(|o| o.custom_sort);
@@ -389,9 +390,7 @@ impl DynamoUtil {
         data_and_options: Vec<(T::Data, Option<CreateOptions>)>,
     ) -> Result<Vec<T>, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidOperation::new(
-                "batch_create_item is not supported for BatchOptimized IdLogic. Use batch_replace_all_ordered instead.",
-            ));
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         if matches!(T::id_logic(), IdLogic::Timestamp) {
             return Err(DynamoInvalidOperation::new(
@@ -469,9 +468,7 @@ impl DynamoUtil {
         insert_position: DynamoInsertPosition,
     ) -> Result<T, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidOperation::new(
-                "create_item_ordered is not supported for BatchOptimized IdLogic. Use batch_replace_all_ordered instead.",
-            ));
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         let sort_val =
             calculate_sort_values::<T>(self, parent_id.clone(), &data, insert_position, 1)
@@ -498,9 +495,7 @@ impl DynamoUtil {
         insert_position: DynamoInsertPosition,
     ) -> Result<Vec<T>, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidOperation::new(
-                "batch_create_item_ordered is not supported for BatchOptimized IdLogic. Use batch_replace_all_ordered instead.",
-            ));
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         if data.is_empty() {
             return Ok(Vec::new());
@@ -537,9 +532,7 @@ impl DynamoUtil {
     /// removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidOperation::new(
-                "update_item is not supported for BatchOptimized IdLogic.",
-            ));
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         self.update_item_with_conditions(
             object,
@@ -561,9 +554,7 @@ impl DynamoUtil {
         op: impl FnOnce(Option<T::Data>) -> Result<T::Data, ServerError>,
     ) -> Result<T, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidOperation::new(
-                "update_item_transaction is not supported for BatchOptimized IdLogic.",
-            ));
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         let object_before = self.get_item::<T>(id.clone()).await?;
         let (map_before, existance_condition) = match object_before {
@@ -675,9 +666,7 @@ impl DynamoUtil {
 
     pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidOperation::new(
-                "delete_item is not supported for BatchOptimized IdLogic. Use batch_delete_item instead.",
-            ));
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         validate_id::<T>(&id)?;
         let key = collection! {
@@ -699,9 +688,7 @@ impl DynamoUtil {
         keys: Vec<PkSk>,
     ) -> Result<(), ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidOperation::new(
-                "delete_item is not supported for BatchOptimized IdLogic. Use batch_delete_item instead.",
-            ));
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         for key in &keys {
             validate_id::<T>(key)?;

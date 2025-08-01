@@ -27,10 +27,10 @@ use crate::{
 };
 
 pub mod backend;
-mod calculate_sort;
-mod test;
 #[cfg(test)]
 mod batch_optimized_test;
+mod calculate_sort;
+mod test;
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
 pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
@@ -264,7 +264,7 @@ impl DynamoUtil {
             .query(self.table.clone(), index_name, condition, attribute_values)
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-#[allow(clippy::manual_flatten)]
+        #[allow(clippy::manual_flatten)]
         // Handle BatchOptimized chunked items. Any item that contains a '_'
         // key (reserved for chunking) is assumed to be a container for
         // multiple logical child objects. Each child object is stored as a
@@ -348,7 +348,7 @@ impl DynamoUtil {
         data: T::Data,
         options: Option<CreateOptions>,
     ) -> Result<T, ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized(_)) {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidOperation::new(
                 "create_item is not supported for BatchOptimized IdLogic. Use batch_replace_all_ordered instead.",
             ));
@@ -388,7 +388,7 @@ impl DynamoUtil {
         parent_id: PkSk,
         data_and_options: Vec<(T::Data, Option<CreateOptions>)>,
     ) -> Result<Vec<T>, ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized(_)) {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidOperation::new(
                 "batch_create_item is not supported for BatchOptimized IdLogic. Use batch_replace_all_ordered instead.",
             ));
@@ -468,7 +468,7 @@ impl DynamoUtil {
         data: T::Data,
         insert_position: DynamoInsertPosition,
     ) -> Result<T, ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized(_)) {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidOperation::new(
                 "create_item_ordered is not supported for BatchOptimized IdLogic. Use batch_replace_all_ordered instead.",
             ));
@@ -497,7 +497,7 @@ impl DynamoUtil {
         data: Vec<T::Data>,
         insert_position: DynamoInsertPosition,
     ) -> Result<Vec<T>, ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized(_)) {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidOperation::new(
                 "batch_create_item_ordered is not supported for BatchOptimized IdLogic. Use batch_replace_all_ordered instead.",
             ));
@@ -536,7 +536,7 @@ impl DynamoUtil {
     /// item does not exist, an error is returned. Fields with null values are
     /// removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized(_)) {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidOperation::new(
                 "update_item is not supported for BatchOptimized IdLogic.",
             ));
@@ -560,7 +560,7 @@ impl DynamoUtil {
         id: PkSk,
         op: impl FnOnce(Option<T::Data>) -> Result<T::Data, ServerError>,
     ) -> Result<T, ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized(_)) {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidOperation::new(
                 "update_item_transaction is not supported for BatchOptimized IdLogic.",
             ));
@@ -674,7 +674,7 @@ impl DynamoUtil {
     }
 
     pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized(_)) {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidOperation::new(
                 "delete_item is not supported for BatchOptimized IdLogic. Use batch_delete_item instead.",
             ));
@@ -764,15 +764,10 @@ impl DynamoUtil {
         Ok(())
     }
 
-    // ---------------------------------------------------------------------
-    // BatchOptimized utilities
-    // ---------------------------------------------------------------------
-
     /// Replaces **all** children of type `T` belonging to the given `parent_id`
-    /// with the provided list of data, preserving order. This is the ONLY way
-    /// to create or update items whose `IdLogic` is `BatchOptimized`.
+    /// with the provided list of data, preserving order.
     ///
-    /// Behind the scenes this method:
+    /// When used with `IdLogic::BatchOptimized`, this method:
     ///   1. Generates deterministic natural-number IDs (zero-padded) for every
     ///      logical child, based on its position in `data`.
     ///   2. Groups the children into chunks of size `chunk_size`, writing one
@@ -781,10 +776,6 @@ impl DynamoUtil {
     ///   3. Deletes any **existing** chunk rows that no longer belong to the
     ///      dataset (for example if the new data results in fewer chunks than
     ///      before).
-    ///
-    /// The function returns the fully-materialised list of created `T`
-    /// objects (one per input item) so that callers can easily obtain the
-    /// generated IDs.
     pub async fn batch_replace_all_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
@@ -792,7 +783,7 @@ impl DynamoUtil {
     ) -> Result<Vec<T>, ServerError> {
         // Ensure that this function is only used with BatchOptimized.
         let chunk_size = match T::id_logic() {
-            IdLogic::BatchOptimized(size) => size,
+            IdLogic::BatchOptimized { chunk_size } => chunk_size,
             _ => {
                 return Err(DynamoInvalidOperation::new(
                     "batch_replace_all_ordered can only be used with BatchOptimized IdLogic",
@@ -803,7 +794,8 @@ impl DynamoUtil {
         // Early exit – replacement with empty list means delete all children.
         if data.is_empty() {
             // Fetch existing chunk rows (if any) and delete them.
-            self._delete_all_batch_optimized_chunks::<T>(&parent_id).await?;
+            self._delete_all_batch_optimized_chunks::<T>(&parent_id)
+                .await?;
             return Ok(Vec::new());
         }
 
@@ -830,7 +822,10 @@ impl DynamoUtil {
                     Ok((parent_id.sk.clone(), child_id))
                 }
                 super::schema::NestingLogic::TopLevelChildOf(ptype_req) => {
-                    let ptype = crate::schema::id_calculations::get_object_type(&parent_id.pk, &parent_id.sk)?;
+                    let ptype = crate::schema::id_calculations::get_object_type(
+                        &parent_id.pk,
+                        &parent_id.sk,
+                    )?;
                     if ptype != ptype_req {
                         return Err(DynamoInvalidOperation::new(&format!(
                             "parent object type '{}' did not match required '{}'",
@@ -844,7 +839,10 @@ impl DynamoUtil {
                     format!("{}#{}", parent_id.sk, child_id),
                 )),
                 super::schema::NestingLogic::InlineChildOf(ptype_req) => {
-                    let ptype = crate::schema::id_calculations::get_object_type(&parent_id.pk, &parent_id.sk)?;
+                    let ptype = crate::schema::id_calculations::get_object_type(
+                        &parent_id.pk,
+                        &parent_id.sk,
+                    )?;
                     if ptype != ptype_req {
                         return Err(DynamoInvalidOperation::new(&format!(
                             "parent object type '{}' did not match required '{}'",
@@ -870,8 +868,14 @@ impl DynamoUtil {
                 child_pk.clone(),
                 child_sk.clone(),
                 Some(vec![
-                    (AUTO_FIELDS_CREATED_AT, Box::new(crate::schema::Timestamp::now())),
-                    (AUTO_FIELDS_UPDATED_AT, Box::new(crate::schema::Timestamp::now())),
+                    (
+                        AUTO_FIELDS_CREATED_AT,
+                        Box::new(crate::schema::Timestamp::now()),
+                    ),
+                    (
+                        AUTO_FIELDS_UPDATED_AT,
+                        Box::new(crate::schema::Timestamp::now()),
+                    ),
                 ]),
             )?;
 
@@ -896,11 +900,8 @@ impl DynamoUtil {
             let chunk_slice = &child_maps[idx..end];
 
             // Children as AttributeValue::M.
-            let child_attr_list: Vec<AttributeValue> = chunk_slice
-                .iter()
-                .cloned()
-                .map(AttributeValue::M)
-                .collect();
+            let child_attr_list: Vec<AttributeValue> =
+                chunk_slice.iter().cloned().map(AttributeValue::M).collect();
 
             // pk is the pk of first child (same for all children in slice by construction).
             let row_pk = match chunk_slice.first().and_then(|m| m.get("pk")) {
@@ -923,7 +924,8 @@ impl DynamoUtil {
         }
 
         // Delete existing chunk rows for this parent.
-        self._delete_all_batch_optimized_chunks::<T>(&parent_id).await?;
+        self._delete_all_batch_optimized_chunks::<T>(&parent_id)
+            .await?;
 
         // Write new chunk rows.
         self.raw_batch_put_item(chunk_rows).await?;
@@ -938,7 +940,9 @@ impl DynamoUtil {
     ) -> Result<(), ServerError> {
         // Determine pk to query and sk prefix for chunk rows.
         let (pk_to_query, sk_prefix) = match T::nesting_logic() {
-            super::schema::NestingLogic::Root => ("ROOT".to_string(), format!("{}#__CHUNK", T::id_label())),
+            super::schema::NestingLogic::Root => {
+                ("ROOT".to_string(), format!("{}#__CHUNK", T::id_label()))
+            }
             super::schema::NestingLogic::TopLevelChildOfAny
             | super::schema::NestingLogic::TopLevelChildOf(_) => {
                 (parent_id.sk.clone(), format!("{}#__CHUNK", T::id_label()))
@@ -952,7 +956,10 @@ impl DynamoUtil {
         // Direct backend query (avoid unchunking) using begins_with on sk.
         let condition = "pk = :pk_val AND begins_with(sk, :sk_val)".to_string();
         let mut av = HashMap::new();
-        av.insert(":pk_val".to_string(), AttributeValue::S(pk_to_query.clone()));
+        av.insert(
+            ":pk_val".to_string(),
+            AttributeValue::S(pk_to_query.clone()),
+        );
         av.insert(":sk_val".to_string(), AttributeValue::S(sk_prefix.clone()));
 
         let response = self

@@ -11,89 +11,96 @@ pub mod pk_sk;
 pub mod timestamp;
 
 pub enum IdLogic<T: DynamoObjectData> {
-    // New IDs are generated based on UUID v4. This option should be used in
-    // almost all cases.
-    //
-    // <new-obj-id>: LABEL#<uuid>
+    /// New IDs are generated based on UUID v4. This option should be used in
+    /// almost all cases.
+    ///
+    /// <new-obj-id>: LABEL#<uuid>
     Uuid,
 
-    // New IDs are generated based on epoch timestamp in milliseconds. Can be
-    // used for efficient date-based ordering and filtering, since the date
-    // range can be directly filtered in the query.
-    //
-    // However, a couple important things to consider:
-    // - Object creation date is leaked to users by object ID.
-    // - IDs are "guessable", which could be a security concern.
-    // - If multiple children for the same parent are written in the same
-    // millisecond, they will have the same ID, and the second write will
-    // overwrite the first.
-    // - Changing ID logic later can be very risky / complex, so should consider
-    // all future use-cases from the beginning.
-    //
-    // An alternative strategy would be to use a UUID-based ID with ordered
-    // insertion (flexible but inneficient) or a GSI based on a separate
-    // timestamp field (efficient but requires extra storage).
-    //
-    // <new-obj-id>: LABEL#<timestamp>
+    /// New IDs are generated based on epoch timestamp in milliseconds. Can be
+    /// used for efficient date-based ordering and filtering, since the date
+    /// range can be directly filtered in the query.
+    ///
+    /// However, a couple important things to consider:
+    /// - Object creation date is leaked to users by object ID.
+    /// - IDs are "guessable", which could be a security concern.
+    /// - If multiple children for the same parent are written in the same
+    /// millisecond, they will have the same ID, and the second write will
+    /// overwrite the first.
+    /// - Changing ID logic later can be very risky / complex, so should
+    /// consider all future use-cases from the beginning.
+    ///
+    /// An alternative strategy would be to use a UUID-based ID with ordered
+    /// insertion (flexible but inneficient) or a GSI based on a separate
+    /// timestamp field (efficient but requires extra storage).
+    ///
+    /// <new-obj-id>: LABEL#<timestamp>
     Timestamp,
 
-    // Only one version of this object exists for a given parent, prefixed with
-    // a '@'. Subsequent writes always overwrite the existing object.
-    //
-    // <new-obj-id>: @LABEL
+    /// Only one version of this object exists for a given parent, prefixed with
+    /// a '@'. Subsequent writes always overwrite the existing object.
+    ///
+    /// <new-obj-id>: @LABEL
     Singleton,
 
-    // Kind of like an indexable Singleton map, where the key (determined by a
-    // given field in the object) is used as a key to the label that can be
-    // efficiently queried.
-    //
-    // <new-obj-id>: @LABEL[<key>]
+    /// Kind of like an indexable Singleton map, where the key (determined by a
+    /// given field in the object) is used as a key to the label that can be
+    /// efficiently queried.
+    ///
+    /// <new-obj-id>: @LABEL[<key>]
     SingletonFamily(Box<dyn Fn(&T) -> String>),
 
-    // New IDs are generated in batches of a given size. This is useful for
-    // optimizing write throughput when writing multiple items to DynamoDB.
-    //
-    // <new-obj-id>: LABEL#<batch-size>
-    BatchOptimized(usize),
+    /// WARNING: Individual item access not possible.
+    ///
+    /// With BatchOptimized, the only supported actions are:
+    /// - batch_replace_all_ordered::<T>(parent_id, items)
+    /// - batch_delete_all::<T>(parent_id)
+    ///
+    /// Items are stored in chunks, with chunk_size items per chunk. IDs are
+    /// sequential numbers, zero-padded to the minimum number of digits required
+    /// to maintain sortability.
+    ///
+    /// <new-obj-id>: LABEL#<chunk-index>
+    BatchOptimized { chunk_size: usize },
 }
 
 #[derive(Debug, PartialEq)]
 pub enum NestingLogic {
-    // Warning:
-    //   All Root objects are stored under the 'ROOT' pk, so this key will
-    //   likely get very hot (and therefore throttled) if this data is
-    //   frequently used. If clients need frequent access, consider ways to move
-    //   the data down into more specific pk's using the other types, using
-    //   phantom parents, or -- if the data is fairly static -- consider using a
-    //   separate access pattern outside of DynamoDB (such as S3 behind a cached
-    //   API function).
-
-    // Note:
-    //   In all of the below options, the parent pk/sk may indicate a real
-    //   parent object, but they don't have to. The concept of the 'parent' is
-    //   used kind of like a placement indicator for the ID-generation logic,
-    //   but may be a phantom object (i.e. not actually written to database).
-
-    // Objects are placed under 'ROOT' partition (regardless of parent IDs
-    // provided).
-    //   pk: ROOT
-    //   sk: <new-obj-id>
+    /// Warning:
+    ///   All Root objects are stored under the 'ROOT' pk, so this key will
+    ///   likely get very hot (and therefore throttled) if this data is
+    ///   frequently used. If clients need frequent access, consider ways to
+    ///   move the data down into more specific pk's using the other types,
+    ///   using phantom parents, or -- if the data is fairly static -- consider
+    ///   using a separate access pattern outside of DynamoDB (such as S3 behind
+    ///   a cached API function).
+    ///
+    /// Note:
+    ///   In all of the below options, the parent pk/sk may indicate a real
+    ///   parent object, but they don't have to. The concept of the 'parent' is
+    ///   used kind of like a placement indicator for the ID-generation logic,
+    ///   but may be a phantom object (i.e. not actually written to database).
+    ///
+    /// Objects are placed under 'ROOT' partition (regardless of parent IDs
+    /// provided).
+    ///   pk: ROOT
+    ///   sk: <new-obj-id>
     Root,
 
-    // Objects are placed under separate partition based on parent's sk. As
-    // such, the child objects require a separate query to fetch.
-    //   pk: parent.sk
-    //   sk: <new-obj-id>
-    TopLevelChildOfAny,
+    /// Objects are placed under separate partition based on parent's sk. As
+    /// such, the child objects require a separate query to fetch.
+    ///   pk: parent.sk
+    ///   sk: <new-obj-id>
     TopLevelChildOf(&'static str), // Validates parent's object type.
+    TopLevelChildOfAny,
 
-    // Objects are placed under the same partition as the parent object. This
-    // way the child objects can often be directly inlined into the search
-    // results for the parent (by querying sk prefix).
-    //   pk: parent.pk
-    //   sk: parent.sk#<new-obj-id>
-    InlineChildOfAny,
+    /// Objects are placed under the same partition as the parent object. This
+    /// way the child objects can often be directly inlined into the search
+    /// results for the parent (by querying sk prefix).
+    ///   pk: parent.pk
+    ///   sk: parent.sk#<new-obj-id>
     InlineChildOf(&'static str), // Validates parent's object type.
+    InlineChildOfAny,
 }
 
 pub trait DynamoObject:
@@ -222,20 +229,20 @@ pub trait MaybeCommittedDynamoObject<T: DynamoObject> {
 // Standard sub-structs:
 // ---------------------------
 
-// Custom struct to hold 'pk' and 'sk', which gets serialized and deserialized
-// as "pk|sk" in communication with downstream clients, but are separate
-// properties in the underlying data store (primary_key and sort_key).
+/// Custom struct to hold 'pk' and 'sk', which gets serialized and deserialized
+/// as "pk|sk" in communication with downstream clients, but are separate
+/// properties in the underlying data store (primary_key and sort_key).
 #[derive(Debug, PartialEq, Clone, Hash, Eq)]
 pub struct PkSk {
     pub pk: String,
     pub sk: String,
 }
 
-// Fields automatically populated by DynamoUtil. This struct is automatically
-// included in all DynamoObjects as a flattened field:
-//
-// #[serde(flatten)]
-// pub auto_fields: AutoFields,
+/// Fields automatically populated by DynamoUtil. This struct is automatically
+/// included in all DynamoObjects as a flattened field:
+///
+/// #[serde(flatten)]
+/// pub auto_fields: AutoFields,
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 pub struct AutoFields {
     // Since these are manually handled by DynamoUtil, they should be read-only.

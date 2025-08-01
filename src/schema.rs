@@ -258,7 +258,7 @@ pub struct Timestamp {
 
 /// Geographic coordinate (WGS-84) with optional zoom level.
 ///
-/// * `latitude`  ∈ [-90.0, 90.0]  
+/// * `latitude`  ∈ [-90.0, 90.0]
 /// * `longitude` ∈ [-180.0, 180.0]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Coordinate {

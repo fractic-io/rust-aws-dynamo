@@ -29,6 +29,8 @@ use crate::{
 pub mod backend;
 mod calculate_sort;
 mod test;
+#[cfg(test)]
+mod batch_optimized_test;
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
 pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";

@@ -55,17 +55,16 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         _ => {}
     }
     // Build pk / sk:
-    let new_obj_id = match T::id_logic() {
-        IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
-        IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
-        IdLogic::Singleton => format!("@{}", T::id_label()),
-        IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
-        IdLogic::BatchOptimized(_) => {
-            return Err(DynamoInvalidId::new(
-                "BatchOptimized IDs must be generated via DynamoUtil::batch_replace_all_ordered",
-            ));
-        }
-    };
+    let new_obj_id =
+        match T::id_logic() {
+            IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
+            IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
+            IdLogic::Singleton => format!("@{}", T::id_label()),
+            IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
+            IdLogic::BatchOptimized { .. } => return Err(CriticalError::new(
+                "IDs for IdLogic::BatchOptimized should be generated manually in DynamoUtil::batch_replace_all_ordered(...), but generate_pk_sk(...) was unexpectedly called",
+            )),
+        };
     match T::nesting_logic() {
         NestingLogic::Root => Ok(("ROOT".to_string(), new_obj_id)),
         NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {

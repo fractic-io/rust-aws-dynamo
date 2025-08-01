@@ -50,11 +50,12 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: @LABEL[<key>]
     SingletonFamily(Box<dyn Fn(&T) -> String>),
 
-    /// WARNING: Individual item access not possible.
+    /// WARNING: Individual item CRUD not possible.
     ///
     /// With BatchOptimized, the only supported actions are:
-    /// - batch_replace_all_ordered::<T>(parent_id, items)
-    /// - batch_delete_all::<T>(parent_id)
+    /// - query_generic(...), query::<T>(...)
+    /// - batch_replace_all_ordered::<T>(...)
+    /// - batch_delete_all::<T>(...)
     ///
     /// Items are stored in chunks, with chunk_size items per chunk. IDs are
     /// sequential numbers, zero-padded to the minimum number of digits required

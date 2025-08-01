@@ -53,7 +53,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// WARNING: Individual item CRUD not possible.
     ///
     /// With BatchOptimized, the only supported actions are:
-    /// - query_generic(...), query::<T>(...)
+    /// - query::<T>(...) (and variants)
     /// - batch_replace_all_ordered::<T>(...)
     /// - batch_delete_all::<T>(...)
     ///

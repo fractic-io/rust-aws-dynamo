@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use aws_sdk_dynamodb::{
     operation::{
@@ -15,8 +18,8 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::{
-        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidOperation,
-        DynamoNotFound,
+        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidId,
+        DynamoInvalidOperation, DynamoNotFound,
     },
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
@@ -24,7 +27,7 @@ use crate::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, parse_dynamo_map,
             IdKeys,
         },
-        DynamoObject, IdLogic, PkSk, Timestamp,
+        DynamoObject, IdLogic, NestingLogic, PkSk, Timestamp,
     },
     DynamoCtxView,
 };
@@ -103,6 +106,33 @@ fn validate_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError> {
     Ok(())
 }
 
+#[track_caller]
+fn validate_parent_id<T: DynamoObject>(parent_id: &PkSk) -> Result<(), ServerError> {
+    match T::nesting_logic() {
+        NestingLogic::Root if *parent_id != PkSk::root() => {
+            return Err(DynamoInvalidOperation::new(
+                "parent ID does not match root, as expected for NestingLogic::Root",
+            ));
+        }
+        NestingLogic::TopLevelChildOf(ptype_req) if parent_id.object_type()? != ptype_req => {
+            return Err(DynamoInvalidOperation::new(&format!(
+                "parent ID does not match required object type '{}', got '{}'",
+                ptype_req,
+                parent_id.object_type()?
+            )));
+        }
+        NestingLogic::InlineChildOf(ptype_req) if parent_id.object_type()? != ptype_req => {
+            return Err(DynamoInvalidOperation::new(&format!(
+                "parent ID does not match required object type '{}', got '{}'",
+                ptype_req,
+                parent_id.object_type()?
+            )));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 impl TtlConfig {
     fn compute_timestamp(&self) -> i64 {
         match self {
@@ -160,6 +190,42 @@ impl DynamoUtil {
                 }
             })
             .collect::<Result<Vec<T>, ServerError>>()
+    }
+
+    pub async fn query_children_of_type<T: DynamoObject>(
+        &self,
+        parent_id: PkSk,
+    ) -> Result<Vec<T>, ServerError> {
+        validate_parent_id::<T>(&parent_id)?;
+
+        // * Singleton / SingletonFamily →  "@LABEL"
+        // * Everything else             →  "LABEL#"
+        let sk_search_prefix = match T::id_logic() {
+            IdLogic::Singleton | IdLogic::SingletonFamily(_) => {
+                format!("@{}", T::id_label())
+            }
+            _ => format!("{}#", T::id_label()),
+        };
+
+        self.query::<T>(
+            None,
+            match T::nesting_logic() {
+                NestingLogic::Root => PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: sk_search_prefix,
+                },
+                NestingLogic::TopLevelChildOfAny | NestingLogic::TopLevelChildOf(_) => PkSk {
+                    pk: parent_id.sk,
+                    sk: sk_search_prefix,
+                },
+                NestingLogic::InlineChildOfAny | NestingLogic::InlineChildOf(_) => PkSk {
+                    pk: parent_id.pk,
+                    sk: format!("{}#{}", parent_id.sk, sk_search_prefix),
+                },
+            },
+            DynamoQueryMatchType::BeginsWith,
+        )
+        .await
     }
 
     pub async fn query_generic(
@@ -695,6 +761,21 @@ impl DynamoUtil {
         self.raw_batch_delete_ids(keys).await
     }
 
+    pub async fn batch_delete_all<T: DynamoObject>(
+        &self,
+        parent_id: PkSk,
+    ) -> Result<(), ServerError> {
+        // Ensure we dedup IDs, since query logic expands chunks internally.
+        let children_ids: HashSet<PkSk> = self
+            .query_children_of_type::<T>(parent_id)
+            .await?
+            .into_iter()
+            .map(|c| c.id().clone())
+            .collect::<HashSet<_>>();
+        self.raw_batch_delete_ids(children_ids.into_iter().collect())
+            .await
+    }
+
     /// Performs no checks and directly deletes the given IDs from the database.
     pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), ServerError> {
         if keys.is_empty() {
@@ -911,56 +992,5 @@ impl DynamoUtil {
         self.raw_batch_put_item(chunk_rows).await?;
 
         Ok(materialised)
-    }
-
-    // Helper – deletes *all* existing chunk rows for a given parent/object type.
-    async fn _delete_all_batch_optimized_chunks<T: DynamoObject>(
-        &self,
-        parent_id: &PkSk,
-    ) -> Result<(), ServerError> {
-        // Determine pk to query and sk prefix for chunk rows.
-        let (pk_to_query, sk_prefix) = match T::nesting_logic() {
-            super::schema::NestingLogic::Root => {
-                ("ROOT".to_string(), format!("{}#__CHUNK", T::id_label()))
-            }
-            super::schema::NestingLogic::TopLevelChildOfAny
-            | super::schema::NestingLogic::TopLevelChildOf(_) => {
-                (parent_id.sk.clone(), format!("{}#__CHUNK", T::id_label()))
-            }
-            super::schema::NestingLogic::InlineChildOfAny
-            | super::schema::NestingLogic::InlineChildOf(_) => {
-                (parent_id.pk.clone(), format!("{}#__CHUNK", T::id_label()))
-            }
-        };
-
-        // Direct backend query (avoid unchunking) using begins_with on sk.
-        let condition = "pk = :pk_val AND begins_with(sk, :sk_val)".to_string();
-        let mut av = HashMap::new();
-        av.insert(
-            ":pk_val".to_string(),
-            AttributeValue::S(pk_to_query.clone()),
-        );
-        av.insert(":sk_val".to_string(), AttributeValue::S(sk_prefix.clone()));
-
-        let response = self
-            .backend
-            .query(self.table.clone(), None, condition, av)
-            .await
-            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-
-        let ids_to_delete: Vec<PkSk> = if let Some(items) = response.items() {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let pk = item.get("pk")?.as_s().ok()?.to_string();
-                    let sk = item.get("sk")?.as_s().ok()?.to_string();
-                    Some(PkSk { pk, sk })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        self.raw_batch_delete_ids(ids_to_delete).await
     }
 }

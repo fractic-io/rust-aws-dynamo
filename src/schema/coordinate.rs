@@ -17,6 +17,25 @@ use std::fmt;
 
 use crate::schema::Coordinate;
 
+// ---------- Convenience ----------
+
+impl Coordinate {
+    pub fn new(latitude: f64, longitude: f64) -> Self {
+        Self {
+            latitude,
+            longitude,
+            zoom: None,
+        }
+    }
+
+    pub fn with_zoom(self, zoom: f64) -> Self {
+        Self {
+            zoom: Some(zoom),
+            ..self
+        }
+    }
+}
+
 // ---------- Display ----------
 
 /// Human-readable format, **NOT** the same format as what is stored in the DB.

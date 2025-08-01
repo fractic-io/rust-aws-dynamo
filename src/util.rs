@@ -41,6 +41,10 @@ pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
 pub const AUTO_FIELDS_SORT: &str = "sort";
 pub const AUTO_FIELDS_TTL: &str = "ttl";
 
+/// In case of chunked items, the '_' key is used to store the children (which
+/// should be flattened before returning to the caller).
+pub const CHUNK_RESERVED_KEY: &str = "_";
+
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
     BeginsWith,
@@ -267,34 +271,29 @@ impl DynamoUtil {
             .query(self.table.clone(), index_name, condition, attribute_values)
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-        #[allow(clippy::manual_flatten)]
-        // Handle BatchOptimized chunked items. Any item that contains a '_'
-        // key (reserved for chunking) is assumed to be a container for
-        // multiple logical child objects. Each child object is stored as a
-        // map in the list under the '_' key. We expand these inline so that
-        // callers receive a flat list of items regardless of whether the
-        // data is chunked or not.
-        let mut expanded_items: Vec<DynamoMap> = Vec::new();
-        for mut item in response.items().to_vec() {
-            match item.remove("_") {
-                // Chunk row – expand children.
-                Some(AttributeValue::L(children)) => {
-                    for child in children.into_iter() {
+
+        // Expand chunked items.
+        let mut items: Vec<DynamoMap> = response
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|mut item| match item.remove(CHUNK_RESERVED_KEY) {
+                Some(AttributeValue::L(children)) => children
+                    .into_iter()
+                    .filter_map(|child| {
                         if let AttributeValue::M(map) = child {
-                            expanded_items.push(map);
+                            Some(map)
+                        } else {
+                            None
                         }
-                    }
-                    // Do NOT include the container item itself.
-                }
-                // Non-chunked row – keep as-is.
-                _ => {
-                    expanded_items.push(item);
-                }
-            }
-        }
+                    })
+                    .collect::<Vec<_>>(),
+                _ => vec![item],
+            })
+            .collect();
 
-        let mut items = expanded_items;
-
+        // Sort by sort key. Since 'sort_by' is stable, ID-based ordering is
+        // preserved for items without a sort key.
         items.sort_by(|a, b| {
             let a_sort = a
                 .get(AUTO_FIELDS_SORT)

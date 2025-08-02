@@ -2,7 +2,7 @@
 mod tests {
     use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
-    use crate::schema::IdLogic;
+    use crate::schema::{IdLogic, Timestamp};
     use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL, CHUNK_RESERVED_KEY};
     use crate::{
         dynamo_object,
@@ -178,13 +178,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_with_chunk() {
-        let sample_chunk_id = PkSk {
+        let sample_timestamp = Timestamp::now();
+
+        let sample_chunk_id_1 = PkSk {
             pk: "GROUP#456".to_string(),
             sk: "TEST#0001".to_string(),
         };
+        let sample_chunk_id_2 = PkSk {
+            pk: "GROUP#456".to_string(),
+            sk: "TEST#0002".to_string(),
+        };
+        let non_chunk_id = build_item_no_data().0.id;
 
         let mut backend = MockDynamoBackend::new();
-        let cid = sample_chunk_id.clone();
+        let cid1 = sample_chunk_id_1.clone();
+        let cid2 = sample_chunk_id_2.clone();
+        let tm_str = serde_json::to_string(&sample_timestamp)
+            .unwrap()
+            .strip_prefix("\"")
+            .unwrap()
+            .strip_suffix("\"")
+            .unwrap()
+            .to_string();
         backend
             .expect_query()
             .with(
@@ -198,14 +213,36 @@ mod tests {
             )
             .returning(move |_, _, _, _| {
                 Ok(QueryOutput::builder()
-                    .set_items(Some(vec![collection! {
-                        "pk".to_string() => AttributeValue::S(cid.pk.clone()),
-                        "sk".to_string() => AttributeValue::S(cid.sk.clone()),
-                        CHUNK_RESERVED_KEY.to_string() => AttributeValue::L(vec![
-                            AttributeValue::M(build_item_high_sort().1),
-                            AttributeValue::M(build_item_low_sort().1),
-                        ]),
-                    }]))
+                    .set_items(Some(vec![
+                        // Non-chunk item:
+                        build_item_no_data().1,
+                        // Chunk item without sort:
+                        collection! {
+                            "pk".to_string() => AttributeValue::S(cid1.pk.clone()),
+                            "sk".to_string() => AttributeValue::S(cid1.sk.clone()),
+                            CHUNK_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(build_item_high_sort().1),
+                                AttributeValue::M(build_item_low_sort().1),
+                            ]),
+                        },
+                        // Mismatching type (should be ignored):
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("GROUP#456".to_string()),
+                            "sk".to_string() => AttributeValue::S("OTHER#5555".to_string()),
+                        },
+                        // Chunk item with sort:
+                        collection! {
+                            "pk".to_string() => AttributeValue::S(cid2.pk.clone()),
+                            "sk".to_string() => AttributeValue::S(cid2.sk.clone()),
+                            AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
+                            AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
+                            CHUNK_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(build_item_high_sort().1),
+                                AttributeValue::M(build_item_low_sort().1),
+                            ]),
+                            AUTO_FIELDS_SORT.to_string() => AttributeValue::N("0.5".to_string()),
+                        },
+                    ]))
                     .build())
             });
 
@@ -223,19 +260,61 @@ mod tests {
             .unwrap();
 
         // Should have expanded chunk into individual items.
-        assert_eq!(result.len(), 2);
-        let (item_1, item_2) = {
+        assert_eq!(result.len(), 5);
+        let (item_1, item_2, item_3, item_4, item_5) = {
             let mut iter = result.into_iter();
-            (iter.next().unwrap(), iter.next().unwrap())
+            (
+                iter.next().unwrap(),
+                iter.next().unwrap(),
+                iter.next().unwrap(),
+                iter.next().unwrap(),
+                iter.next().unwrap(),
+            )
         };
 
-        // Should be sorted by chunk order, not sort:
+        // Within a chunk, should be sorted by chunk order. But, at the
+        // top-level it should be sorted by sort.
         assert_eq!(item_1.data.val_non_null, "high_sort");
+        assert_eq!(item_1.auto_fields.sort, Some(0.5)); // Should buble up to top.
         assert_eq!(item_2.data.val_non_null, "low_sort");
+        assert_eq!(item_2.auto_fields.sort, Some(0.5)); // Also, but not above item 1.
+        assert_eq!(item_3.data.val_non_null, "");
+        assert_eq!(item_3.auto_fields.sort, None);
+        assert_eq!(item_4.data.val_non_null, "high_sort");
+        assert_eq!(item_4.auto_fields.sort, None);
+        assert_eq!(item_5.data.val_non_null, "low_sort");
+        assert_eq!(item_5.auto_fields.sort, None);
 
-        // And should have (share) the chunk's ID:
-        assert_eq!(*item_1.id(), sample_chunk_id);
-        assert_eq!(*item_2.id(), sample_chunk_id);
+        // And chunk items should have (share) the chunk's ID:
+        assert_eq!(*item_1.id(), sample_chunk_id_2);
+        assert_eq!(*item_2.id(), sample_chunk_id_2);
+        assert_eq!(*item_3.id(), non_chunk_id);
+        assert_eq!(*item_4.id(), sample_chunk_id_1);
+        assert_eq!(*item_5.id(), sample_chunk_id_1);
+
+        // And the chunk's metadata:
+        assert_eq!(
+            item_1.auto_fields.created_at,
+            Some(sample_timestamp.clone())
+        );
+        assert_eq!(
+            item_1.auto_fields.updated_at,
+            Some(sample_timestamp.clone())
+        );
+        assert_eq!(
+            item_2.auto_fields.created_at,
+            Some(sample_timestamp.clone())
+        );
+        assert_eq!(
+            item_2.auto_fields.updated_at,
+            Some(sample_timestamp.clone())
+        );
+        assert_eq!(item_3.auto_fields.created_at, None);
+        assert_eq!(item_3.auto_fields.updated_at, None);
+        assert_eq!(item_4.auto_fields.created_at, None);
+        assert_eq!(item_4.auto_fields.updated_at, None);
+        assert_eq!(item_5.auto_fields.created_at, None);
+        assert_eq!(item_5.auto_fields.updated_at, None);
     }
 
     #[tokio::test]

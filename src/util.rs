@@ -323,6 +323,9 @@ impl DynamoUtil {
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         validate_id::<T>(&id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
@@ -341,6 +344,9 @@ impl DynamoUtil {
 
     /// Efficiently checks if an item exists, without fetching item data.
     pub async fn item_exists(&self, id: PkSk) -> Result<bool, ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),

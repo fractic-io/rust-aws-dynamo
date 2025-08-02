@@ -202,4 +202,82 @@ mod tests {
         assert!(validate_parent_id::<AnyInlineObj>(&wrong_parent).is_ok());
         assert!(validate_parent_id::<AnyTopObj>(&wrong_parent).is_ok());
     }
+
+    #[test]
+    fn test_child_search_prefix() {
+        // Root-level child:
+        let root_obj_search = child_search_prefix::<RootObj>(PkSk::root());
+        assert_eq!(
+            root_obj_search,
+            PkSk {
+                pk: "ROOT".into(),
+                sk: "ROOTOBJ#".into()
+            }
+        );
+
+        // Top-level child:
+        let top_level_child_search = PkSk {
+            pk: "ROOT".into(),
+            sk: "GROUP#1".into(),
+        };
+        assert_eq!(
+            child_search_prefix::<EventObj>(top_level_child_search.clone()),
+            PkSk {
+                pk: "GROUP#1".into(),
+                sk: "EVENT#".into()
+            }
+        );
+
+        // Inline-level child:
+        let inline_child_search = PkSk {
+            pk: "ROOT".into(),
+            sk: "GROUP#1".into(),
+        };
+        assert_eq!(
+            child_search_prefix::<TaskObj>(inline_child_search.clone()),
+            PkSk {
+                pk: "ROOT".into(),
+                sk: "GROUP#1#TASK#".into()
+            }
+        );
+
+        // Singleton:
+        let singleton_search = PkSk {
+            pk: "P".into(),
+            sk: "S".into(),
+        };
+        assert_eq!(
+            child_search_prefix::<SingletonObj>(singleton_search.clone()),
+            PkSk {
+                pk: "P".into(),
+                sk: "S#@SINGLE".into()
+            }
+        );
+
+        // SingletonFamily:
+        let singleton_family_search = PkSk {
+            pk: "P".into(),
+            sk: "S".into(),
+        };
+        assert_eq!(
+            child_search_prefix::<SingletonFamObj>(singleton_family_search.clone()),
+            PkSk {
+                pk: "P".into(),
+                sk: "S#@SFAM".into()
+            }
+        );
+
+        // BatchOptimized:
+        let batch_search = PkSk {
+            pk: "P".into(),
+            sk: "S".into(),
+        };
+        assert_eq!(
+            child_search_prefix::<BatchObj>(batch_search.clone()),
+            PkSk {
+                pk: "P".into(),
+                sk: "S#BATCH#".into()
+            }
+        );
+    }
 }

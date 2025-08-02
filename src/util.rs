@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    num::NonZero,
     sync::Arc,
 };
 
@@ -747,6 +748,7 @@ impl DynamoUtil {
         let IdLogic::BatchOptimized { chunk_size } = T::id_logic() else {
             unreachable!();
         };
+        let chunk_size = chunk_size.get();
         let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
         let num_digits = (num_chunks - 1).ilog10() as usize + 1;
 

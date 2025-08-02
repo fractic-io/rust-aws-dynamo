@@ -1,4 +1,4 @@
-use std::{collections::HashMap, num::NonZero};
+use std::collections::HashMap;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -65,8 +65,8 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: LABEL#<chunk-index>
     BatchOptimized {
         /// Should be chosen such that each chunk approaches, but never exceeds,
-        /// Dynamo's 400KB max item size.
-        chunk_size: NonZero<usize>,
+        /// Dynamo's 400KB max item size. Must be greater than 0.
+        chunk_size: usize,
     },
 }
 

@@ -747,7 +747,11 @@ impl DynamoUtil {
         let IdLogic::BatchOptimized { chunk_size } = T::id_logic() else {
             unreachable!();
         };
-        let chunk_size = chunk_size.get();
+        if chunk_size == 0 {
+            return Err(DynamoInvalidOperation::new(
+                "invalid IdLogic::BatchOptimized usage; chunk_size must be greater than 0",
+            ));
+        }
         let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
         let num_digits = (num_chunks - 1).ilog10() as usize + 1;
 

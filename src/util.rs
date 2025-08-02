@@ -344,9 +344,6 @@ impl DynamoUtil {
 
     /// Efficiently checks if an item exists, without fetching item data.
     pub async fn item_exists(&self, id: PkSk) -> Result<bool, ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),

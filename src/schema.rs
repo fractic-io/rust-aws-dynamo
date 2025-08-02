@@ -56,6 +56,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// - query::<T>(...) (and variants)
     /// - batch_replace_all_ordered::<T>(...)
     /// - batch_delete_all::<T>(...)
+    /// - item_exists(...) (caveat: only confirms chunk existence)
     ///
     /// Items are stored in chunks, with chunk_size items per chunk. IDs are
     /// sequential numbers, zero-padded to the minimum number of digits required

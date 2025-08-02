@@ -3,7 +3,7 @@ mod tests {
     use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
     use crate::schema::IdLogic;
-    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL};
+    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL, CHUNK_RESERVED_KEY};
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
@@ -174,6 +174,68 @@ mod tests {
         assert_eq!(result[1].data(), build_item_high_sort().0.data());
         assert_eq!(result[2].id(), build_item_no_data().0.id());
         assert_eq!(result[2].data(), build_item_no_data().0.data());
+    }
+
+    #[tokio::test]
+    async fn test_query_with_chunk() {
+        let sample_chunk_id = PkSk {
+            pk: "GROUP#456".to_string(),
+            sk: "TEST#0001".to_string(),
+        };
+
+        let mut backend = MockDynamoBackend::new();
+        let cid = sample_chunk_id.clone();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("GROUP#456".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("TEST#".to_string()),
+                }),
+            )
+            .returning(move |_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![collection! {
+                        "pk".to_string() => AttributeValue::S(cid.pk.clone()),
+                        "sk".to_string() => AttributeValue::S(cid.sk.clone()),
+                        CHUNK_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            AttributeValue::M(build_item_high_sort().1),
+                            AttributeValue::M(build_item_low_sort().1),
+                        ]),
+                    }]))
+                    .build())
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query::<TestDynamoObject>(
+                None,
+                PkSk {
+                    pk: "GROUP#456".to_string(),
+                    sk: "TEST#".to_string(),
+                },
+                DynamoQueryMatchType::BeginsWith,
+            )
+            .await
+            .unwrap();
+
+        // Should have expanded chunk into individual items.
+        assert_eq!(result.len(), 2);
+        let (item_1, item_2) = {
+            let mut iter = result.into_iter();
+            (iter.next().unwrap(), iter.next().unwrap())
+        };
+
+        // Should be sorted by chunk order, not sort:
+        assert_eq!(item_1.data.val_non_null, "high_sort");
+        assert_eq!(item_2.data.val_non_null, "low_sort");
+
+        // And should have (share) the chunk's ID:
+        assert_eq!(*item_1.id(), sample_chunk_id);
+        assert_eq!(*item_2.id(), sample_chunk_id);
     }
 
     #[tokio::test]

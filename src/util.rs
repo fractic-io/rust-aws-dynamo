@@ -29,12 +29,16 @@ use crate::{
         },
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
-    util::id_helpers::{child_search_prefix, validate_id, validate_parent_id},
+    util::{
+        chunk_helpers::WithMetadataFrom as _,
+        id_helpers::{child_search_prefix, validate_id, validate_parent_id},
+    },
     DynamoCtxView,
 };
 
 pub mod backend;
 mod calculate_sort;
+mod chunk_helpers;
 mod id_helpers;
 mod test;
 
@@ -284,8 +288,8 @@ impl DynamoUtil {
                 Some(AttributeValue::L(children)) => children
                     .into_iter()
                     .filter_map(|child| {
-                        if let AttributeValue::M(map) = child {
-                            Some(map)
+                        if let AttributeValue::M(inner_map) = child {
+                            Some(inner_map.with_metadata_from(&item))
                         } else {
                             None
                         }

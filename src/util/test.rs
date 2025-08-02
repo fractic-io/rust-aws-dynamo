@@ -3,7 +3,7 @@ mod tests {
     use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
-    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL, EXPAND_RESERVED_KEY};
+    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL, FLATTEN_RESERVED_KEY};
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
@@ -244,7 +244,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S(cid1.pk.clone()),
                             "sk".to_string() => AttributeValue::S(cid1.sk.clone()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
                             ]),
@@ -260,7 +260,7 @@ mod tests {
                             "sk".to_string() => AttributeValue::S(cid2.sk.clone()),
                             AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
                             AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
                             ]),
@@ -1052,7 +1052,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                             "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(collection! {
                                     "val".to_string() => AttributeValue::S("old_a".to_string()),
                                 }),
@@ -1064,7 +1064,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                             "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#1".to_string()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(collection! {
                                     "val".to_string() => AttributeValue::S("old_c".to_string()),
                                 }),
@@ -1101,6 +1101,9 @@ mod tests {
                         return false;
                     }
                     let sk = item.get("sk").unwrap().as_s().unwrap();
+                    if item.contains_key(AUTO_FIELDS_SORT) || item.contains_key(AUTO_FIELDS_TTL) {
+                        return false;
+                    }
                     match sk.as_str() {
                         "BATCHOPTTOPLEVEL#0" => found0 = true,
                         "BATCHOPTTOPLEVEL#1" => found1 = true,
@@ -1183,6 +1186,9 @@ mod tests {
                     }
                     let sk = item.get("sk").unwrap().as_s().unwrap();
                     if !sk.starts_with("GROUP#456#BATCHOPTINLINE#") {
+                        return false;
+                    }
+                    if item.contains_key(AUTO_FIELDS_SORT) || item.contains_key(AUTO_FIELDS_TTL) {
                         return false;
                     }
                     let idx_part = sk.rsplit('#').next().unwrap();

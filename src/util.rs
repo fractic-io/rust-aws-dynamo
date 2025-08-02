@@ -51,8 +51,8 @@ pub const AUTO_FIELDS_TTL: &str = "ttl";
 
 /// In case of chunked items, the '..' key is used to store the children (which
 /// should be flattened before returning to the caller).
-pub const EXPAND_RESERVED_KEY: &str = ".."; // WARNING: Also hardcoded
-                                            // in batch_replace_all_ordered.
+pub const FLATTEN_RESERVED_KEY: &str = ".."; // WARNING: Also hardcoded
+                                             // in batch_replace_all_ordered.
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -286,7 +286,7 @@ impl DynamoUtil {
             .items
             .unwrap_or_default()
             .into_iter()
-            .flat_map(|mut item| match item.remove(EXPAND_RESERVED_KEY) {
+            .flat_map(|mut item| match item.remove(FLATTEN_RESERVED_KEY) {
                 Some(AttributeValue::L(children)) => children
                     .into_iter()
                     .filter_map(|child| {
@@ -771,7 +771,7 @@ impl DynamoUtil {
     pub async fn batch_replace_all_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        mut data: Vec<T::Data>,
+        data: Vec<T::Data>,
     ) -> Result<(), ServerError> {
         validate_parent_id::<T>(&parent_id)?;
 
@@ -781,46 +781,46 @@ impl DynamoUtil {
         }
 
         // For ordinary ID logic, simply create the items in order.
+        // -------------------------------------------------------------------
         if !matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             self.batch_create_item_ordered::<T>(parent_id, data, DynamoInsertPosition::Last)
                 .await?;
             return Ok(());
         }
 
-        // For batch-optimized ID logic, batch into chunks.
+        // For batch-optimized ID logic, batch into flattenable chunks.
+        // -------------------------------------------------------------------
         let IdLogic::BatchOptimized { chunk_size } = T::id_logic() else {
             unreachable!();
         };
         let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
         let num_digits = (num_chunks - 1).ilog10() as usize + 1;
 
+        // Build 'flattenable' items, which wrap the data in chunks. These get
+        // automatically unwrapped by query_generic.
         #[derive(Serialize)]
-        struct Expandable<T: DynamoObject> {
+        struct Flattenable<T: DynamoObject> {
             #[serde(rename = "..")]
-            expand: Vec<T::Data>,
+            l: Vec<T::Data>,
         }
+        let maps: Vec<DynamoMap> = data
+            .chunks(chunk_size)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let new_obj_id = format!("{}#{:0num_digits$}", T::id_label(), i);
+                let (pk, sk) = match T::nesting_logic() {
+                    NestingLogic::Root => ("ROOT".to_string(), new_obj_id.clone()),
+                    NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
+                        (parent_id.sk.clone(), new_obj_id.clone())
+                    }
+                    NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => (
+                        parent_id.pk.clone(),
+                        format!("{}#{}", parent_id.sk.clone(), new_obj_id),
+                    ),
+                };
 
-        let mut maps = Vec::new();
-
-        let mut i = 0;
-        while !data.is_empty() {
-            let chunk: Vec<T::Data> = data.drain(..chunk_size.min(data.len())).collect();
-
-            let new_obj_id = format!("{}#{:0num_digits$}", T::id_label(), i);
-            let (pk, sk) = match T::nesting_logic() {
-                NestingLogic::Root => ("ROOT".to_string(), new_obj_id),
-                NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
-                    (parent_id.sk.clone(), new_obj_id)
-                }
-                NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => (
-                    parent_id.pk.clone(),
-                    format!("{}#{}", parent_id.sk.clone(), new_obj_id),
-                ),
-            };
-
-            let expandable = Expandable::<T> { expand: chunk };
-            maps.push(
-                build_dynamo_map_internal::<Expandable<T>>(
+                let expandable = Flattenable::<T> { l: chunk.to_vec() };
+                build_dynamo_map_internal::<Flattenable<T>>(
                     &expandable,
                     Some(pk),
                     Some(sk),
@@ -830,11 +830,10 @@ impl DynamoUtil {
                         (AUTO_FIELDS_SORT, Box::new(None::<f64>)),
                         (AUTO_FIELDS_TTL, Box::new(None::<i64>)),
                     ]),
-                )?
-                .0,
-            );
-            i += 1;
-        }
+                )
+                .map(|res| res.0)
+            })
+            .collect::<Result<_, _>>()?;
 
         self.raw_batch_put_item(maps).await
     }

@@ -39,7 +39,7 @@ mod tests {
         TestDynamoObjectData,
         "TEST",
         IdLogic::Uuid,
-        NestingLogic::TopLevelChildOfAny
+        NestingLogic::InlineChildOfAny
     );
 
     async fn build_util(mock_backend: MockDynamoBackend) -> DynamoUtil {
@@ -345,7 +345,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.pk(), "GROUP#123".to_string());
+        assert_eq!(result.pk(), "ROOT".to_string());
+        assert!(result.sk().starts_with("GROUP#123#TEST#"));
+        assert_eq!(result.sk().len(), 31);
     }
 
     #[tokio::test]
@@ -397,7 +399,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.pk(), "GROUP#123".to_string());
+        assert_eq!(result.pk(), "ROOT".to_string());
+        assert!(result.sk().starts_with("GROUP#123#TEST#"));
+        assert_eq!(result.sk().len(), 31);
     }
 
     #[tokio::test]
@@ -773,6 +777,92 @@ mod tests {
 
         let result = util
             .batch_delete_item::<TestDynamoObject>(keys)
+            .await
+            .unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_query_all() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
+                }),
+            )
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_item_high_sort().1,
+                        build_item_no_data().1,
+                        build_item_low_sort().1,
+                    ]))
+                    .build())
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query_all::<TestDynamoObject>(PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 3);
+
+        // Sorted by sort: low_sort, high_sort, no_data
+        assert_eq!(result[0].id(), build_item_low_sort().0.id());
+        assert_eq!(result[1].id(), build_item_high_sort().0.id());
+        assert_eq!(result[2].id(), build_item_no_data().0.id());
+    }
+
+    #[tokio::test]
+    async fn test_batch_delete_all() {
+        let mut backend = MockDynamoBackend::new();
+
+        // Expect query_all, return one child.
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
+                }),
+            )
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![build_item_no_data().1]))
+                    .build())
+            });
+
+        // Expect batch_delete_item, return success.
+        backend
+            .expect_batch_delete_item()
+            .with(
+                eq("my_table".to_string()),
+                eq(vec![collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("GROUP#123#TEST#1".to_string()),
+                }]),
+            )
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        let result = util
+            .batch_delete_all::<TestDynamoObject>(PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123".to_string(),
+            })
             .await
             .unwrap();
         assert_eq!(result, ());

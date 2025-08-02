@@ -45,7 +45,7 @@ pub fn build_dynamo_map_for_existing_obj<T: DynamoObject>(
     build_dynamo_map_internal(object, pk, sk, overrides)
 }
 
-fn build_dynamo_map_internal<T: Serialize>(
+pub(crate) fn build_dynamo_map_internal<T: Serialize>(
     object: &T,
     pk: Option<String>,
     sk: Option<String>,

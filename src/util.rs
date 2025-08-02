@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use aws_sdk_dynamodb::{
     operation::{
@@ -12,22 +15,32 @@ use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
 use fractic_core::collection;
 use fractic_server_error::ServerError;
+use serde::Serialize;
 
 use crate::{
-    errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoNotFound},
+    errors::{
+        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidOperation,
+        DynamoNotFound,
+    },
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
         parsing::{
-            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, parse_dynamo_map,
-            IdKeys,
+            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
+            build_dynamo_map_internal, parse_dynamo_map, IdKeys,
         },
-        DynamoObject, IdLogic, PkSk, Timestamp,
+        DynamoObject, IdLogic, NestingLogic, PkSk, Timestamp,
+    },
+    util::{
+        chunk_helpers::WithMetadataFrom as _,
+        id_helpers::{child_search_prefix, validate_id, validate_parent_id},
     },
     DynamoCtxView,
 };
 
 pub mod backend;
 mod calculate_sort;
+mod chunk_helpers;
+mod id_helpers;
 mod test;
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
@@ -35,6 +48,11 @@ pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
 pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
 pub const AUTO_FIELDS_SORT: &str = "sort";
 pub const AUTO_FIELDS_TTL: &str = "ttl";
+
+/// In case of chunked items, the '..' key is used to store the children (which
+/// should be flattened before returning to the caller).
+pub const FLATTEN_RESERVED_KEY: &str = ".."; // WARNING: Also hardcoded
+                                             // in batch_replace_all_ordered.
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -80,18 +98,6 @@ pub struct CreateOptions {
     /// IMPORTANT: This requires TTL to be enabled on the table, using attribute
     /// name 'ttl'.
     pub ttl: Option<TtlConfig>,
-}
-
-#[track_caller]
-fn validate_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError> {
-    if id.object_type()? != T::id_label() {
-        return Err(DynamoInvalidOperation::new(&format!(
-            "ID does not match object type; expected object type '{}', got ID '{}'",
-            T::id_label(),
-            id
-        )));
-    }
-    Ok(())
 }
 
 impl TtlConfig {
@@ -151,6 +157,18 @@ impl DynamoUtil {
                 }
             })
             .collect::<Result<Vec<T>, ServerError>>()
+    }
+
+    /// Efficiently queries all children of type `T` belonging to the given
+    /// `parent_id`. Handles all nesting logic types.
+    pub async fn query_all<T: DynamoObject>(&self, parent_id: PkSk) -> Result<Vec<T>, ServerError> {
+        validate_parent_id::<T>(&parent_id)?;
+        self.query::<T>(
+            None,
+            child_search_prefix::<T>(parent_id),
+            DynamoQueryMatchType::BeginsWith,
+        )
+        .await
     }
 
     pub async fn query_generic(
@@ -262,7 +280,29 @@ impl DynamoUtil {
             .query(self.table.clone(), index_name, condition, attribute_values)
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-        let mut items = response.items().to_vec();
+
+        // Expand chunked items.
+        let mut items: Vec<DynamoMap> = response
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|mut item| match item.remove(FLATTEN_RESERVED_KEY) {
+                Some(AttributeValue::L(children)) => children
+                    .into_iter()
+                    .filter_map(|child| {
+                        if let AttributeValue::M(inner_map) = child {
+                            Some(inner_map.with_metadata_from(&item))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+                _ => vec![item],
+            })
+            .collect();
+
+        // Sort by sort key. Since 'sort_by' is stable, ID-based ordering is
+        // preserved for items without a sort key.
         items.sort_by(|a, b| {
             let a_sort = a
                 .get(AUTO_FIELDS_SORT)
@@ -283,6 +323,9 @@ impl DynamoUtil {
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         validate_id::<T>(&id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
@@ -319,6 +362,9 @@ impl DynamoUtil {
         data: T::Data,
         options: Option<CreateOptions>,
     ) -> Result<T, ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         let (new_pk, new_sk) = generate_pk_sk::<T>(&data, &parent_id.pk, &parent_id.sk)?;
         let sort: Option<f64> = options.as_ref().and_then(|o| o.custom_sort);
         let ttl: Option<i64> = options
@@ -354,6 +400,9 @@ impl DynamoUtil {
         parent_id: PkSk,
         data_and_options: Vec<(T::Data, Option<CreateOptions>)>,
     ) -> Result<Vec<T>, ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         if matches!(T::id_logic(), IdLogic::Timestamp) {
             return Err(DynamoInvalidOperation::new(
                 "batch_create_item is not allowed with timestamp-based IDs, since all items would get the same ID and only one item would be written",
@@ -429,6 +478,9 @@ impl DynamoUtil {
         data: T::Data,
         insert_position: DynamoInsertPosition,
     ) -> Result<T, ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         let sort_val =
             calculate_sort_values::<T>(self, parent_id.clone(), &data, insert_position, 1)
                 .await?
@@ -453,6 +505,9 @@ impl DynamoUtil {
         data: Vec<T::Data>,
         insert_position: DynamoInsertPosition,
     ) -> Result<Vec<T>, ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         if data.is_empty() {
             return Ok(Vec::new());
         }
@@ -487,6 +542,9 @@ impl DynamoUtil {
     /// item does not exist, an error is returned. Fields with null values are
     /// removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         self.update_item_with_conditions(
             object,
             HashMap::default(),
@@ -506,6 +564,9 @@ impl DynamoUtil {
         id: PkSk,
         op: impl FnOnce(Option<T::Data>) -> Result<T::Data, ServerError>,
     ) -> Result<T, ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         let object_before = self.get_item::<T>(id.clone()).await?;
         let (map_before, existance_condition) = match object_before {
             Some(ref o) => (
@@ -615,6 +676,9 @@ impl DynamoUtil {
     }
 
     pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         validate_id::<T>(&id)?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
@@ -634,10 +698,103 @@ impl DynamoUtil {
         &self,
         keys: Vec<PkSk>,
     ) -> Result<(), ServerError> {
+        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+        }
         for key in &keys {
             validate_id::<T>(key)?;
         }
         self.raw_batch_delete_ids(keys).await
+    }
+
+    pub async fn batch_delete_all<T: DynamoObject>(
+        &self,
+        parent_id: PkSk,
+    ) -> Result<(), ServerError> {
+        // Ensure we dedup IDs, since query logic expands chunks internally.
+        let children_ids: HashSet<PkSk> = self
+            .query_all::<T>(parent_id)
+            .await?
+            .into_iter()
+            .map(|c| c.id().clone())
+            .collect::<HashSet<_>>();
+        self.raw_batch_delete_ids(children_ids.into_iter().collect())
+            .await
+    }
+
+    pub async fn batch_replace_all_ordered<T: DynamoObject>(
+        &self,
+        parent_id: PkSk,
+        data: Vec<T::Data>,
+    ) -> Result<(), ServerError> {
+        validate_parent_id::<T>(&parent_id)?;
+
+        self.batch_delete_all::<T>(parent_id.clone()).await?;
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        // For ordinary ID logic, simply create the items in order.
+        // -------------------------------------------------------------------
+        if !matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            self.batch_create_item_ordered::<T>(parent_id, data, DynamoInsertPosition::Last)
+                .await?;
+            return Ok(());
+        }
+
+        // For batch-optimized ID logic, batch into flattenable chunks.
+        // -------------------------------------------------------------------
+        let IdLogic::BatchOptimized { chunk_size } = T::id_logic() else {
+            unreachable!();
+        };
+        if chunk_size == 0 {
+            return Err(DynamoInvalidOperation::new(
+                "invalid IdLogic::BatchOptimized usage; chunk_size must be greater than 0",
+            ));
+        }
+        let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
+        let num_digits = (num_chunks - 1).ilog10() as usize + 1;
+
+        // Build 'flattenable' items, which wrap the data in chunks. These get
+        // automatically unwrapped by query_generic.
+        #[derive(Serialize)]
+        struct Flattenable<T: DynamoObject> {
+            #[serde(rename = "..")]
+            l: Vec<T::Data>,
+        }
+        let maps: Vec<DynamoMap> = data
+            .chunks(chunk_size)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let new_obj_id = format!("{}#{:0num_digits$}", T::id_label(), i);
+                let (pk, sk) = match T::nesting_logic() {
+                    NestingLogic::Root => ("ROOT".to_string(), new_obj_id.clone()),
+                    NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
+                        (parent_id.sk.clone(), new_obj_id.clone())
+                    }
+                    NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => (
+                        parent_id.pk.clone(),
+                        format!("{}#{}", parent_id.sk.clone(), new_obj_id),
+                    ),
+                };
+
+                let expandable = Flattenable::<T> { l: chunk.to_vec() };
+                build_dynamo_map_internal::<Flattenable<T>>(
+                    &expandable,
+                    Some(pk),
+                    Some(sk),
+                    Some(vec![
+                        (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
+                        (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+                        (AUTO_FIELDS_SORT, Box::new(None::<f64>)),
+                        (AUTO_FIELDS_TTL, Box::new(None::<i64>)),
+                    ]),
+                )
+                .map(|res| res.0)
+            })
+            .collect::<Result<_, _>>()?;
+
+        self.raw_batch_put_item(maps).await
     }
 
     /// Performs no checks and directly deletes the given IDs from the database.

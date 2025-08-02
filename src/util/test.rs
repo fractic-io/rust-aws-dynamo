@@ -2,8 +2,8 @@
 mod tests {
     use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
-    use crate::schema::IdLogic;
-    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL};
+    use crate::schema::{IdLogic, Timestamp};
+    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL, FLATTEN_RESERVED_KEY};
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
@@ -39,7 +39,31 @@ mod tests {
         TestDynamoObjectData,
         "TEST",
         IdLogic::Uuid,
+        NestingLogic::InlineChildOfAny
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct BatchOptTopLevelDynamoObjectData {
+        val: String,
+    }
+    dynamo_object!(
+        BatchOptTopLevelDynamoObject,
+        BatchOptTopLevelDynamoObjectData,
+        "BATCHOPTTOPLEVEL",
+        IdLogic::BatchOptimized { chunk_size: 2 },
         NestingLogic::TopLevelChildOfAny
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct BatchOptInlineDynamoObjectData {
+        val: String,
+    }
+    dynamo_object!(
+        BatchOptInlineDynamoObject,
+        BatchOptInlineDynamoObjectData,
+        "BATCHOPTINLINE",
+        IdLogic::BatchOptimized { chunk_size: 3 },
+        NestingLogic::InlineChildOfAny
     );
 
     async fn build_util(mock_backend: MockDynamoBackend) -> DynamoUtil {
@@ -174,6 +198,148 @@ mod tests {
         assert_eq!(result[1].data(), build_item_high_sort().0.data());
         assert_eq!(result[2].id(), build_item_no_data().0.id());
         assert_eq!(result[2].data(), build_item_no_data().0.data());
+    }
+
+    #[tokio::test]
+    async fn test_query_with_chunk() {
+        let sample_timestamp = Timestamp::now();
+
+        let sample_chunk_id_1 = PkSk {
+            pk: "GROUP#456".to_string(),
+            sk: "TEST#0001".to_string(),
+        };
+        let sample_chunk_id_2 = PkSk {
+            pk: "GROUP#456".to_string(),
+            sk: "TEST#0002".to_string(),
+        };
+        let non_chunk_id = build_item_no_data().0.id;
+
+        let mut backend = MockDynamoBackend::new();
+        let cid1 = sample_chunk_id_1.clone();
+        let cid2 = sample_chunk_id_2.clone();
+        let tm_str = serde_json::to_string(&sample_timestamp)
+            .unwrap()
+            .strip_prefix("\"")
+            .unwrap()
+            .strip_suffix("\"")
+            .unwrap()
+            .to_string();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("GROUP#456".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("TEST#".to_string()),
+                }),
+            )
+            .returning(move |_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        // Non-chunk item:
+                        build_item_no_data().1,
+                        // Chunk item without sort:
+                        collection! {
+                            "pk".to_string() => AttributeValue::S(cid1.pk.clone()),
+                            "sk".to_string() => AttributeValue::S(cid1.sk.clone()),
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(build_item_high_sort().1),
+                                AttributeValue::M(build_item_low_sort().1),
+                            ]),
+                        },
+                        // Mismatching type (should be ignored):
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("GROUP#456".to_string()),
+                            "sk".to_string() => AttributeValue::S("OTHER#5555".to_string()),
+                        },
+                        // Chunk item with sort:
+                        collection! {
+                            "pk".to_string() => AttributeValue::S(cid2.pk.clone()),
+                            "sk".to_string() => AttributeValue::S(cid2.sk.clone()),
+                            AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
+                            AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(build_item_high_sort().1),
+                                AttributeValue::M(build_item_low_sort().1),
+                            ]),
+                            AUTO_FIELDS_SORT.to_string() => AttributeValue::N("0.5".to_string()),
+                        },
+                    ]))
+                    .build())
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query::<TestDynamoObject>(
+                None,
+                PkSk {
+                    pk: "GROUP#456".to_string(),
+                    sk: "TEST#".to_string(),
+                },
+                DynamoQueryMatchType::BeginsWith,
+            )
+            .await
+            .unwrap();
+
+        // Should have expanded chunk into individual items.
+        assert_eq!(result.len(), 5);
+        let (item_1, item_2, item_3, item_4, item_5) = {
+            let mut iter = result.into_iter();
+            (
+                iter.next().unwrap(),
+                iter.next().unwrap(),
+                iter.next().unwrap(),
+                iter.next().unwrap(),
+                iter.next().unwrap(),
+            )
+        };
+
+        // Within a chunk, should be sorted by chunk order (inner sort value
+        // should be dropped). At the top-level, however, sorting should still
+        // work as normal.
+        assert_eq!(item_1.data.val_non_null, "high_sort");
+        assert_eq!(item_1.auto_fields.sort, Some(0.5)); // Should buble up to top.
+        assert_eq!(item_2.data.val_non_null, "low_sort");
+        assert_eq!(item_2.auto_fields.sort, Some(0.5)); // Also, but not above item 1.
+        assert_eq!(item_3.data.val_non_null, "");
+        assert_eq!(item_3.auto_fields.sort, None);
+        assert_eq!(item_4.data.val_non_null, "high_sort");
+        assert_eq!(item_4.auto_fields.sort, None);
+        assert_eq!(item_5.data.val_non_null, "low_sort");
+        assert_eq!(item_5.auto_fields.sort, None);
+
+        // Chunk items should have (share) the chunk's ID:
+        assert_eq!(*item_1.id(), sample_chunk_id_2);
+        assert_eq!(*item_2.id(), sample_chunk_id_2);
+        assert_eq!(*item_3.id(), non_chunk_id);
+        assert_eq!(*item_4.id(), sample_chunk_id_1);
+        assert_eq!(*item_5.id(), sample_chunk_id_1);
+
+        // And the chunk's metadata:
+        assert_eq!(
+            item_1.auto_fields.created_at,
+            Some(sample_timestamp.clone())
+        );
+        assert_eq!(
+            item_1.auto_fields.updated_at,
+            Some(sample_timestamp.clone())
+        );
+        assert_eq!(
+            item_2.auto_fields.created_at,
+            Some(sample_timestamp.clone())
+        );
+        assert_eq!(
+            item_2.auto_fields.updated_at,
+            Some(sample_timestamp.clone())
+        );
+        assert_eq!(item_3.auto_fields.created_at, None);
+        assert_eq!(item_3.auto_fields.updated_at, None);
+        assert_eq!(item_4.auto_fields.created_at, None);
+        assert_eq!(item_4.auto_fields.updated_at, None);
+        assert_eq!(item_5.auto_fields.created_at, None);
+        assert_eq!(item_5.auto_fields.updated_at, None);
     }
 
     #[tokio::test]
@@ -345,7 +511,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.pk(), "GROUP#123".to_string());
+        assert_eq!(result.pk(), "ROOT".to_string());
+        assert!(result.sk().starts_with("GROUP#123#TEST#"));
+        assert_eq!(result.sk().len(), 31);
     }
 
     #[tokio::test]
@@ -397,7 +565,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.pk(), "GROUP#123".to_string());
+        assert_eq!(result.pk(), "ROOT".to_string());
+        assert!(result.sk().starts_with("GROUP#123#TEST#"));
+        assert_eq!(result.sk().len(), 31);
     }
 
     #[tokio::test]
@@ -776,5 +946,278 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_query_all() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
+                }),
+            )
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_item_high_sort().1,
+                        build_item_no_data().1,
+                        build_item_low_sort().1,
+                    ]))
+                    .build())
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query_all::<TestDynamoObject>(PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 3);
+
+        // Sorted by sort: low_sort, high_sort, no_data
+        assert_eq!(result[0].id(), build_item_low_sort().0.id());
+        assert_eq!(result[1].id(), build_item_high_sort().0.id());
+        assert_eq!(result[2].id(), build_item_no_data().0.id());
+    }
+
+    #[tokio::test]
+    async fn test_batch_delete_all() {
+        let mut backend = MockDynamoBackend::new();
+
+        // Expect query_all, return one child.
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
+                }),
+            )
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![build_item_no_data().1]))
+                    .build())
+            });
+
+        // Expect batch_delete_item, return success.
+        backend
+            .expect_batch_delete_item()
+            .with(
+                eq("my_table".to_string()),
+                eq(vec![collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("GROUP#123#TEST#1".to_string()),
+                }]),
+            )
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        let result = util
+            .batch_delete_all::<TestDynamoObject>(PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_batch_replace_all_ordered_top_level_children() {
+        let mut backend = MockDynamoBackend::new();
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#789".to_string(),
+        };
+
+        backend
+            .expect_query()
+            .withf(|table, _index, _cond, _vals| table == "my_table")
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
+                            "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(collection! {
+                                    "val".to_string() => AttributeValue::S("old_a".to_string()),
+                                }),
+                                AttributeValue::M(collection! {
+                                    "val".to_string() => AttributeValue::S("old_b".to_string()),
+                                }),
+                            ]),
+                        },
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
+                            "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#1".to_string()),
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(collection! {
+                                    "val".to_string() => AttributeValue::S("old_c".to_string()),
+                                }),
+                            ]),
+                        },
+                    ]))
+                    .build())
+            });
+
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| table == "my_table" && items.len() == 2)
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                if table != "my_table" {
+                    return false;
+                }
+                if items.is_empty() {
+                    return false;
+                }
+
+                // Expect 2 chunks with ids #0 and #1.
+                if items.len() != 2 {
+                    return false;
+                }
+                let mut found0 = false;
+                let mut found1 = false;
+                for item in items {
+                    let pk = item.get("pk").unwrap().as_s().unwrap();
+                    if pk != "GROUP#789" {
+                        return false;
+                    }
+                    let sk = item.get("sk").unwrap().as_s().unwrap();
+                    if item.contains_key(AUTO_FIELDS_SORT) || item.contains_key(AUTO_FIELDS_TTL) {
+                        return false;
+                    }
+                    match sk.as_str() {
+                        "BATCHOPTTOPLEVEL#0" => found0 = true,
+                        "BATCHOPTTOPLEVEL#1" => found1 = true,
+                        _ => return false,
+                    }
+                }
+                found0 && found1
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let new_items = vec![
+            BatchOptTopLevelDynamoObjectData { val: "new1".into() },
+            BatchOptTopLevelDynamoObjectData { val: "new2".into() },
+            BatchOptTopLevelDynamoObjectData { val: "new3".into() },
+        ];
+
+        let result = util
+            .batch_replace_all_ordered::<BatchOptTopLevelDynamoObject>(parent_id, new_items)
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_batch_replace_all_ordered_inline_children() {
+        let mut backend = MockDynamoBackend::new();
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#456".to_string(),
+        };
+
+        backend
+            .expect_query()
+            .withf(|table, _index, _cond, _vals| table == "my_table")
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                            "sk".to_string() => AttributeValue::S("GROUP#456#BATCHOPTINLINE#OLD0".to_string()),
+                            "val".to_string() => AttributeValue::S("old_x".to_string()),
+                        },
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                            "sk".to_string() => AttributeValue::S("GROUP#456#BATCHOPTINLINE#OLD1".to_string()),
+                            "val".to_string() => AttributeValue::S("old_y".to_string()),
+                        },
+                    ]))
+                    .build())
+            });
+
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| table == "my_table" && items.len() == 2)
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                if table != "my_table" {
+                    return false;
+                }
+                if items.is_empty() {
+                    return false;
+                }
+
+                // Expect 11 chunks with 2-digit indices (00-10).
+                if items.len() != 11 {
+                    return false;
+                }
+                let mut has_00 = false;
+                let mut has_10 = false;
+                for item in items {
+                    let pk = item.get("pk").unwrap().as_s().unwrap();
+                    if pk != "ROOT" {
+                        return false;
+                    }
+                    let sk = item.get("sk").unwrap().as_s().unwrap();
+                    if !sk.starts_with("GROUP#456#BATCHOPTINLINE#") {
+                        return false;
+                    }
+                    if item.contains_key(AUTO_FIELDS_SORT) || item.contains_key(AUTO_FIELDS_TTL) {
+                        return false;
+                    }
+                    let idx_part = sk.rsplit('#').next().unwrap();
+                    if idx_part.len() != 2 {
+                        return false;
+                    }
+                    if idx_part == "00" {
+                        has_00 = true;
+                    }
+                    if idx_part == "10" {
+                        has_10 = true;
+                    }
+                }
+                has_00 && has_10
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let new_items = (0..32)
+            .map(|i| BatchOptInlineDynamoObjectData {
+                val: format!("n{}", i),
+            })
+            .collect::<Vec<_>>();
+
+        let result = util
+            .batch_replace_all_ordered::<BatchOptInlineDynamoObject>(parent_id, new_items)
+            .await;
+
+        assert!(result.is_ok());
     }
 }

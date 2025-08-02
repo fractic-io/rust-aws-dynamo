@@ -35,13 +35,15 @@ fn _sk_strip_uuid<T: DynamoObject>(
         // For SingletonFamily, strip the key.
         IdLogic::SingletonFamily(_) => sk.split('[').next().unwrap().to_string(),
         // For Uuid and Timestamp, take ID until last '#' character.
-        IdLogic::Uuid | IdLogic::Timestamp => sk[..sk.rfind('#').ok_or_else(|| {
-            DynamoInvalidId::with_debug(
-                "can't strip Uuid/Timestamp since ID didn't contain '#'",
-                &sk,
-            )
-        })?]
-            .to_string(),
+        IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {
+            sk[..sk.rfind('#').ok_or_else(|| {
+                DynamoInvalidId::with_debug(
+                    "can't strip Uuid/Timestamp since ID didn't contain '#'",
+                    &sk,
+                )
+            })?]
+                .to_string()
+        }
     })
 }
 

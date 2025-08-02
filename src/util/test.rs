@@ -1220,4 +1220,57 @@ mod tests {
 
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_batch_replace_all_ordered_single_chunk() {
+        let mut backend = MockDynamoBackend::new();
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#789".to_string(),
+        };
+
+        backend
+            .expect_query()
+            .withf(|table, _index, _cond, _vals| table == "my_table")
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![collection! {
+                        "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
+                        "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
+                        FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            AttributeValue::M(collection! {
+                                "val".to_string() => AttributeValue::S("old_a".to_string()),
+                            }),
+                            AttributeValue::M(collection! {
+                                "val".to_string() => AttributeValue::S("old_b".to_string()),
+                            }),
+                        ]),
+                    }]))
+                    .build())
+            });
+
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| table == "my_table" && items.len() == 1)
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| table == "my_table" && items.len() == 1)
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let new_items = vec![
+            BatchOptTopLevelDynamoObjectData { val: "new1".into() },
+            BatchOptTopLevelDynamoObjectData { val: "new2".into() },
+        ];
+
+        let result = util
+            .batch_replace_all_ordered::<BatchOptTopLevelDynamoObject>(parent_id, new_items)
+            .await;
+
+        assert!(result.is_ok());
+    }
 }

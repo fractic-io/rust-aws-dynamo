@@ -753,7 +753,11 @@ impl DynamoUtil {
             ));
         }
         let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
-        let num_digits = (num_chunks - 1).ilog10() as usize + 1;
+        let num_digits = match num_chunks {
+            0 => unreachable!(),
+            1 => 1,
+            n => (n - 1).ilog10() as usize + 1,
+        };
 
         // Build 'flattenable' items, which wrap the data in chunks. These get
         // automatically unwrapped by query_generic.

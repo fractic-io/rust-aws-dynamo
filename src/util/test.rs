@@ -42,6 +42,30 @@ mod tests {
         NestingLogic::InlineChildOfAny
     );
 
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct BatchOptTopLevelDynamoObjectData {
+        val: String,
+    }
+    dynamo_object!(
+        BatchOptTopLevelDynamoObject,
+        BatchOptTopLevelDynamoObjectData,
+        "BATCHOPTTOPLEVEL",
+        IdLogic::BatchOptimized { chunk_size: 2 },
+        NestingLogic::TopLevelChildOfAny
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct BatchOptInlineDynamoObjectData {
+        val: String,
+    }
+    dynamo_object!(
+        BatchOptInlineDynamoObject,
+        BatchOptInlineDynamoObjectData,
+        "BATCHOPTINLINE",
+        IdLogic::BatchOptimized { chunk_size: 3 },
+        NestingLogic::InlineChildOfAny
+    );
+
     async fn build_util(mock_backend: MockDynamoBackend) -> DynamoUtil {
         let ctx = TestCtx::init_test("mock-region".to_string());
         ctx.override_dynamo_backend(Arc::new(mock_backend)).await;
@@ -1008,5 +1032,186 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_batch_replace_all_ordered_top_level_children() {
+        let mut backend = MockDynamoBackend::new();
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#789".to_string(),
+        };
+
+        backend
+            .expect_query()
+            .withf(|table, _index, _cond, _vals| table == "my_table")
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
+                            "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(collection! {
+                                    "val".to_string() => AttributeValue::S("old_a".to_string()),
+                                }),
+                                AttributeValue::M(collection! {
+                                    "val".to_string() => AttributeValue::S("old_b".to_string()),
+                                }),
+                            ]),
+                        },
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
+                            "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#1".to_string()),
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(collection! {
+                                    "val".to_string() => AttributeValue::S("old_c".to_string()),
+                                }),
+                            ]),
+                        },
+                    ]))
+                    .build())
+            });
+
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| table == "my_table" && items.len() == 2)
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                if table != "my_table" {
+                    return false;
+                }
+                if items.is_empty() {
+                    return false;
+                }
+
+                // Expect 2 chunks with ids #0 and #1.
+                if items.len() != 2 {
+                    return false;
+                }
+                let mut found0 = false;
+                let mut found1 = false;
+                for item in items {
+                    let pk = item.get("pk").unwrap().as_s().unwrap();
+                    if pk != "GROUP#789" {
+                        return false;
+                    }
+                    let sk = item.get("sk").unwrap().as_s().unwrap();
+                    match sk.as_str() {
+                        "BATCHOPTTOPLEVEL#0" => found0 = true,
+                        "BATCHOPTTOPLEVEL#1" => found1 = true,
+                        _ => return false,
+                    }
+                }
+                found0 && found1
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let new_items = vec![
+            BatchOptTopLevelDynamoObjectData { val: "new1".into() },
+            BatchOptTopLevelDynamoObjectData { val: "new2".into() },
+            BatchOptTopLevelDynamoObjectData { val: "new3".into() },
+        ];
+
+        let result = util
+            .batch_replace_all_ordered::<BatchOptTopLevelDynamoObject>(parent_id, new_items)
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_batch_replace_all_ordered_inline_children() {
+        let mut backend = MockDynamoBackend::new();
+
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#456".to_string(),
+        };
+
+        backend
+            .expect_query()
+            .withf(|table, _index, _cond, _vals| table == "my_table")
+            .returning(|_, _, _, _| {
+                Ok(QueryOutput::builder()
+                    .set_items(Some(vec![
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                            "sk".to_string() => AttributeValue::S("GROUP#456#BATCHOPTINLINE#OLD0".to_string()),
+                            "val".to_string() => AttributeValue::S("old_x".to_string()),
+                        },
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                            "sk".to_string() => AttributeValue::S("GROUP#456#BATCHOPTINLINE#OLD1".to_string()),
+                            "val".to_string() => AttributeValue::S("old_y".to_string()),
+                        },
+                    ]))
+                    .build())
+            });
+
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| table == "my_table" && items.len() == 2)
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                if table != "my_table" {
+                    return false;
+                }
+                if items.is_empty() {
+                    return false;
+                }
+
+                // Expect 11 chunks with 2-digit indices (00-10).
+                if items.len() != 11 {
+                    return false;
+                }
+                let mut has_00 = false;
+                let mut has_10 = false;
+                for item in items {
+                    let pk = item.get("pk").unwrap().as_s().unwrap();
+                    if pk != "ROOT" {
+                        return false;
+                    }
+                    let sk = item.get("sk").unwrap().as_s().unwrap();
+                    if !sk.starts_with("GROUP#456#BATCHOPTINLINE#") {
+                        return false;
+                    }
+                    let idx_part = sk.rsplit('#').next().unwrap();
+                    if idx_part.len() != 2 {
+                        return false;
+                    }
+                    if idx_part == "00" {
+                        has_00 = true;
+                    }
+                    if idx_part == "10" {
+                        has_10 = true;
+                    }
+                }
+                has_00 && has_10
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let new_items = (0..32)
+            .map(|i| BatchOptInlineDynamoObjectData {
+                val: format!("n{}", i),
+            })
+            .collect::<Vec<_>>();
+
+        let result = util
+            .batch_replace_all_ordered::<BatchOptInlineDynamoObject>(parent_id, new_items)
+            .await;
+
+        assert!(result.is_ok());
     }
 }

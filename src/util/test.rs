@@ -272,8 +272,9 @@ mod tests {
             )
         };
 
-        // Within a chunk, should be sorted by chunk order. But, at the
-        // top-level it should be sorted by sort.
+        // Within a chunk, should be sorted by chunk order (inner sort value
+        // should be dropped). At the top-level, however, sorting should still
+        // work as normal.
         assert_eq!(item_1.data.val_non_null, "high_sort");
         assert_eq!(item_1.auto_fields.sort, Some(0.5)); // Should buble up to top.
         assert_eq!(item_2.data.val_non_null, "low_sort");
@@ -285,7 +286,7 @@ mod tests {
         assert_eq!(item_5.data.val_non_null, "low_sort");
         assert_eq!(item_5.auto_fields.sort, None);
 
-        // And chunk items should have (share) the chunk's ID:
+        // Chunk items should have (share) the chunk's ID:
         assert_eq!(*item_1.id(), sample_chunk_id_2);
         assert_eq!(*item_2.id(), sample_chunk_id_2);
         assert_eq!(*item_3.id(), non_chunk_id);

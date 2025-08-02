@@ -84,95 +84,95 @@ mod tests {
     };
 
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct RootObjUnitData {}
+    pub struct RootGroupData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct GroupObjUnitData {}
+    pub struct GroupTaskData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct TaskObjUnitData {}
+    pub struct GroupEventData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct EventObjUnitData {}
+    pub struct InlineChildOfAnyData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct AnyInlineObjUnitData {}
+    pub struct TopLevelChildOfAnyData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct AnyTopObjUnitData {}
+    pub struct InlineSingletonData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct SingletonObjUnitData {}
-    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct SingletonFamObjUnitData {
+    pub struct InlineSingletonFamData {
         key: String,
     }
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct BatchObjUnitData {}
+    pub struct InlineBatchData {}
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct TopLevelBatchData {}
 
     dynamo_object!(
-        RootObj,
-        RootObjUnitData,
-        "ROOTOBJ",
-        IdLogic::Uuid,
-        NestingLogic::Root
-    );
-    dynamo_object!(
-        GroupObj,
-        GroupObjUnitData,
+        RootGroup,
+        RootGroupData,
         "GROUP",
         IdLogic::Uuid,
         NestingLogic::Root
     );
     dynamo_object!(
-        TaskObj,
-        TaskObjUnitData,
+        GroupTask,
+        GroupTaskData,
         "TASK",
         IdLogic::Uuid,
         NestingLogic::InlineChildOf("GROUP")
     );
     dynamo_object!(
-        EventObj,
-        EventObjUnitData,
+        GroupEvent,
+        GroupEventData,
         "EVENT",
         IdLogic::Uuid,
         NestingLogic::TopLevelChildOf("GROUP")
     );
     dynamo_object!(
-        AnyInlineObj,
-        AnyInlineObjUnitData,
+        InlineChildOfAny,
+        InlineChildOfAnyData,
         "ANYINL",
         IdLogic::Uuid,
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
-        AnyTopObj,
-        AnyTopObjUnitData,
+        TopLevelChildOfAny,
+        TopLevelChildOfAnyData,
         "ANYTOP",
         IdLogic::Uuid,
         NestingLogic::TopLevelChildOfAny
     );
     dynamo_object!(
-        SingletonObj,
-        SingletonObjUnitData,
-        "SINGLE",
+        InlineSingleton,
+        InlineSingletonData,
+        "INLSINGLE",
         IdLogic::Singleton,
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
-        SingletonFamObj,
-        SingletonFamObjUnitData,
-        "SFAM",
-        IdLogic::SingletonFamily(Box::new(|data: &SingletonFamObjUnitData| data.key.clone())),
+        InlineSingletonFam,
+        InlineSingletonFamData,
+        "INLFAM",
+        IdLogic::SingletonFamily(Box::new(|data: &InlineSingletonFamData| data.key.clone())),
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
-        BatchObj,
-        BatchObjUnitData,
-        "BATCH",
+        InlineBatch,
+        InlineBatchData,
+        "INLBATCH",
         IdLogic::BatchOptimized { chunk_size: 10 },
         NestingLogic::InlineChildOfAny
+    );
+    dynamo_object!(
+        TopLevelBatch,
+        TopLevelBatchData,
+        "TOPLBATCH",
+        IdLogic::BatchOptimized { chunk_size: 10 },
+        NestingLogic::TopLevelChildOf("N")
     );
 
     #[test]
     fn test_validate_parent_id() {
         // Root OK / error --------------------------------------------------------
-        assert!(validate_parent_id::<RootObj>(&PkSk::root()).is_ok());
-        assert!(validate_parent_id::<RootObj>(&PkSk {
+        assert!(validate_parent_id::<RootGroup>(&PkSk::root()).is_ok());
+        assert!(validate_parent_id::<RootGroup>(&PkSk {
             pk: "X".into(),
             sk: "Y".into()
         })
@@ -183,35 +183,35 @@ mod tests {
             pk: "ROOT".into(),
             sk: "GROUP#1".into(),
         };
-        assert!(validate_parent_id::<EventObj>(&group_parent).is_ok());
+        assert!(validate_parent_id::<GroupEvent>(&group_parent).is_ok());
         let wrong_parent = PkSk {
             pk: "ROOT".into(),
             sk: "OTHER#1".into(),
         };
-        assert!(validate_parent_id::<EventObj>(&wrong_parent).is_err());
+        assert!(validate_parent_id::<GroupEvent>(&wrong_parent).is_err());
 
         // InlineChildOf OK / wrong-type ------------------------------------------
         let inl_parent = PkSk {
             pk: "ROOT".into(),
             sk: "GROUP#1".into(),
         };
-        assert!(validate_parent_id::<TaskObj>(&inl_parent).is_ok());
-        assert!(validate_parent_id::<TaskObj>(&wrong_parent).is_err());
+        assert!(validate_parent_id::<GroupTask>(&inl_parent).is_ok());
+        assert!(validate_parent_id::<GroupTask>(&wrong_parent).is_err());
 
         // “Any” variants never fail ----------------------------------------------
-        assert!(validate_parent_id::<AnyInlineObj>(&wrong_parent).is_ok());
-        assert!(validate_parent_id::<AnyTopObj>(&wrong_parent).is_ok());
+        assert!(validate_parent_id::<InlineChildOfAny>(&wrong_parent).is_ok());
+        assert!(validate_parent_id::<TopLevelChildOfAny>(&wrong_parent).is_ok());
     }
 
     #[test]
     fn test_child_search_prefix() {
         // Root-level child:
-        let root_obj_search = child_search_prefix::<RootObj>(PkSk::root());
+        let root_obj_search = child_search_prefix::<RootGroup>(PkSk::root());
         assert_eq!(
             root_obj_search,
             PkSk {
                 pk: "ROOT".into(),
-                sk: "ROOTOBJ#".into()
+                sk: "GROUP#".into()
             }
         );
 
@@ -221,7 +221,7 @@ mod tests {
             sk: "GROUP#1".into(),
         };
         assert_eq!(
-            child_search_prefix::<EventObj>(top_level_child_search.clone()),
+            child_search_prefix::<GroupEvent>(top_level_child_search.clone()),
             PkSk {
                 pk: "GROUP#1".into(),
                 sk: "EVENT#".into()
@@ -234,49 +234,62 @@ mod tests {
             sk: "GROUP#1".into(),
         };
         assert_eq!(
-            child_search_prefix::<TaskObj>(inline_child_search.clone()),
+            child_search_prefix::<GroupTask>(inline_child_search.clone()),
             PkSk {
                 pk: "ROOT".into(),
                 sk: "GROUP#1#TASK#".into()
             }
         );
 
-        // Singleton:
-        let singleton_search = PkSk {
+        // Inline Singleton:
+        let inline_singleton_search = PkSk {
             pk: "P".into(),
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<SingletonObj>(singleton_search.clone()),
+            child_search_prefix::<InlineSingleton>(inline_singleton_search.clone()),
             PkSk {
                 pk: "P".into(),
-                sk: "S#@SINGLE".into()
+                sk: "S#@INLSINGLE".into()
             }
         );
 
-        // SingletonFamily:
-        let singleton_family_search = PkSk {
+        // Inline SingletonFamily:
+        let inline_singleton_family_search = PkSk {
             pk: "P".into(),
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<SingletonFamObj>(singleton_family_search.clone()),
+            child_search_prefix::<InlineSingletonFam>(inline_singleton_family_search.clone()),
             PkSk {
                 pk: "P".into(),
-                sk: "S#@SFAM".into()
+                sk: "S#@INLFAM".into()
             }
         );
 
-        // BatchOptimized:
-        let batch_search = PkSk {
+        // Inline BatchOptimized:
+        let inline_batch_search = PkSk {
             pk: "P".into(),
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<BatchObj>(batch_search.clone()),
+            child_search_prefix::<InlineBatch>(inline_batch_search.clone()),
             PkSk {
                 pk: "P".into(),
-                sk: "S#BATCH#".into()
+                sk: "S#INLBATCH#".into()
+            }
+        );
+
+        // Top-level BatchOptimized:
+        let top_level_batch_search = PkSk {
+            pk: "P".into(),
+            sk: "S#123#N#456".into(),
+        };
+        assert_eq!(
+            child_search_prefix::<TopLevelBatch>(top_level_batch_search.clone()),
+            PkSk {
+                pk: "S#123#N#456".into(),
+                sk: "TOPLBATCH#".into()
             }
         );
     }

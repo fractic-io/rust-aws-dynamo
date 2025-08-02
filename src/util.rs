@@ -725,55 +725,6 @@ impl DynamoUtil {
             .await
     }
 
-    /// Performs no checks and directly deletes the given IDs from the database.
-    pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), ServerError> {
-        if keys.is_empty() {
-            return Ok(());
-        }
-        let items = keys
-            .into_iter()
-            .map(|id| {
-                collection! {
-                    "pk".to_string() => AttributeValue::S(id.pk),
-                    "sk".to_string() => AttributeValue::S(id.sk),
-                }
-            })
-            .collect::<Vec<_>>();
-        // Split into 25-item chunks (max supported by DynamoDB).
-        for chunk in items.chunks(25) {
-            self.backend
-                .batch_delete_item(self.table.clone(), chunk.to_vec())
-                .await
-                .map_err(|e| match e.into_service_error() {
-                    BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
-                    other => DynamoCalloutError::with_debug(&other),
-                })?;
-        }
-        Ok(())
-    }
-
-    /// Performs no checks and directly writes the given DynamoMaps to the
-    /// database. If the item exists, it is updated. If it does not exist, it is
-    /// created.
-    ///
-    /// This does not check or update auto fields (updated_at, sort, etc.). The
-    /// map values are just directly written.
-    ///
-    /// Should only be used internally for efficient low-level DB actions.
-    pub async fn raw_batch_put_item(&self, items: Vec<DynamoMap>) -> Result<(), ServerError> {
-        if items.is_empty() {
-            return Ok(());
-        }
-        // Split into 25-item chunks (max supported by DynamoDB).
-        for chunk in items.chunks(25) {
-            self.backend
-                .batch_put_item(self.table.clone(), chunk.to_vec())
-                .await
-                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-        }
-        Ok(())
-    }
-
     pub async fn batch_replace_all_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
@@ -842,5 +793,54 @@ impl DynamoUtil {
             .collect::<Result<_, _>>()?;
 
         self.raw_batch_put_item(maps).await
+    }
+
+    /// Performs no checks and directly deletes the given IDs from the database.
+    pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), ServerError> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let items = keys
+            .into_iter()
+            .map(|id| {
+                collection! {
+                    "pk".to_string() => AttributeValue::S(id.pk),
+                    "sk".to_string() => AttributeValue::S(id.sk),
+                }
+            })
+            .collect::<Vec<_>>();
+        // Split into 25-item chunks (max supported by DynamoDB).
+        for chunk in items.chunks(25) {
+            self.backend
+                .batch_delete_item(self.table.clone(), chunk.to_vec())
+                .await
+                .map_err(|e| match e.into_service_error() {
+                    BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
+                    other => DynamoCalloutError::with_debug(&other),
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Performs no checks and directly writes the given DynamoMaps to the
+    /// database. If the item exists, it is updated. If it does not exist, it is
+    /// created.
+    ///
+    /// This does not check or update auto fields (updated_at, sort, etc.). The
+    /// map values are just directly written.
+    ///
+    /// Should only be used internally for efficient low-level DB actions.
+    pub async fn raw_batch_put_item(&self, items: Vec<DynamoMap>) -> Result<(), ServerError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        // Split into 25-item chunks (max supported by DynamoDB).
+        for chunk in items.chunks(25) {
+            self.backend
+                .batch_put_item(self.table.clone(), chunk.to_vec())
+                .await
+                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+        }
+        Ok(())
     }
 }

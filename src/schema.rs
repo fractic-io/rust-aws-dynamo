@@ -153,30 +153,30 @@ macro_rules! dynamo_object {
     ($type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {
         #[derive(Debug, Serialize, Deserialize, Clone)]
         pub struct $type {
-            pub id: PkSk,
+            pub id: $crate::schema::PkSk,
 
             #[serde(flatten)]
             pub data: $datatype,
 
             // Must be last to capture unknown fields.
             #[serde(flatten)]
-            pub auto_fields: AutoFields,
+            pub auto_fields: $crate::schema::AutoFields,
         }
 
-        impl DynamoObjectData for $datatype {}
+        impl $crate::schema::DynamoObjectData for $datatype {}
 
-        impl DynamoObject for $type {
+        impl $crate::schema::DynamoObject for $type {
             type Data = $datatype;
 
-            fn new(id: PkSk, data: Self::Data) -> Self {
+            fn new(id: $crate::schema::PkSk, data: Self::Data) -> Self {
                 Self {
                     id,
                     data,
-                    auto_fields: AutoFields::default(),
+                    auto_fields: $crate::schema::AutoFields::default(),
                 }
             }
 
-            fn id(&self) -> &PkSk {
+            fn id(&self) -> &$crate::schema::PkSk {
                 &self.id
             }
             fn data(&self) -> &Self::Data {
@@ -188,17 +188,17 @@ macro_rules! dynamo_object {
             fn into_data(self) -> Self::Data {
                 self.data
             }
-            fn auto_fields(&self) -> &AutoFields {
+            fn auto_fields(&self) -> &$crate::schema::AutoFields {
                 &self.auto_fields
             }
 
             fn id_label() -> &'static str {
                 $id_label
             }
-            fn id_logic() -> IdLogic<$datatype> {
+            fn id_logic() -> $crate::schema::IdLogic<$datatype> {
                 $id_logic
             }
-            fn nesting_logic() -> NestingLogic {
+            fn nesting_logic() -> $crate::schema::NestingLogic {
                 $nesting_logic
             }
         }

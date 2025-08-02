@@ -6,7 +6,7 @@ mod tests {
     use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL};
     use crate::{
         dynamo_object,
-        schema::{AutoFields, DynamoObject, DynamoObjectData, NestingLogic, PkSk},
+        schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
         util::{
             backend::MockDynamoBackend, DynamoQueryMatchType, DynamoUtil, AUTO_FIELDS_CREATED_AT,
             AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,

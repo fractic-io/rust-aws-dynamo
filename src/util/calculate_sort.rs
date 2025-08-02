@@ -147,7 +147,7 @@ mod tests {
     use crate::context::test_ctx::TestCtx;
     use crate::{
         dynamo_object,
-        schema::{AutoFields, DynamoObject, DynamoObjectData, NestingLogic},
+        schema::{AutoFields, NestingLogic},
         util::{backend::MockDynamoBackend, DynamoUtil},
     };
     use aws_sdk_dynamodb::{operation::query::QueryOutput, types::AttributeValue};

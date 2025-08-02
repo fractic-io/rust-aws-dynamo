@@ -137,7 +137,7 @@ mod tests {
 
     use crate::{
         dynamo_object,
-        schema::{AutoFields, DynamoObject, DynamoObjectData, PkSk},
+        schema::{AutoFields, PkSk},
     };
 
     use super::*;

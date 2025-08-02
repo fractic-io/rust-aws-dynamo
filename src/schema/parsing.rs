@@ -227,9 +227,7 @@ mod tests {
     use super::*;
     use crate::{
         dynamo_object,
-        schema::{
-            AutoFields, DynamoObject, DynamoObjectData, IdLogic, NestingLogic, PkSk, Timestamp,
-        },
+        schema::{AutoFields, IdLogic, NestingLogic, PkSk, Timestamp},
         util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT},
     };
     use aws_sdk_dynamodb::types::AttributeValue;

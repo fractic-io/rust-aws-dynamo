@@ -30,8 +30,8 @@ macro_rules! with_maybe_committed_scaffolding {
             Uncommitted($datatype),
         }
 
-        impl MaybeCommittedDynamoObject<$objecttype> for $type {
-            fn id(&self) -> Option<&PkSk> {
+        impl $crate::schema::MaybeCommittedDynamoObject<$objecttype> for $type {
+            fn id(&self) -> Option<&$crate::schema::PkSk> {
                 match self {
                     $type::Committed(object) => Some(&object.id),
                     $type::Uncommitted(_) => None,

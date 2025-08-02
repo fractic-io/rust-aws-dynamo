@@ -15,6 +15,7 @@ use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
 use fractic_core::collection;
 use fractic_server_error::ServerError;
+use serde::Serialize;
 
 use crate::{
     errors::{
@@ -24,10 +25,10 @@ use crate::{
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
         parsing::{
-            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, parse_dynamo_map,
-            IdKeys,
+            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
+            build_dynamo_map_internal, parse_dynamo_map, IdKeys,
         },
-        DynamoObject, IdLogic, PkSk, Timestamp,
+        DynamoObject, IdLogic, NestingLogic, PkSk, Timestamp,
     },
     util::{
         chunk_helpers::WithMetadataFrom as _,
@@ -50,7 +51,8 @@ pub const AUTO_FIELDS_TTL: &str = "ttl";
 
 /// In case of chunked items, the '..' key is used to store the children (which
 /// should be flattened before returning to the caller).
-pub const EXPAND_RESERVED_KEY: &str = "..";
+pub const EXPAND_RESERVED_KEY: &str = ".."; // WARNING: Also hardcoded
+                                            // in batch_replace_all_ordered.
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -766,23 +768,74 @@ impl DynamoUtil {
         Ok(())
     }
 
-    /// Replaces **all** children of type `T` belonging to the given `parent_id`
-    /// with the provided list of data, preserving order.
-    ///
-    /// When used with `IdLogic::BatchOptimized`, this method:
-    ///   1. Generates deterministic natural-number IDs (zero-padded) for every
-    ///      logical child, based on its position in `data`.
-    ///   2. Groups the children into chunks of size `chunk_size`, writing one
-    ///      DynamoDB row per chunk. The children for a chunk are stored under
-    ///      the reserved `CHUNK_RESERVED_KEY` attribute.
-    ///   3. Deletes any **existing** chunk rows that no longer belong to the
-    ///      dataset (for example if the new data results in fewer chunks than
-    ///      before).
     pub async fn batch_replace_all_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        data: Vec<T::Data>,
-    ) -> Result<Vec<T>, ServerError> {
-        todo!()
+        mut data: Vec<T::Data>,
+    ) -> Result<(), ServerError> {
+        validate_parent_id::<T>(&parent_id)?;
+
+        self.batch_delete_all::<T>(parent_id.clone()).await?;
+        if data.is_empty() {
+            return Ok(());
+        }
+
+        // For ordinary ID logic, simply create the items in order.
+        if !matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+            self.batch_create_item_ordered::<T>(parent_id, data, DynamoInsertPosition::Last)
+                .await?;
+            return Ok(());
+        }
+
+        // For batch-optimized ID logic, batch into chunks.
+        let IdLogic::BatchOptimized { chunk_size } = T::id_logic() else {
+            unreachable!();
+        };
+        let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
+        let num_digits = (num_chunks - 1).ilog10() as usize + 1;
+
+        #[derive(Serialize)]
+        struct Expandable<T: DynamoObject> {
+            #[serde(rename = "..")]
+            expand: Vec<T::Data>,
+        }
+
+        let mut maps = Vec::new();
+
+        let mut i = 0;
+        while !data.is_empty() {
+            let chunk: Vec<T::Data> = data.drain(..chunk_size.min(data.len())).collect();
+
+            let new_obj_id = format!("{}#{:0num_digits$}", T::id_label(), i);
+            let (pk, sk) = match T::nesting_logic() {
+                NestingLogic::Root => ("ROOT".to_string(), new_obj_id),
+                NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
+                    (parent_id.sk.clone(), new_obj_id)
+                }
+                NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => (
+                    parent_id.pk.clone(),
+                    format!("{}#{}", parent_id.sk.clone(), new_obj_id),
+                ),
+            };
+
+            let expandable = Expandable::<T> { expand: chunk };
+            maps.push(
+                build_dynamo_map_internal::<Expandable<T>>(
+                    &expandable,
+                    Some(pk),
+                    Some(sk),
+                    Some(vec![
+                        (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
+                        (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+                        (AUTO_FIELDS_SORT, Box::new(None::<f64>)),
+                        (AUTO_FIELDS_TTL, Box::new(None::<i64>)),
+                    ]),
+                )?
+                .0,
+            );
+            i += 1;
+        }
+
+        self.raw_batch_put_item(maps).await
     }
 }

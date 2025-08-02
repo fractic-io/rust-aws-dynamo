@@ -3,7 +3,7 @@ mod tests {
     use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
-    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL, CHUNK_RESERVED_KEY};
+    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL, EXPAND_RESERVED_KEY};
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
@@ -220,7 +220,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S(cid1.pk.clone()),
                             "sk".to_string() => AttributeValue::S(cid1.sk.clone()),
-                            CHUNK_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
                             ]),
@@ -236,7 +236,7 @@ mod tests {
                             "sk".to_string() => AttributeValue::S(cid2.sk.clone()),
                             AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
                             AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
-                            CHUNK_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
                             ]),

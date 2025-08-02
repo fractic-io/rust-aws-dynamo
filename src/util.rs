@@ -48,9 +48,9 @@ pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
 pub const AUTO_FIELDS_SORT: &str = "sort";
 pub const AUTO_FIELDS_TTL: &str = "ttl";
 
-/// In case of chunked items, the '_' key is used to store the children (which
+/// In case of chunked items, the '..' key is used to store the children (which
 /// should be flattened before returning to the caller).
-pub const CHUNK_RESERVED_KEY: &str = "_";
+pub const EXPAND_RESERVED_KEY: &str = "..";
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -284,7 +284,7 @@ impl DynamoUtil {
             .items
             .unwrap_or_default()
             .into_iter()
-            .flat_map(|mut item| match item.remove(CHUNK_RESERVED_KEY) {
+            .flat_map(|mut item| match item.remove(EXPAND_RESERVED_KEY) {
                 Some(AttributeValue::L(children)) => children
                     .into_iter()
                     .filter_map(|child| {
@@ -774,7 +774,7 @@ impl DynamoUtil {
     ///      logical child, based on its position in `data`.
     ///   2. Groups the children into chunks of size `chunk_size`, writing one
     ///      DynamoDB row per chunk. The children for a chunk are stored under
-    ///      the reserved `_` attribute.
+    ///      the reserved `CHUNK_RESERVED_KEY` attribute.
     ///   3. Deletes any **existing** chunk rows that no longer belong to the
     ///      dataset (for example if the new data results in fewer chunks than
     ///      before).
@@ -783,153 +783,6 @@ impl DynamoUtil {
         parent_id: PkSk,
         data: Vec<T::Data>,
     ) -> Result<Vec<T>, ServerError> {
-        // Ensure that this function is only used with BatchOptimized.
-        let chunk_size = match T::id_logic() {
-            IdLogic::BatchOptimized { chunk_size } => chunk_size,
-            _ => {
-                return Err(DynamoInvalidOperation::new(
-                    "batch_replace_all_ordered can only be used with BatchOptimized IdLogic",
-                ))
-            }
-        };
-
-        // Early exit – replacement with empty list means delete all children.
-        if data.is_empty() {
-            // Fetch existing chunk rows (if any) and delete them.
-            self.batch_delete_all::<T>(parent_id.clone()).await?;
-            return Ok(Vec::new());
-        }
-
-        // Determine numeric ID width (zero-padding).
-        let total_items = data.len();
-        let digits: usize = ((total_items as f64).log10().floor() as usize) + 1;
-
-        // Helper closure to compute (pk, sk) for a child index.
-        let build_child_pk_sk = |idx: usize| -> Result<(String, String), ServerError> {
-            // idx is 1-based.
-            let numeric_part = format!("{:0width$}", idx, width = digits);
-            let child_id = format!("{}#{}", T::id_label(), numeric_part);
-
-            // Validate parent.
-            if crate::schema::id_calculations::is_singleton(&parent_id.pk, &parent_id.sk) {
-                return Err(DynamoInvalidOperation::new(
-                    "singletons cannot have children for BatchOptimized generation",
-                ));
-            }
-
-            match T::nesting_logic() {
-                super::schema::NestingLogic::Root => Ok(("ROOT".to_string(), child_id)),
-                super::schema::NestingLogic::TopLevelChildOfAny => {
-                    Ok((parent_id.sk.clone(), child_id))
-                }
-                super::schema::NestingLogic::TopLevelChildOf(ptype_req) => {
-                    let ptype = crate::schema::id_calculations::get_object_type(
-                        &parent_id.pk,
-                        &parent_id.sk,
-                    )?;
-                    if ptype != ptype_req {
-                        return Err(DynamoInvalidOperation::new(&format!(
-                            "parent object type '{}' did not match required '{}'",
-                            ptype, ptype_req
-                        )));
-                    }
-                    Ok((parent_id.sk.clone(), child_id))
-                }
-                super::schema::NestingLogic::InlineChildOfAny => Ok((
-                    parent_id.pk.clone(),
-                    format!("{}#{}", parent_id.sk, child_id),
-                )),
-                super::schema::NestingLogic::InlineChildOf(ptype_req) => {
-                    let ptype = crate::schema::id_calculations::get_object_type(
-                        &parent_id.pk,
-                        &parent_id.sk,
-                    )?;
-                    if ptype != ptype_req {
-                        return Err(DynamoInvalidOperation::new(&format!(
-                            "parent object type '{}' did not match required '{}'",
-                            ptype, ptype_req
-                        )));
-                    }
-                    Ok((
-                        parent_id.pk.clone(),
-                        format!("{}#{}", parent_id.sk, child_id),
-                    ))
-                }
-            }
-        };
-
-        // Build child DynamoMaps and materialised objects.
-        let mut child_maps: Vec<DynamoMap> = Vec::with_capacity(total_items);
-        let mut materialised: Vec<T> = Vec::with_capacity(total_items);
-
-        for (idx, child_data) in data.into_iter().enumerate() {
-            let (child_pk, child_sk) = build_child_pk_sk(idx + 1)?;
-            let map = crate::schema::parsing::build_dynamo_map_for_new_obj::<T>(
-                &child_data,
-                child_pk.clone(),
-                child_sk.clone(),
-                Some(vec![
-                    (
-                        AUTO_FIELDS_CREATED_AT,
-                        Box::new(crate::schema::Timestamp::now()),
-                    ),
-                    (
-                        AUTO_FIELDS_UPDATED_AT,
-                        Box::new(crate::schema::Timestamp::now()),
-                    ),
-                ]),
-            )?;
-
-            child_maps.push(map);
-
-            materialised.push(T::new(
-                PkSk {
-                    pk: child_pk,
-                    sk: child_sk,
-                },
-                child_data,
-            ));
-        }
-
-        // Group children into chunks.
-        let mut chunk_rows: Vec<DynamoMap> = Vec::new();
-        let mut idx = 0usize; // index within child_maps
-        let mut chunk_idx = 0usize;
-
-        while idx < child_maps.len() {
-            let end = usize::min(idx + chunk_size, child_maps.len());
-            let chunk_slice = &child_maps[idx..end];
-
-            // Children as AttributeValue::M.
-            let child_attr_list: Vec<AttributeValue> =
-                chunk_slice.iter().cloned().map(AttributeValue::M).collect();
-
-            // pk is the pk of first child (same for all children in slice by construction).
-            let row_pk = match chunk_slice.first().and_then(|m| m.get("pk")) {
-                Some(AttributeValue::S(s)) => s.clone(),
-                _ => unreachable!("child map missing pk"),
-            };
-
-            let row_sk = format!("{}#__CHUNK#{:06}", T::id_label(), chunk_idx);
-
-            chunk_idx += 1;
-            idx = end;
-
-            chunk_rows.push(collection! {
-                "pk".to_string() => AttributeValue::S(row_pk),
-                "sk".to_string() => AttributeValue::S(row_sk),
-                "_".to_string() => AttributeValue::L(child_attr_list),
-                // Updated at so we can track freshness of chunk rows.
-                AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(crate::schema::Timestamp::now().to_string()),
-            });
-        }
-
-        // Delete existing chunk rows for this parent.
-        self.batch_delete_all::<T>(parent_id.clone()).await?;
-
-        // Write new chunk rows.
-        self.raw_batch_put_item(chunk_rows).await?;
-
-        Ok(materialised)
+        todo!()
     }
 }

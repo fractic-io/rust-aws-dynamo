@@ -34,8 +34,6 @@ use crate::{
 };
 
 pub mod backend;
-// #[cfg(test)]
-// mod batch_optimized_test;
 mod calculate_sort;
 mod id_helpers;
 mod test;

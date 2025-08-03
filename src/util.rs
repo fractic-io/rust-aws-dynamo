@@ -284,7 +284,7 @@ impl DynamoUtil {
         // Expand chunked items.
         let mut items: Vec<DynamoMap> = response
             .into_iter()
-            .flat_map(|page| page.items.unwrap_or_default())
+            .flat_map(|page| page.items.unwrap_or_default().into_iter())
             .flat_map(|mut item| match item.remove(FLATTEN_RESERVED_KEY) {
                 Some(AttributeValue::L(children)) => children
                     .into_iter()

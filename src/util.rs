@@ -13,8 +13,8 @@ use aws_sdk_dynamodb::{
 use backend::DynamoBackend;
 use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
-use fractic_core::collection;
-use fractic_server_error::ServerError;
+use fractic_core::{collection, req_not_none};
+use fractic_server_error::{CriticalError, ServerError};
 use serde::Serialize;
 
 use crate::{
@@ -707,6 +707,7 @@ impl DynamoUtil {
         self.raw_batch_delete_ids(keys).await
     }
 
+    /// Deletes *all* children of type T on the parent.
     pub async fn batch_delete_all<T: DynamoObject>(
         &self,
         parent_id: PkSk,
@@ -722,19 +723,35 @@ impl DynamoUtil {
             .await
     }
 
+    /// Replaces *all* children of type T on the parent.
+    ///
+    /// For BatchOptimized item types, this function internally stores the data
+    /// in large chunks (which get flattened by query logic).
     pub async fn batch_replace_all_ordered<T: DynamoObject>(
         &self,
         parent_id: PkSk,
         data: Vec<T::Data>,
     ) -> Result<(), ServerError> {
+        // Validations.
         validate_parent_id::<T>(&parent_id)?;
+        let chunk_size = match T::id_logic() {
+            IdLogic::BatchOptimized { chunk_size } => {
+                if chunk_size == 0 {
+                    return Err(DynamoInvalidOperation::new(
+                        "invalid IdLogic::BatchOptimized usage; chunk_size must be greater than 0",
+                    ));
+                }
+                Some(chunk_size)
+            }
+            _ => None,
+        };
 
         self.batch_delete_all::<T>(parent_id.clone()).await?;
         if data.is_empty() {
             return Ok(());
         }
 
-        // For ordinary ID logic, simply create the items in order.
+        // For ordinary ID logic, simply create the new items in order.
         // -------------------------------------------------------------------
         if !matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             self.batch_create_item_ordered::<T>(parent_id, data, DynamoInsertPosition::Last)
@@ -744,17 +761,10 @@ impl DynamoUtil {
 
         // For batch-optimized ID logic, batch into flattenable chunks.
         // -------------------------------------------------------------------
-        let IdLogic::BatchOptimized { chunk_size } = T::id_logic() else {
-            unreachable!();
-        };
-        if chunk_size == 0 {
-            return Err(DynamoInvalidOperation::new(
-                "invalid IdLogic::BatchOptimized usage; chunk_size must be greater than 0",
-            ));
-        }
+        req_not_none!(chunk_size, CriticalError);
         let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
         let num_digits = match num_chunks {
-            0 => unreachable!(),
+            0 => unreachable!("data.is_empty() checked above"),
             1 => 1,
             n => (n - 1).ilog10() as usize + 1,
         };
@@ -772,9 +782,9 @@ impl DynamoUtil {
             .map(|(i, chunk)| {
                 let new_obj_id = format!("{}#{:0num_digits$}", T::id_label(), i);
                 let (pk, sk) = match T::nesting_logic() {
-                    NestingLogic::Root => ("ROOT".to_string(), new_obj_id.clone()),
+                    NestingLogic::Root => ("ROOT".to_string(), new_obj_id),
                     NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
-                        (parent_id.sk.clone(), new_obj_id.clone())
+                        (parent_id.sk.clone(), new_obj_id)
                     }
                     NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => (
                         parent_id.pk.clone(),
@@ -782,9 +792,9 @@ impl DynamoUtil {
                     ),
                 };
 
-                let expandable = Flattenable::<T> { l: chunk.to_vec() };
+                let flattenable = Flattenable::<T> { l: chunk.to_vec() };
                 build_dynamo_map_internal::<Flattenable<T>>(
-                    &expandable,
+                    &flattenable,
                     Some(pk),
                     Some(sk),
                     Some(vec![

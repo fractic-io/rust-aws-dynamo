@@ -318,7 +318,7 @@ impl DynamoUtil {
                 _ => std::cmp::Ordering::Equal,
             }
         });
-        Ok(items.to_vec())
+        Ok(items)
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {

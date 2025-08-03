@@ -207,12 +207,12 @@ mod tests {
             .expect_query()
             .withf(|_, _, _, _| true)
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
                         build_dynamo_item("ROOT", "GROUP#123#TEST#2", Some(1.5)),
                     ]))
-                    .build())
+                    .build()])
             });
 
         let util = build_util(backend).await;
@@ -247,12 +247,12 @@ mod tests {
             .expect_query()
             .withf(|_, _, _, _| true)
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
                         build_dynamo_item("ROOT", "GROUP#123#TEST#2", Some(1.5)),
                     ]))
-                    .build())
+                    .build()])
             });
 
         let util = build_util(backend).await;
@@ -287,12 +287,12 @@ mod tests {
             .expect_query()
             .withf(|_, _, _, _| true)
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
                         build_dynamo_item("ROOT", "GROUP#123#TEST#2", Some(1.5)),
                     ]))
-                    .build())
+                    .build()])
             });
 
         let util = build_util(backend).await;
@@ -332,12 +332,12 @@ mod tests {
             .expect_query()
             .withf(|_, _, _, _| true)
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
                         build_dynamo_item("ROOT", "GROUP#123#TEST#2", Some(1.5)),
                     ]))
-                    .build())
+                    .build()])
             });
 
         let util = build_util(backend).await;
@@ -376,7 +376,9 @@ mod tests {
         backend
             .expect_query()
             .withf(|_, _, _, _| true)
-            .returning(|_, _, _, _| Ok(QueryOutput::builder().set_items(Some(vec![])).build()));
+            .returning(|_, _, _, _| {
+                Ok(vec![QueryOutput::builder().set_items(Some(vec![])).build()])
+            });
 
         let util = build_util(backend).await;
 

@@ -34,7 +34,7 @@ pub trait DynamoBackend: Send + Sync {
         index: Option<String>,
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
-    ) -> Result<QueryOutput, SdkError<QueryError>>;
+    ) -> Result<Vec<QueryOutput>, SdkError<QueryError>>;
 
     async fn get_item(
         &self,
@@ -90,13 +90,15 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         index: Option<String>,
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
-    ) -> Result<QueryOutput, SdkError<QueryError>> {
+    ) -> Result<Vec<QueryOutput>, SdkError<QueryError>> {
         self.query()
             .set_table_name(Some(table_name))
             .set_index_name(index)
             .set_key_condition_expression(Some(condition))
             .set_expression_attribute_values(Some(attribute_values))
+            .into_paginator()
             .send()
+            .try_collect()
             .await
     }
 

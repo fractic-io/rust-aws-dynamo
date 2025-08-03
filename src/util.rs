@@ -283,9 +283,8 @@ impl DynamoUtil {
 
         // Expand chunked items.
         let mut items: Vec<DynamoMap> = response
-            .items
-            .unwrap_or_default()
             .into_iter()
+            .flat_map(|page| page.items.unwrap_or_default().into_iter())
             .flat_map(|mut item| match item.remove(FLATTEN_RESERVED_KEY) {
                 Some(AttributeValue::L(children)) => children
                     .into_iter()
@@ -319,7 +318,7 @@ impl DynamoUtil {
                 _ => std::cmp::Ordering::Equal,
             }
         });
-        Ok(items.to_vec())
+        Ok(items)
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {

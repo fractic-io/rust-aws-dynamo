@@ -161,8 +161,9 @@ mod tests {
                 }),
             )
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
-                    .set_items(Some(vec![
+                Ok(vec![
+                    QueryOutput::builder()
+                        .set_items(Some(vec![
                         build_item_high_sort().1,
                         build_item_no_data().1,
                         build_item_low_sort().1,
@@ -170,8 +171,9 @@ mod tests {
                             "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                             "sk".to_string() => AttributeValue::S("GROUP#123#OTHEROBJECT#1".to_string())
                         )
-                    ]))
-                    .build())
+                        ]))
+                        .build(),
+                ])
             });
 
         let util = build_util(backend).await;
@@ -192,6 +194,69 @@ mod tests {
         assert_eq!(result.len(), 3);
 
         // Lower sort value item first.
+        assert_eq!(result[0].id(), build_item_low_sort().0.id());
+        assert_eq!(result[0].data(), build_item_low_sort().0.data());
+        assert_eq!(result[1].id(), build_item_high_sort().0.id());
+        assert_eq!(result[1].data(), build_item_high_sort().0.data());
+        assert_eq!(result[2].id(), build_item_no_data().0.id());
+        assert_eq!(result[2].data(), build_item_no_data().0.data());
+    }
+
+    #[tokio::test]
+    async fn test_query_with_pages() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123".to_string())
+                }),
+            )
+            .returning(|_, _, _, _| {
+                Ok(vec![
+                    QueryOutput::builder()
+                        .set_items(Some(vec![
+                            build_item_high_sort().1,
+                            build_item_no_data().1,
+                        ]))
+                        .build(),
+                    QueryOutput::builder()
+                        .set_items(Some(vec![
+                            build_item_low_sort().1,
+                        ]))
+                        .build(),
+                    QueryOutput::builder()
+                        .set_items(Some(vec![]))
+                        .build(),
+                    QueryOutput::builder()
+                        .set_items(Some(vec![
+                            collection!(
+                                "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                                "sk".to_string() => AttributeValue::S("GROUP#123#OTHEROBJECT#1".to_string())
+                            )
+                        ]))
+                        .build(),
+                ])
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query::<TestDynamoObject>(
+                None,
+                PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: "GROUP#123".to_string(),
+                },
+                DynamoQueryMatchType::BeginsWith,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 3);
         assert_eq!(result[0].id(), build_item_low_sort().0.id());
         assert_eq!(result[0].data(), build_item_low_sort().0.data());
         assert_eq!(result[1].id(), build_item_high_sort().0.id());
@@ -236,7 +301,7 @@ mod tests {
                 }),
             )
             .returning(move |_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         // Non-chunk item:
                         build_item_no_data().1,
@@ -267,7 +332,7 @@ mod tests {
                             AUTO_FIELDS_SORT.to_string() => AttributeValue::N("0.5".to_string()),
                         },
                     ]))
-                    .build())
+                    .build()])
             });
 
         let util = build_util(backend).await;
@@ -357,12 +422,12 @@ mod tests {
                 }),
             )
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_item_high_sort().1,
                         build_item_low_sort().1,
                     ]))
-                    .build())
+                    .build()])
             });
 
         let util = build_util(backend).await;
@@ -963,13 +1028,13 @@ mod tests {
                 }),
             )
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_item_high_sort().1,
                         build_item_no_data().1,
                         build_item_low_sort().1,
                     ]))
-                    .build())
+                    .build()])
             });
 
         let util = build_util(backend).await;
@@ -1006,9 +1071,9 @@ mod tests {
                 }),
             )
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![build_item_no_data().1]))
-                    .build())
+                    .build()])
             });
 
         // Expect batch_delete_item, return success.
@@ -1047,7 +1112,7 @@ mod tests {
             .expect_query()
             .withf(|table, _index, _cond, _vals| table == "my_table")
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         collection! {
                             "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
@@ -1071,7 +1136,7 @@ mod tests {
                             ]),
                         },
                     ]))
-                    .build())
+                    .build()])
             });
 
         backend
@@ -1142,8 +1207,9 @@ mod tests {
             .expect_query()
             .withf(|table, _index, _cond, _vals| table == "my_table")
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
-                    .set_items(Some(vec![
+                Ok(vec![
+                    QueryOutput::builder()
+                        .set_items(Some(vec![
                         collection! {
                             "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                             "sk".to_string() => AttributeValue::S("GROUP#456#BATCHOPTINLINE#OLD0".to_string()),
@@ -1155,7 +1221,8 @@ mod tests {
                             "val".to_string() => AttributeValue::S("old_y".to_string()),
                         },
                     ]))
-                    .build())
+                    .build(),
+                ])
             });
 
         backend
@@ -1234,7 +1301,7 @@ mod tests {
             .expect_query()
             .withf(|table, _index, _cond, _vals| table == "my_table")
             .returning(|_, _, _, _| {
-                Ok(QueryOutput::builder()
+                Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![collection! {
                         "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                         "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
@@ -1247,7 +1314,7 @@ mod tests {
                             }),
                         ]),
                     }]))
-                    .build())
+                    .build()])
             });
 
         backend

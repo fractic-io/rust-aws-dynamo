@@ -220,21 +220,24 @@ mod tests {
                 Ok(vec![
                     QueryOutput::builder()
                         .set_items(Some(vec![
-                        build_item_high_sort().1,
-                        build_item_no_data().1,
+                            build_item_high_sort().1,
+                            build_item_no_data().1,
                         ]))
                         .build(),
                     QueryOutput::builder()
                         .set_items(Some(vec![
-                        build_item_low_sort().1,
+                            build_item_low_sort().1,
                         ]))
                         .build(),
                     QueryOutput::builder()
+                        .set_items(Some(vec![]))
+                        .build(),
+                    QueryOutput::builder()
                         .set_items(Some(vec![
-                        collection!(
-                            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                            "sk".to_string() => AttributeValue::S("GROUP#123#OTHEROBJECT#1".to_string())
-                        )
+                            collection!(
+                                "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                                "sk".to_string() => AttributeValue::S("GROUP#123#OTHEROBJECT#1".to_string())
+                            )
                         ]))
                         .build(),
                 ])

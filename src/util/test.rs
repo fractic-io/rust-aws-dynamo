@@ -1324,7 +1324,27 @@ mod tests {
 
         backend
             .expect_batch_put_item()
-            .withf(|table, items| table == "my_table" && items.len() == 1)
+            .withf(|table, items| {
+                if table != "my_table" {
+                    return false;
+                }
+                if items.len() != 1 {
+                    return false;
+                }
+                let item = items.first().unwrap();
+                let pk = item.get("pk").unwrap().as_s().unwrap();
+                if pk != "GROUP#789" {
+                    return false;
+                }
+                let sk = item.get("sk").unwrap().as_s().unwrap();
+                if sk != "BATCHOPTTOPLEVEL#-" {
+                    return false;
+                }
+                if item.contains_key(AUTO_FIELDS_SORT) || item.contains_key(AUTO_FIELDS_TTL) {
+                    return false;
+                }
+                true
+            })
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
         let util = build_util(backend).await;

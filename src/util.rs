@@ -762,9 +762,14 @@ impl DynamoUtil {
         // -------------------------------------------------------------------
         req_not_none!(chunk_size, CriticalError);
         let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
-        let num_digits = match num_chunks {
+
+        // When building the UUID component of IDs for flattenable items, use
+        // the chunk index (1, 2, 3, ...), padded with 0s to the minimum length
+        // to represent all chunks (ex. if 456 chunks: 001, 002 ... 455).
+        // Padding is important since Dynamo sorts lexicographically.
+        let index_digits = match num_chunks {
             0 => unreachable!("data.is_empty() checked above"),
-            1 => 1,
+            1 => 0, // Special case: replaced with '-' later.
             n => (n - 1).ilog10() as usize + 1,
         };
 
@@ -779,7 +784,14 @@ impl DynamoUtil {
             .chunks(chunk_size)
             .enumerate()
             .map(|(i, chunk)| {
-                let new_obj_id = format!("{}#{:0num_digits$}", T::id_label(), i);
+                let new_obj_id = if index_digits == 0 {
+                    // If there's only a single chunk, indicate with '-' instead
+                    // of index, to make it more human-readable (i.e. make it
+                    // clear there's only a single chunk).
+                    format!("{}#-", T::id_label())
+                } else {
+                    format!("{}#{}", T::id_label(), format!("{:0index_digits$}", i))
+                };
                 let (pk, sk) = match T::nesting_logic() {
                     NestingLogic::Root => ("ROOT".to_string(), new_obj_id),
                     NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {

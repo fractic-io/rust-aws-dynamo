@@ -214,7 +214,7 @@ register_ctx_singleton!(dyn DynamoCtxView, dyn DynamoBackend, |ctx: Arc<
     dyn DynamoCtxView,
 >| async move {
     let region = Region::new(ctx.dynamo_region().clone());
-    let shared_config = aws_config::defaults(BehaviorVersion::v2025_01_17())
+    let shared_config = aws_config::defaults(BehaviorVersion::v2025_08_07())
         .region(region)
         .load()
         .await;

@@ -16,7 +16,7 @@ use crate::{
 
 /// Trait that must be implemented to use type-safe CRUD operation wrappers.
 #[async_trait]
-pub trait DynamoCrudOperations: Send + Sync {
+pub trait DynamoCrudAlgorithms: Send + Sync {
     async fn recursive_delete(&self, id: PkSk) -> Result<(), ServerError>;
 }
 
@@ -151,18 +151,18 @@ where
 
 pub struct ManageRootImpl<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_operations: Arc<dyn DynamoCrudOperations>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
 impl<O: DynamoObject> ManageRootImpl<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
-        crud_operations: Arc<dyn DynamoCrudOperations>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_operations: crud_operations,
+            _crud_algorithms: crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -225,18 +225,18 @@ where
 
 pub struct ManageRootWithChildrenImpl<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    crud_operations: Arc<dyn DynamoCrudOperations>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
 impl<O: DynamoObject> ManageRootWithChildrenImpl<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
-        crud_operations: Arc<dyn DynamoCrudOperations>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     ) -> Self {
         Self {
             dynamo_util,
-            crud_operations,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -274,7 +274,7 @@ where
     }
 
     async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError> {
-        self.crud_operations
+        self.crud_algorithms
             .recursive_delete(item.id().clone())
             .await?;
         Ok(item.into_data())
@@ -306,18 +306,18 @@ where
 
 pub struct ManageChildImpl<O: DynamoObject, P: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_operations: Arc<dyn DynamoCrudOperations>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<(O, P)>,
 }
 
 impl<O: DynamoObject, P: DynamoObject> ManageChildImpl<O, P> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
-        crud_operations: Arc<dyn DynamoCrudOperations>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_operations: crud_operations,
+            _crud_algorithms: crud_algorithms,
             _phantom: PhantomData::<(O, P)>,
         }
     }
@@ -398,18 +398,18 @@ where
 
 pub struct ManageChildWithChildrenImpl<O: DynamoObject, P: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    crud_operations: Arc<dyn DynamoCrudOperations>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<(O, P)>,
 }
 
 impl<O: DynamoObject, P: DynamoObject> ManageChildWithChildrenImpl<O, P> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
-        crud_operations: Arc<dyn DynamoCrudOperations>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     ) -> Self {
         Self {
             dynamo_util,
-            crud_operations,
+            crud_algorithms: crud_algorithms,
             _phantom: PhantomData::<(O, P)>,
         }
     }
@@ -463,7 +463,7 @@ where
     }
 
     async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError> {
-        self.crud_operations
+        self.crud_algorithms
             .recursive_delete(item.id().clone())
             .await?;
         Ok(item.into_data())
@@ -497,18 +497,18 @@ where
 
 pub struct ManageBatchChildImpl<O: DynamoObject, P: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_operations: Arc<dyn DynamoCrudOperations>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<(O, P)>,
 }
 
 impl<O: DynamoObject, P: DynamoObject> ManageBatchChildImpl<O, P> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
-        crud_operations: Arc<dyn DynamoCrudOperations>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_operations: crud_operations,
+            _crud_algorithms: crud_algorithms,
             _phantom: PhantomData::<(O, P)>,
         }
     }

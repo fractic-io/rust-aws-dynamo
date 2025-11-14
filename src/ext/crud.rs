@@ -59,10 +59,11 @@ where
     async fn batch_delete_all_non_recursive(&self) -> Result<(), ServerError>;
 }
 
-/// Type-safe accessor for CRUD operations on a child object (i.e. has a
-/// parent).
+/// Type-safe accessor for CRUD operations on an ordered child object (i.e. has
+/// a parent, and whose `add` and `batch_add` operations should use more costly
+/// sort-key-based insertion).
 #[async_trait]
-pub trait ManageChild<O>: Send + Sync
+pub trait ManageOrderedChild<O>: Send + Sync
 where
     O: DynamoObject,
 {
@@ -91,10 +92,10 @@ where
     async fn batch_delete_all(&self, parent: &Self::Parent) -> Result<(), ServerError>;
 }
 
-/// Type-safe accessor for CRUD operations on a child object, which itself also
-/// has children.
+/// Type-safe accessor for CRUD operations on an ordered child object, which
+/// itself also has children.
 #[async_trait]
-pub trait ManageChildWithChildren<O>: Send + Sync
+pub trait ManageOrderedChildWithChildren<O>: Send + Sync
 where
     O: DynamoObject,
 {
@@ -113,6 +114,63 @@ where
         parent: &Self::Parent,
         data: Vec<O::Data>,
         after: Option<&O>,
+    ) -> Result<Vec<O>, ServerError>;
+    async fn update(&self, item: &O) -> Result<(), ServerError>;
+    async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError>;
+    async fn delete_non_recursive(&self, item: O) -> Result<O::Data, ServerError>;
+    async fn batch_delete_non_recursive(&self, items: Vec<O>) -> Result<Vec<O::Data>, ServerError>;
+
+    // Global operations:
+    async fn query_all(&self, parent: &Self::Parent) -> Result<Vec<O>, ServerError>;
+    async fn batch_delete_all_non_recursive(
+        &self,
+        parent: &Self::Parent,
+    ) -> Result<(), ServerError>;
+}
+
+/// Type-safe accessor for CRUD operations on an unordered child object (i.e.
+/// has a parent, and whose order should be based directly on the ID logic,
+/// avoiding costly sort-key determination).
+#[async_trait]
+pub trait ManageUnorderedChild<O>: Send + Sync
+where
+    O: DynamoObject,
+{
+    type Parent: DynamoObject;
+
+    // Item operations:
+    async fn get(&self, id: PkSk) -> Result<O, ServerError>;
+    async fn add(&self, parent: &Self::Parent, data: O::Data) -> Result<O, ServerError>;
+    async fn batch_add(
+        &self,
+        parent: &Self::Parent,
+        data: Vec<O::Data>,
+    ) -> Result<Vec<O>, ServerError>;
+    async fn update(&self, item: &O) -> Result<(), ServerError>;
+    async fn delete(&self, item: O) -> Result<O::Data, ServerError>;
+    async fn batch_delete(&self, items: Vec<O>) -> Result<Vec<O::Data>, ServerError>;
+
+    // Global operations:
+    async fn query_all(&self, parent: &Self::Parent) -> Result<Vec<O>, ServerError>;
+    async fn batch_delete_all(&self, parent: &Self::Parent) -> Result<(), ServerError>;
+}
+
+/// Type-safe accessor for CRUD operations on an unordered child object, which
+/// itself also has children.
+#[async_trait]
+pub trait ManageUnorderedChildWithChildren<O>: Send + Sync
+where
+    O: DynamoObject,
+{
+    type Parent: DynamoObject;
+
+    // Item operations:
+    async fn get(&self, id: PkSk) -> Result<O, ServerError>;
+    async fn add(&self, parent: &Self::Parent, data: O::Data) -> Result<O, ServerError>;
+    async fn batch_add(
+        &self,
+        parent: &Self::Parent,
+        data: Vec<O::Data>,
     ) -> Result<Vec<O>, ServerError>;
     async fn update(&self, item: &O) -> Result<(), ServerError>;
     async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError>;
@@ -304,13 +362,13 @@ where
     }
 }
 
-pub struct ManageChildImpl<O: DynamoObject, P: DynamoObject> {
+pub struct ManageOrderedChildImpl<O: DynamoObject, P: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<(O, P)>,
 }
 
-impl<O: DynamoObject, P: DynamoObject> ManageChildImpl<O, P> {
+impl<O: DynamoObject, P: DynamoObject> ManageOrderedChildImpl<O, P> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -324,7 +382,7 @@ impl<O: DynamoObject, P: DynamoObject> ManageChildImpl<O, P> {
 }
 
 #[async_trait]
-impl<O, P> ManageChild<O> for ManageChildImpl<O, P>
+impl<O, P> ManageOrderedChild<O> for ManageOrderedChildImpl<O, P>
 where
     O: DynamoObject,
     P: DynamoObject,
@@ -396,13 +454,13 @@ where
     }
 }
 
-pub struct ManageChildWithChildrenImpl<O: DynamoObject, P: DynamoObject> {
+pub struct ManageOrderedChildWithChildrenImpl<O: DynamoObject, P: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<(O, P)>,
 }
 
-impl<O: DynamoObject, P: DynamoObject> ManageChildWithChildrenImpl<O, P> {
+impl<O: DynamoObject, P: DynamoObject> ManageOrderedChildWithChildrenImpl<O, P> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -416,7 +474,7 @@ impl<O: DynamoObject, P: DynamoObject> ManageChildWithChildrenImpl<O, P> {
 }
 
 #[async_trait]
-impl<O, P> ManageChildWithChildren<O> for ManageChildWithChildrenImpl<O, P>
+impl<O, P> ManageOrderedChildWithChildren<O> for ManageOrderedChildWithChildrenImpl<O, P>
 where
     O: DynamoObject,
     P: DynamoObject,
@@ -455,6 +513,177 @@ where
         };
         self.dynamo_util
             .batch_create_item_ordered::<O>(parent.id().clone(), data, insert_position)
+            .await
+    }
+
+    async fn update(&self, item: &O) -> Result<(), ServerError> {
+        self.dynamo_util.update_item(item).await
+    }
+
+    async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError> {
+        self.crud_algorithms
+            .recursive_delete(item.id().clone())
+            .await?;
+        Ok(item.into_data())
+    }
+
+    async fn delete_non_recursive(&self, item: O) -> Result<O::Data, ServerError> {
+        self.dynamo_util.delete_item::<O>(item.id().clone()).await?;
+        Ok(item.into_data())
+    }
+
+    async fn batch_delete_non_recursive(&self, items: Vec<O>) -> Result<Vec<O::Data>, ServerError> {
+        self.dynamo_util
+            .batch_delete_item::<O>(items.iter().map(|i| i.id().clone()).collect())
+            .await?;
+        Ok(items.into_iter().map(DynamoObject::into_data).collect())
+    }
+
+    // Global operations:
+    // -----------------------------------------------------------------------
+
+    async fn query_all(&self, parent: &P) -> Result<Vec<O>, ServerError> {
+        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+    }
+
+    async fn batch_delete_all_non_recursive(&self, parent: &P) -> Result<(), ServerError> {
+        self.dynamo_util
+            .batch_delete_all::<O>(parent.id().clone())
+            .await
+    }
+}
+
+pub struct ManageUnorderedChildImpl<O: DynamoObject, P: DynamoObject> {
+    dynamo_util: Arc<DynamoUtil>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    _phantom: PhantomData<(O, P)>,
+}
+
+impl<O: DynamoObject, P: DynamoObject> ManageUnorderedChildImpl<O, P> {
+    pub fn new(
+        dynamo_util: Arc<DynamoUtil>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    ) -> Self {
+        Self {
+            dynamo_util,
+            _crud_algorithms: crud_algorithms,
+            _phantom: PhantomData::<(O, P)>,
+        }
+    }
+}
+
+#[async_trait]
+impl<O, P> ManageUnorderedChild<O> for ManageUnorderedChildImpl<O, P>
+where
+    O: DynamoObject,
+    P: DynamoObject,
+{
+    type Parent = P;
+
+    // Item operations:
+    // -----------------------------------------------------------------------
+
+    async fn get(&self, id: PkSk) -> Result<O, ServerError> {
+        self.dynamo_util
+            .get_item::<O>(id)
+            .await?
+            .ok_or_else(|| DynamoNotFound::new())
+    }
+
+    async fn add(&self, parent: &P, data: O::Data) -> Result<O, ServerError> {
+        self.dynamo_util
+            .create_item::<O>(parent.id().clone(), data, None)
+            .await
+    }
+
+    async fn batch_add(&self, parent: &P, data: Vec<O::Data>) -> Result<Vec<O>, ServerError> {
+        self.dynamo_util
+            .batch_create_item::<O>(
+                parent.id().clone(),
+                data.into_iter().map(|d| (d, None)).collect(),
+            )
+            .await
+    }
+
+    async fn update(&self, item: &O) -> Result<(), ServerError> {
+        self.dynamo_util.update_item(item).await
+    }
+
+    async fn delete(&self, item: O) -> Result<O::Data, ServerError> {
+        self.dynamo_util.delete_item::<O>(item.id().clone()).await?;
+        Ok(item.into_data())
+    }
+
+    async fn batch_delete(&self, items: Vec<O>) -> Result<Vec<O::Data>, ServerError> {
+        self.dynamo_util
+            .batch_delete_item::<O>(items.iter().map(|i| i.id().clone()).collect())
+            .await?;
+        Ok(items.into_iter().map(DynamoObject::into_data).collect())
+    }
+
+    // Global operations:
+    // -----------------------------------------------------------------------
+
+    async fn query_all(&self, parent: &P) -> Result<Vec<O>, ServerError> {
+        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+    }
+
+    async fn batch_delete_all(&self, parent: &P) -> Result<(), ServerError> {
+        self.dynamo_util
+            .batch_delete_all::<O>(parent.id().clone())
+            .await
+    }
+}
+
+pub struct ManageUnorderedChildWithChildrenImpl<O: DynamoObject, P: DynamoObject> {
+    dynamo_util: Arc<DynamoUtil>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    _phantom: PhantomData<(O, P)>,
+}
+
+impl<O: DynamoObject, P: DynamoObject> ManageUnorderedChildWithChildrenImpl<O, P> {
+    pub fn new(
+        dynamo_util: Arc<DynamoUtil>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    ) -> Self {
+        Self {
+            dynamo_util,
+            crud_algorithms: crud_algorithms,
+            _phantom: PhantomData::<(O, P)>,
+        }
+    }
+}
+
+#[async_trait]
+impl<O, P> ManageUnorderedChildWithChildren<O> for ManageUnorderedChildWithChildrenImpl<O, P>
+where
+    O: DynamoObject,
+    P: DynamoObject,
+{
+    type Parent = P;
+
+    // Item operations:
+    // -----------------------------------------------------------------------
+
+    async fn get(&self, id: PkSk) -> Result<O, ServerError> {
+        self.dynamo_util
+            .get_item::<O>(id)
+            .await?
+            .ok_or_else(|| DynamoNotFound::new())
+    }
+
+    async fn add(&self, parent: &P, data: O::Data) -> Result<O, ServerError> {
+        self.dynamo_util
+            .create_item::<O>(parent.id().clone(), data, None)
+            .await
+    }
+
+    async fn batch_add(&self, parent: &P, data: Vec<O::Data>) -> Result<Vec<O>, ServerError> {
+        self.dynamo_util
+            .batch_create_item::<O>(
+                parent.id().clone(),
+                data.into_iter().map(|d| (d, None)).collect(),
+            )
             .await
     }
 

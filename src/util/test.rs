@@ -16,7 +16,7 @@ mod tests {
     use aws_sdk_dynamodb::{
         operation::{
             batch_write_item::BatchWriteItemOutput, delete_item::DeleteItemOutput,
-            get_item::GetItemOutput, put_item::PutItemOutput, query::QueryOutput,
+            get_item::GetItemOutput, put_item::PutItemOutput, query::QueryOutput, scan::ScanOutput,
             update_item::UpdateItemOutput,
         },
         types::AttributeValue,
@@ -1359,5 +1359,69 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_raw_full_table_scan_simple() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_scan()
+            .with(eq("my_table".to_string()))
+            .returning(|_| {
+                Ok(vec![ScanOutput::builder()
+                    .set_items(Some(vec![
+                        build_item_low_sort().1.clone(),
+                        build_item_high_sort().1.clone(),
+                    ]))
+                    .build()])
+            });
+
+        let util = build_util(backend).await;
+        let result = util.raw_full_table_scan().await.unwrap();
+
+        // Should be exactly as returned by Dynamo (no sort/flatten), and in the same order.
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], build_item_low_sort().1);
+        assert_eq!(result[1], build_item_high_sort().1);
+    }
+
+    #[tokio::test]
+    async fn test_raw_full_table_scan_with_pages_and_no_flatten() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_scan()
+            .with(eq("my_table".to_string()))
+            .returning(|_| {
+                Ok(vec![
+                    ScanOutput::builder()
+                        .set_items(Some(vec![build_item_no_data().1.clone()]))
+                        .build(),
+                    ScanOutput::builder()
+                        .set_items(Some(vec![collection! {
+                            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                            "sk".to_string() => AttributeValue::S("GROUP#000#CHUNK".to_string()),
+                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                                AttributeValue::M(build_item_high_sort().1.clone()),
+                                AttributeValue::M(build_item_low_sort().1.clone()),
+                            ]),
+                        }]))
+                        .build(),
+                ])
+            });
+
+        let util = build_util(backend).await;
+        let result = util.raw_full_table_scan().await.unwrap();
+
+        // Flattening should not occur: we expect exactly 2 items.
+        assert_eq!(result.len(), 2);
+        // First item should be the exact no-data item.
+        assert_eq!(result[0], build_item_no_data().1);
+        // Second item should still contain the FLATTEN_RESERVED_KEY as a list.
+        let second = &result[1];
+        assert!(second.get(FLATTEN_RESERVED_KEY).is_some());
+        assert!(matches!(
+            second.get(FLATTEN_RESERVED_KEY).unwrap(),
+            AttributeValue::L(_)
+        ));
     }
 }

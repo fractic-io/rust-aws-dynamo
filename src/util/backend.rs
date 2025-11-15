@@ -10,6 +10,7 @@ use aws_sdk_dynamodb::{
         get_item::{GetItemError, GetItemOutput},
         put_item::{PutItemError, PutItemOutput},
         query::{QueryError, QueryOutput},
+        scan::{ScanError, ScanOutput},
         update_item::{UpdateItemError, UpdateItemOutput},
     },
     types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
@@ -35,6 +36,8 @@ pub trait DynamoBackend: Send + Sync {
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
     ) -> Result<Vec<QueryOutput>, SdkError<QueryError>>;
+
+    async fn scan(&self, table_name: String) -> Result<Vec<ScanOutput>, SdkError<ScanError>>;
 
     async fn get_item(
         &self,
@@ -96,6 +99,15 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .set_index_name(index)
             .set_key_condition_expression(Some(condition))
             .set_expression_attribute_values(Some(attribute_values))
+            .into_paginator()
+            .send()
+            .try_collect()
+            .await
+    }
+
+    async fn scan(&self, table_name: String) -> Result<Vec<ScanOutput>, SdkError<ScanError>> {
+        self.scan()
+            .set_table_name(Some(table_name))
             .into_paginator()
             .send()
             .try_collect()

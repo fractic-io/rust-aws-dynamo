@@ -245,7 +245,8 @@ impl DynamoUtil {
                             .rsplit_once(delim)
                             .ok_or_else(|| {
                                 DynamoInvalidOperation::with_debug(
-                                    "sort field filter did not contain the delimiter char, so could not extract the prefix for matching",
+                                    "sort field filter did not contain the delimiter char, so \
+                                     could not extract the prefix for matching",
                                     &id.sk,
                                 )
                             })?
@@ -262,7 +263,8 @@ impl DynamoUtil {
                             .rsplit_once(delim)
                             .ok_or_else(|| {
                                 DynamoInvalidOperation::with_debug(
-                                    "sort field filter did not contain the delimiter char, so could not extract the prefix for matching",
+                                    "sort field filter did not contain the delimiter char, so \
+                                     could not extract the prefix for matching",
                                     &id.sk,
                                 )
                             })?
@@ -404,7 +406,8 @@ impl DynamoUtil {
         }
         if matches!(T::id_logic(), IdLogic::Timestamp) {
             return Err(DynamoInvalidOperation::new(
-                "batch_create_item is not allowed with timestamp-based IDs, since all items would get the same ID and only one item would be written",
+                "batch_create_item is not allowed with timestamp-based IDs, since all items would \
+                 get the same ID and only one item would be written",
             ));
         }
         if data_and_options.is_empty() {
@@ -820,6 +823,23 @@ impl DynamoUtil {
             .collect::<Result<_, _>>()?;
 
         self.raw_batch_put_item(maps).await
+    }
+
+    /// Performs a full table scan and returns the raw Dynamo items as-is. No
+    /// sorting, chunk expansion, filtering, or other processing.
+    ///
+    /// In other words, forwarding the items returned from this function
+    /// directly into `raw_batch_put_item` would be a no-op.
+    pub async fn raw_full_table_scan(&self) -> Result<Vec<DynamoMap>, ServerError> {
+        let response = self
+            .backend
+            .scan(self.table.clone())
+            .await
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+        Ok(response
+            .into_iter()
+            .flat_map(|page| page.items.unwrap_or_default().into_iter())
+            .collect())
     }
 
     /// Performs no checks and directly deletes the given IDs from the database.

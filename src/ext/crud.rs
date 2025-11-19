@@ -18,15 +18,17 @@ pub trait DynamoCrudAlgorithms: Send + Sync {
 }
 
 /// Marker trait used to validate whether a given type is a valid parent of `O`.
+/// Multiple valid parents are supported.
 ///
-/// Implement this for all parent object types that are allowed to contain `O`.
-/// For example:
-///   impl ParentOf<PipelineStep> for Pipeline {}
-/// or group with a custom marker trait:
-///   trait PipelineParent: DynamoObject {}
-///   impl PipelineParent for Story {}
-///   impl PipelineParent for Journey {}
-///   impl<T: PipelineParent> ParentOf<Pipeline> for T {}
+/// Example:
+/// ```
+/// struct Parent1;
+/// struct Parent2;
+/// struct Child;
+///
+/// impl ParentOf<Child> for Parent1 {}
+/// impl ParentOf<Child> for Parent2 {}
+/// ```
 pub trait ParentOf<O: DynamoObject>: DynamoObject {}
 
 /// Type-safe accessor for CRUD operations on a root object.

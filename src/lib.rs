@@ -8,4 +8,5 @@ pub use context::*;
 // Extensions:
 pub mod ext {
     pub mod crud;
+    pub mod ingress;
 }

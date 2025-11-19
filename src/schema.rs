@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+pub mod add_ons;
 pub mod coordinate;
 pub mod display;
 pub(crate) mod id_calculations;

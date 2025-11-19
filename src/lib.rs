@@ -8,4 +8,6 @@ pub use context::*;
 // Extensions:
 pub mod ext {
     pub mod crud;
+    pub mod display;
+    pub mod maybe_committed;
 }

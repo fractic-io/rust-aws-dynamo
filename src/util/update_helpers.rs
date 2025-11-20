@@ -36,24 +36,6 @@ impl fmt::Display for CmpOp {
 }
 
 /// Trait to sanitize a string for use in a Dynamo expression.
-pub struct Sanitized<'a> {
-    inner: std::str::Chars<'a>,
-}
-
-impl<'a> fmt::Display for Sanitized<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut chars = self.inner.clone(); // Clone iterator to avoid borrowing issues
-        while let Some(c) = chars.next() {
-            if c.is_alphanumeric() {
-                f.write_char(c)?;
-            } else {
-                f.write_char('_')?;
-            }
-        }
-        Ok(())
-    }
-}
-
 pub trait Sanitize {
     fn sanitized(&self) -> Sanitized<'_>;
 }
@@ -71,5 +53,23 @@ impl Sanitize for String {
         Sanitized {
             inner: self.chars(),
         }
+    }
+}
+
+pub struct Sanitized<'a> {
+    inner: std::str::Chars<'a>,
+}
+
+impl<'a> fmt::Display for Sanitized<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut chars = self.inner.clone(); // Clone iterator to avoid borrowing issues
+        while let Some(c) = chars.next() {
+            if c.is_alphanumeric() {
+                f.write_char(c)?;
+            } else {
+                f.write_char('_')?;
+            }
+        }
+        Ok(())
     }
 }

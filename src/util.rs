@@ -119,10 +119,10 @@ pub enum NumericOp {
 /// - IsSet: checks that the listed attributes exist and are not null.
 #[derive(Debug, Clone)]
 pub enum UpdateCondition<T: DynamoObject> {
-    Eq { data: T::Data },
-    Compare { data: T::Data, op: NumericOp },
-    IsNull { fields: Vec<String> },
-    IsSet { fields: Vec<String> },
+    PartialEq(T::Data),
+    NumericCompare { partial: T::Data, map_op: NumericOp },
+    FieldIsNone(String),
+    FieldIsSome(String),
 }
 
 impl TtlConfig {
@@ -650,7 +650,7 @@ impl DynamoUtil {
 
         for cond in conditions {
             match cond {
-                UpdateCondition::Eq { data } => {
+                UpdateCondition::PartialEq(data) => {
                     // Convert partial data into a map; nulls are skipped by serializer.
                     let (data_map, _skipped_nulls) =
                         build_dynamo_map_internal(&data, None, None, None)?;
@@ -661,7 +661,10 @@ impl DynamoUtil {
                             .map(|(k, v)| (k, (v, CmpOp::Eq))),
                     );
                 }
-                UpdateCondition::Compare { data, op } => {
+                UpdateCondition::NumericCompare {
+                    partial: data,
+                    map_op: op,
+                } => {
                     // Convert partial data into a map, and check values are numeric.
                     let (data_map, _skipped_nulls) =
                         build_dynamo_map_internal(&data, None, None, None)?;
@@ -681,27 +684,23 @@ impl DynamoUtil {
                             .map(|(k, v)| (k, (v, op.into()))),
                     );
                 }
-                UpdateCondition::IsNull { fields } => {
-                    custom_conditions.extend(fields.into_iter().map(|f| {
-                        let placeholder = format!("#cond_{}", f.sanitized());
-                        let condition = format!(
-                            "(attribute_not_exists({placeholder}) OR \
-                             attribute_type({placeholder}, NULL))",
-                        );
-                        expression_attribute_names.insert(placeholder, f);
-                        condition
-                    }));
+                UpdateCondition::FieldIsNone(field) => {
+                    let placeholder = format!("#cond_{}", field.sanitized());
+                    let condition = format!(
+                        "(attribute_not_exists({p}) OR attribute_type({p}, NULL))",
+                        p = placeholder,
+                    );
+                    expression_attribute_names.insert(placeholder, field);
+                    custom_conditions.push(condition);
                 }
-                UpdateCondition::IsSet { fields } => {
-                    custom_conditions.extend(fields.into_iter().map(|f| {
-                        let placeholder = format!("#cond_{}", f.sanitized());
-                        let condition = format!(
-                            "(attribute_exists({placeholder}) AND NOT \
-                             attribute_type({placeholder}, NULL))",
-                        );
-                        expression_attribute_names.insert(placeholder, f);
-                        condition
-                    }));
+                UpdateCondition::FieldIsSome(field) => {
+                    let placeholder = format!("#cond_{}", field.sanitized());
+                    let condition = format!(
+                        "(attribute_exists({p}) AND NOT attribute_type({p}, NULL))",
+                        p = placeholder,
+                    );
+                    expression_attribute_names.insert(placeholder, field);
+                    custom_conditions.push(condition);
                 }
             }
         }

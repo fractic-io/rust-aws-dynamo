@@ -35,7 +35,8 @@ impl fmt::Display for CmpOp {
     }
 }
 
-/// Trait to sanitize a string for use in a Dynamo expression.
+/// Trait to sanitize a string for use as Dynamo update expression attribute
+/// name (placeholder).
 pub trait Sanitize {
     fn sanitized(&self) -> Sanitized<'_>;
 }

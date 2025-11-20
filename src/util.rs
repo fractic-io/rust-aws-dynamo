@@ -639,7 +639,7 @@ impl DynamoUtil {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
 
-        // Attribute comparison conditions (including equality).
+        // Attribute comparison conditions.
         let mut cmp_attribute_conditions: HashMap<String, (AttributeValue, CmpOp)> = HashMap::new();
 
         // Custom condition expressions (which may reference expression

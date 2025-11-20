@@ -112,16 +112,16 @@ pub enum NumericOp {
 }
 
 /// Conditions that can be applied during update operations.
-///
-/// - Eq: checks equality for all non-null fields present in the provided data.
-/// - Compare: applies the numeric operator to all numeric fields present in the provided data.
-/// - IsNull: checks that the listed attributes are either not set or explicitly null.
-/// - IsSet: checks that the listed attributes exist and are not null.
 #[derive(Debug, Clone)]
 pub enum UpdateCondition<T: DynamoObject> {
+    /// Checks equality for all fields set to non-null values.
     PartialEq(T::Data),
+    /// Applies the numeric operator to all fields set to non-null values. Only
+    /// numerically comparable fields must be set.
     NumericCompare { partial: T::Data, map_op: NumericOp },
+    /// Checks that the listed attribute is either not set or explicitly null.
     FieldIsNone(String),
+    /// Checks that the listed attribute exists and is not null.
     FieldIsSome(String),
 }
 

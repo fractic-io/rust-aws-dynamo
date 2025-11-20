@@ -1,11 +1,14 @@
 use fractic_server_error::ServerError;
-use serde::de::{self, Deserialize, DeserializeOwned, Deserializer};
+use serde::{
+    de::{self, DeserializeOwned, Deserializer},
+    Deserialize,
+};
 use serde_json::Value as JsonValue;
 
 use crate::{
     errors::DynamoNotFound,
     schema::{DynamoObject, PkSk},
-    util::DynamoUtil,
+    util::{DynamoInsertPosition, DynamoUtil},
 };
 
 /// Allows callers to either pass an already-fetched object `O`, or a `PkSk` id
@@ -50,8 +53,8 @@ where
     {
         let v = JsonValue::deserialize(deserializer)?;
 
-        // 1) Try as PkSk first (string form).
-        if let Ok(id) = serde_json::from_value::<PkSk>(v.clone()) {
+        // 1) Try as PkSk.
+        if let Some(Ok(id)) = v.as_str().map(|s| PkSk::from_string(&s)) {
             return Ok(PassOrFetch::Fetch(id));
         }
 
@@ -80,37 +83,105 @@ where
 
 /// Allows callers to pass, fetch or create an object.
 ///
-/// - Pass: provide a full `O`
-/// - Fetch: provide a `PkSk` id (`"pk|sk"`)
-/// - Create: provide `{ parent_id: "pk|sk", data: O::Data }`
-///
-/// Like `PassOrFetch`, deserialization is untagged (i.e. the client's desired
-/// interface is inferred).
+/// - Pass: provide a full `O`.
+/// - Fetch: provide a `PkSk` id (`"pk|sk"`).
+/// - Create: provide arguments `C` (see `CreateArgs` types).
 #[derive(Debug, Clone)]
-pub enum PassFetchOrCreate<O>
+pub enum PassFetchOrCreate<O, C>
 where
     O: DynamoObject + DeserializeOwned,
     O::Data: DeserializeOwned,
+    C: CreateArgs<O>,
 {
     Pass(O),
     Fetch(PkSk),
-    Create { parent_id: PkSk, data: O::Data },
+    Create(C),
 }
 
-impl<O> From<O> for PassFetchOrCreate<O>
+impl<O, C> From<O> for PassFetchOrCreate<O, C>
 where
     O: DynamoObject + DeserializeOwned,
     O::Data: DeserializeOwned,
+    C: CreateArgs<O>,
 {
     fn from(value: O) -> Self {
         Self::Pass(value)
     }
 }
 
-impl<'de, O> Deserialize<'de> for PassFetchOrCreate<O>
+impl<O, C> From<PkSk> for PassFetchOrCreate<O, C>
 where
     O: DynamoObject + DeserializeOwned,
     O::Data: DeserializeOwned,
+    C: CreateArgs<O>,
+{
+    fn from(value: PkSk) -> Self {
+        Self::Fetch(value)
+    }
+}
+
+impl<O> From<O::Data> for PassFetchOrCreate<O, UnorderedCreate<O>>
+where
+    O: DynamoObject + DeserializeOwned,
+    O::Data: DeserializeOwned,
+{
+    fn from(value: O::Data) -> Self {
+        Self::Create(UnorderedCreate::<O>::from(value))
+    }
+}
+
+pub trait CreateArgs<O: DynamoObject>: DeserializeOwned {}
+
+/// Unordered create.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnorderedCreate<O: DynamoObject> {
+    pub create: O::Data,
+}
+
+impl<O> From<O::Data> for UnorderedCreate<O>
+where
+    O: DynamoObject,
+{
+    fn from(data: O::Data) -> Self {
+        Self { create: data }
+    }
+}
+
+impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {}
+
+/// Ordered create (with optional `after` argument).
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrderedCreate<O: DynamoObject> {
+    pub create: O::Data,
+    pub after: Option<PkSk>,
+}
+
+impl<O: DynamoObject> CreateArgs<O> for OrderedCreate<O> {}
+
+/// Unordered create with parent passed in by caller.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnorderedCreateWithParent<O: DynamoObject> {
+    pub parent_id: PkSk,
+    pub create: O::Data,
+}
+
+impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {}
+
+/// Ordered create with parent passed in by caller.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrderedCreateWithParent<O: DynamoObject> {
+    pub parent_id: PkSk,
+    pub create: O::Data,
+    pub after: Option<PkSk>,
+}
+
+impl<O: DynamoObject> CreateArgs<O> for OrderedCreateWithParent<O> {}
+
+impl<'de, O, C> Deserialize<'de> for PassFetchOrCreate<O, C>
+where
+    O: DynamoObject + DeserializeOwned,
+    O::Data: DeserializeOwned,
+    C: CreateArgs<O>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -118,52 +189,84 @@ where
     {
         let v = JsonValue::deserialize(deserializer)?;
 
-        // 1) Try as PkSk (string id).
-        if let Ok(id) = serde_json::from_value::<PkSk>(v.clone()) {
-            return Ok(PassFetchOrCreate::Fetch(id));
+        // 1) Try as PkSk.
+        if let Some(Ok(id)) = v.as_str().map(|s| PkSk::from_string(&s)) {
+            return Ok(PassFetchOrCreate::<O, C>::Fetch(id));
         }
 
-        // 2) Try as Create { parent_id, data }.
-        if let JsonValue::Object(map) = &v {
-            if map.contains_key("parent_id") && map.contains_key("data") {
-                let parent_id =
-                    serde_json::from_value::<PkSk>(map.get("parent_id").cloned().ok_or_else(
-                        || de::Error::custom("missing parent_id for create variant"),
-                    )?)
-                    .map_err(|e| de::Error::custom(e))?;
-                let data = serde_json::from_value::<O::Data>(
-                    map.get("data")
-                        .cloned()
-                        .ok_or_else(|| de::Error::custom("missing data for create variant"))?,
-                )
-                .map_err(|e| de::Error::custom(e))?;
-                return Ok(PassFetchOrCreate::Create { parent_id, data });
+        // 2) Try as full object O.
+        if let Ok(object) = serde_json::from_value::<O>(v.clone()) {
+            return Ok(PassFetchOrCreate::<O, C>::Pass(object));
+        }
+
+        // 3) Otherwise, try as create arguments C.
+        let create_args = serde_json::from_value::<C>(v).map_err(|e| de::Error::custom(e))?;
+        Ok(PassFetchOrCreate::<O, C>::Create(create_args))
+    }
+}
+
+impl<O> PassFetchOrCreate<O, UnorderedCreate<O>>
+where
+    O: DynamoObject + DeserializeOwned,
+    O::Data: DeserializeOwned,
+{
+    pub async fn resolve(
+        self,
+        dynamo_util: &DynamoUtil,
+        parent: Option<PkSk>,
+    ) -> Result<O, ServerError> {
+        match self {
+            PassFetchOrCreate::Pass(obj) => Ok(obj),
+            PassFetchOrCreate::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
+                Some(obj) => Ok(obj),
+                None => Err(DynamoNotFound::new()),
+            },
+            PassFetchOrCreate::Create(UnorderedCreate { create: data }) => {
+                let parent_id = parent.unwrap_or_else(PkSk::root);
+                dynamo_util.create_item::<O>(parent_id, data, None).await
             }
         }
-
-        // 3) Otherwise, try as full object O (Pass).
-        let obj = serde_json::from_value::<O>(v).map_err(|e| de::Error::custom(e))?;
-        Ok(PassFetchOrCreate::Pass(obj))
     }
 }
 
-impl<O> From<PkSk> for PassFetchOrCreate<O>
+impl<O> PassFetchOrCreate<O, OrderedCreate<O>>
 where
     O: DynamoObject + DeserializeOwned,
     O::Data: DeserializeOwned,
 {
-    fn from(value: PkSk) -> Self {
-        Self::Fetch(value)
+    pub async fn resolve(
+        self,
+        dynamo_util: &DynamoUtil,
+        parent: Option<PkSk>,
+    ) -> Result<O, ServerError> {
+        match self {
+            PassFetchOrCreate::Pass(obj) => Ok(obj),
+            PassFetchOrCreate::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
+                Some(obj) => Ok(obj),
+                None => Err(DynamoNotFound::new()),
+            },
+            PassFetchOrCreate::Create(OrderedCreate {
+                create: data,
+                after,
+            }) => {
+                let parent_id = parent.unwrap_or_else(PkSk::root);
+                let insert_position = match after {
+                    Some(a) => DynamoInsertPosition::After(a),
+                    None => DynamoInsertPosition::Last,
+                };
+                dynamo_util
+                    .create_item_ordered::<O>(parent_id, data, insert_position)
+                    .await
+            }
+        }
     }
 }
 
-impl<O> PassFetchOrCreate<O>
+impl<O> PassFetchOrCreate<O, UnorderedCreateWithParent<O>>
 where
     O: DynamoObject + DeserializeOwned,
     O::Data: DeserializeOwned,
 {
-    /// Resolves into a concrete `O` by either passing through, fetching, or
-    /// creating the object via `DynamoUtil`.
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
         match self {
             PassFetchOrCreate::Pass(obj) => Ok(obj),
@@ -171,8 +274,38 @@ where
                 Some(obj) => Ok(obj),
                 None => Err(DynamoNotFound::new()),
             },
-            PassFetchOrCreate::Create { parent_id, data } => {
-                dynamo_util.create_item::<O>(parent_id, data, None).await
+            PassFetchOrCreate::Create(UnorderedCreateWithParent {
+                parent_id: parent,
+                create: data,
+            }) => dynamo_util.create_item::<O>(parent, data, None).await,
+        }
+    }
+}
+
+impl<O> PassFetchOrCreate<O, OrderedCreateWithParent<O>>
+where
+    O: DynamoObject + DeserializeOwned,
+    O::Data: DeserializeOwned,
+{
+    pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
+        match self {
+            PassFetchOrCreate::Pass(obj) => Ok(obj),
+            PassFetchOrCreate::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
+                Some(obj) => Ok(obj),
+                None => Err(DynamoNotFound::new()),
+            },
+            PassFetchOrCreate::Create(OrderedCreateWithParent {
+                parent_id: parent,
+                create: data,
+                after,
+            }) => {
+                let insert_position = match after {
+                    Some(a) => DynamoInsertPosition::After(a),
+                    None => DynamoInsertPosition::Last,
+                };
+                dynamo_util
+                    .create_item_ordered::<O>(parent, data, insert_position)
+                    .await
             }
         }
     }

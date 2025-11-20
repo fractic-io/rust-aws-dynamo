@@ -437,7 +437,7 @@ impl DynamoUtil {
         self.batch_create_item_opt(
             parent_id,
             data.into_iter()
-                .map(|data| (data, CreateOptions::default()))
+                .map(|d| (d, CreateOptions::default()))
                 .collect(),
         )
         .await

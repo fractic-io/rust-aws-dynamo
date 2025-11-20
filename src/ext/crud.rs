@@ -61,14 +61,12 @@ impl<O: DynamoObject> ManageRoot<O> {
     }
 
     pub async fn add(&self, data: O::Data) -> Result<O, ServerError> {
-        self.dynamo_util
-            .create_item::<O>(PkSk::root(), data, None)
-            .await
+        self.dynamo_util.create_item::<O>(PkSk::root(), data).await
     }
 
     pub async fn batch_add(&self, data: Vec<O::Data>) -> Result<Vec<O>, ServerError> {
         self.dynamo_util
-            .batch_create_item::<O>(PkSk::root(), data.into_iter().map(|d| (d, None)).collect())
+            .batch_create_item::<O>(PkSk::root(), data)
             .await
     }
 
@@ -130,14 +128,12 @@ impl<O: DynamoObject> ManageRootWithChildren<O> {
     }
 
     pub async fn add(&self, data: O::Data) -> Result<O, ServerError> {
-        self.dynamo_util
-            .create_item::<O>(PkSk::root(), data, None)
-            .await
+        self.dynamo_util.create_item::<O>(PkSk::root(), data).await
     }
 
     pub async fn batch_add(&self, data: Vec<O::Data>) -> Result<Vec<O>, ServerError> {
         self.dynamo_util
-            .batch_create_item::<O>(PkSk::root(), data.into_iter().map(|d| (d, None)).collect())
+            .batch_create_item::<O>(PkSk::root(), data)
             .await
     }
 
@@ -430,7 +426,7 @@ impl<O: DynamoObject> ManageUnorderedChild<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .create_item::<O>(parent.id().clone(), data, None)
+            .create_item::<O>(parent.id().clone(), data)
             .await
     }
 
@@ -439,10 +435,7 @@ impl<O: DynamoObject> ManageUnorderedChild<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .batch_create_item::<O>(
-                parent.id().clone(),
-                data.into_iter().map(|d| (d, None)).collect(),
-            )
+            .batch_create_item::<O>(parent.id().clone(), data)
             .await
     }
 
@@ -517,7 +510,7 @@ impl<O: DynamoObject> ManageUnorderedChildWithChildren<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .create_item::<O>(parent.id().clone(), data, None)
+            .create_item::<O>(parent.id().clone(), data)
             .await
     }
 
@@ -526,10 +519,7 @@ impl<O: DynamoObject> ManageUnorderedChildWithChildren<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .batch_create_item::<O>(
-                parent.id().clone(),
-                data.into_iter().map(|d| (d, None)).collect(),
-            )
+            .batch_create_item::<O>(parent.id().clone(), data)
             .await
     }
 

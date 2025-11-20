@@ -388,17 +388,23 @@ impl DynamoUtil {
         &self,
         parent_id: PkSk,
         data: T::Data,
-        options: Option<CreateOptions>,
+    ) -> Result<T, ServerError> {
+        self.create_item_opt(parent_id, data, CreateOptions::default())
+            .await
+    }
+
+    pub async fn create_item_opt<T: DynamoObject>(
+        &self,
+        parent_id: PkSk,
+        data: T::Data,
+        options: CreateOptions,
     ) -> Result<T, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         let (new_pk, new_sk) = generate_pk_sk::<T>(&data, &parent_id.pk, &parent_id.sk)?;
-        let sort: Option<f64> = options.as_ref().and_then(|o| o.custom_sort);
-        let ttl: Option<i64> = options
-            .as_ref()
-            .and_then(|o| o.ttl.as_ref())
-            .map(|ttl| ttl.compute_timestamp());
+        let sort: Option<f64> = options.custom_sort;
+        let ttl: Option<i64> = options.ttl.map(|ttl| ttl.compute_timestamp());
         let map = build_dynamo_map_for_new_obj::<T>(
             &data,
             new_pk.clone(),
@@ -426,7 +432,21 @@ impl DynamoUtil {
     pub async fn batch_create_item<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        data_and_options: Vec<(T::Data, Option<CreateOptions>)>,
+        data: Vec<T::Data>,
+    ) -> Result<Vec<T>, ServerError> {
+        self.batch_create_item_opt(
+            parent_id,
+            data.into_iter()
+                .map(|d| (d, CreateOptions::default()))
+                .collect(),
+        )
+        .await
+    }
+
+    pub async fn batch_create_item_opt<T: DynamoObject>(
+        &self,
+        parent_id: PkSk,
+        data_and_options: Vec<(T::Data, CreateOptions)>,
     ) -> Result<Vec<T>, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
@@ -444,11 +464,8 @@ impl DynamoUtil {
             .iter()
             .map(|(data, options)| {
                 let (new_pk, new_sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
-                let sort: Option<f64> = options.as_ref().and_then(|o| o.custom_sort);
-                let ttl: Option<i64> = options
-                    .as_ref()
-                    .and_then(|o| o.ttl.as_ref())
-                    .map(|ttl| ttl.compute_timestamp());
+                let sort: Option<f64> = options.custom_sort;
+                let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
                 Ok((
                     build_dynamo_map_for_new_obj::<T>(
                         data,
@@ -517,13 +534,13 @@ impl DynamoUtil {
                 .ok_or(DynamoInvalidOperation::new(
                     "failed to generate new ordered ID",
                 ))?;
-        self.create_item::<T>(
+        self.create_item_opt::<T>(
             parent_id,
             data,
-            Some(CreateOptions {
+            CreateOptions {
                 custom_sort: Some(sort_val),
                 ..Default::default()
-            }),
+            },
         )
         .await
     }
@@ -548,17 +565,17 @@ impl DynamoUtil {
             data.len(),
         )
         .await?;
-        self.batch_create_item::<T>(
+        self.batch_create_item_opt::<T>(
             parent_id,
             data.into_iter()
                 .zip(new_ids.into_iter())
                 .map(|(d, sort_val)| {
                     (
                         d,
-                        Some(CreateOptions {
+                        CreateOptions {
                             custom_sort: Some(sort_val),
                             ..Default::default()
-                        }),
+                        },
                     )
                 })
                 .collect(),

@@ -334,6 +334,7 @@ where
 /// or an id `PkSk` to be fetched lazily (or, for compatibility with serde, it
 /// can directly take ownership of an `O` built from deserialization). The
 /// resolved reference is valid for the lifetime of the `RefOrFetch` itself.
+#[derive(Debug, Clone)]
 pub enum RefOrFetch<'a, O>
 where
     O: DynamoObject,

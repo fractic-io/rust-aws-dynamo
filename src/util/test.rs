@@ -562,16 +562,16 @@ mod tests {
         let new_item = build_item_high_sort().0;
 
         let result = util
-            .create_item::<TestDynamoObject>(
+            .create_item_opt::<TestDynamoObject>(
                 PkSk {
                     pk: "ROOT".to_string(),
                     sk: "GROUP#123".to_string(),
                 },
                 new_item.data,
-                Some(CreateOptions {
+                CreateOptions {
                     custom_sort: Some(0.75),
                     ..Default::default()
-                }),
+                },
             )
             .await
             .unwrap();
@@ -616,16 +616,16 @@ mod tests {
         let new_item = build_item_high_sort().0;
 
         let result = util
-            .create_item::<TestDynamoObject>(
+            .create_item_opt::<TestDynamoObject>(
                 PkSk {
                     pk: "ROOT".to_string(),
                     sk: "GROUP#123".to_string(),
                 },
                 new_item.data,
-                Some(CreateOptions {
+                CreateOptions {
                     ttl: Some(TtlConfig::OneYear),
                     ..Default::default()
-                }),
+                },
             )
             .await
             .unwrap();
@@ -660,22 +660,22 @@ mod tests {
         let items = vec![
             (
                 item1.data,
-                Some(CreateOptions {
+                CreateOptions {
                     custom_sort: Some(0.12),
                     ..Default::default()
-                }),
+                },
             ),
             (
                 item2.data,
-                Some(CreateOptions {
+                CreateOptions {
                     custom_sort: Some(12.0),
                     ..Default::default()
-                }),
+                },
             ),
         ];
 
         let result = util
-            .batch_create_item::<TestDynamoObject>(
+            .batch_create_item_opt::<TestDynamoObject>(
                 PkSk {
                     pk: "ROOT".to_string(),
                     sk: "GROUP#123".to_string(),

@@ -249,7 +249,7 @@ where
             },
             PassFetchOrCreate::Create(UnorderedCreate { data }) => {
                 let parent_id = parent_id.unwrap_or_else(PkSk::root);
-                dynamo_util.create_item::<O>(parent_id, data, None).await
+                dynamo_util.create_item::<O>(parent_id, data).await
             }
         }
     }
@@ -296,7 +296,7 @@ where
                 None => Err(DynamoNotFound::new()),
             },
             PassFetchOrCreate::Create(UnorderedCreateWithParent { parent_id, data }) => {
-                dynamo_util.create_item::<O>(parent_id, data, None).await
+                dynamo_util.create_item::<O>(parent_id, data).await
             }
         }
     }

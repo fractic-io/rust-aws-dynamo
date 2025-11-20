@@ -132,7 +132,8 @@ where
 /// Unordered create.
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnorderedCreate<O: DynamoObject> {
-    pub create: O::Data,
+    #[serde(rename = "create")]
+    pub data: O::Data,
 }
 
 impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {}
@@ -140,7 +141,8 @@ impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {}
 /// Ordered create (with optional `after` argument).
 #[derive(Debug, Clone, Deserialize)]
 pub struct OrderedCreate<O: DynamoObject> {
-    pub create: O::Data,
+    #[serde(rename = "create")]
+    pub data: O::Data,
     pub after: Option<PkSk>,
 }
 
@@ -150,7 +152,8 @@ impl<O: DynamoObject> CreateArgs<O> for OrderedCreate<O> {}
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnorderedCreateWithParent<O: DynamoObject> {
     pub parent_id: PkSk,
-    pub create: O::Data,
+    #[serde(rename = "create")]
+    pub data: O::Data,
 }
 
 impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {}
@@ -159,7 +162,8 @@ impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {}
 #[derive(Debug, Clone, Deserialize)]
 pub struct OrderedCreateWithParent<O: DynamoObject> {
     pub parent_id: PkSk,
-    pub create: O::Data,
+    #[serde(rename = "create")]
+    pub data: O::Data,
     pub after: Option<PkSk>,
 }
 
@@ -243,7 +247,7 @@ where
                 Some(obj) => Ok(obj),
                 None => Err(DynamoNotFound::new()),
             },
-            PassFetchOrCreate::Create(UnorderedCreate { create: data }) => {
+            PassFetchOrCreate::Create(UnorderedCreate { data }) => {
                 let parent_id = parent_id.unwrap_or_else(PkSk::root);
                 dynamo_util.create_item::<O>(parent_id, data, None).await
             }
@@ -266,10 +270,7 @@ where
                 Some(obj) => Ok(obj),
                 None => Err(DynamoNotFound::new()),
             },
-            PassFetchOrCreate::Create(OrderedCreate {
-                create: data,
-                after,
-            }) => {
+            PassFetchOrCreate::Create(OrderedCreate { data, after }) => {
                 let parent_id = parent_id.unwrap_or_else(PkSk::root);
                 let insert_position = match after {
                     Some(a) => DynamoInsertPosition::After(a),
@@ -296,7 +297,7 @@ where
             },
             PassFetchOrCreate::Create(UnorderedCreateWithParent {
                 parent_id: parent,
-                create: data,
+                data,
             }) => dynamo_util.create_item::<O>(parent, data, None).await,
         }
     }
@@ -315,7 +316,7 @@ where
             },
             PassFetchOrCreate::Create(OrderedCreateWithParent {
                 parent_id: parent,
-                create: data,
+                data,
                 after,
             }) => {
                 let insert_position = match after {

@@ -119,9 +119,11 @@ pub enum UpdateCondition<T: DynamoObject> {
     /// Applies the numeric operator to all fields set to non-null values. Only
     /// numerically comparable fields must be set.
     NumericCompare { partial: T::Data, map_op: NumericOp },
-    /// Checks that the listed attribute is either not set or explicitly null.
+    /// Checks that the field is either not set or explicitly null. Supports
+    /// nested fields (ex. "details.address.city").
     FieldIsNone(String),
-    /// Checks that the listed attribute exists and is not null.
+    /// Checks that the field exists and is not null. Supports nested fields
+    /// (ex. "details.address.city").
     FieldIsSome(String),
 }
 
@@ -685,21 +687,39 @@ impl DynamoUtil {
                     );
                 }
                 UpdateCondition::FieldIsNone(field) => {
-                    let placeholder = format!("#u{}", idx + 1);
+                    let path = field
+                        .split('.')
+                        .enumerate()
+                        .map(|(j, field_part)| {
+                            let placeholder = format!("#u{}p{}", idx + 1, j + 1);
+                            expression_attribute_names
+                                .insert(placeholder.clone(), field_part.to_string());
+                            placeholder
+                        })
+                        .collect::<Vec<_>>()
+                        .join(".");
                     let condition = format!(
                         "(attribute_not_exists({p}) OR attribute_type({p}, NULL))",
-                        p = placeholder,
+                        p = path,
                     );
-                    expression_attribute_names.insert(placeholder, field);
                     custom_conditions.push(condition);
                 }
                 UpdateCondition::FieldIsSome(field) => {
-                    let placeholder = format!("#u{}", idx + 1);
+                    let path = field
+                        .split('.')
+                        .enumerate()
+                        .map(|(j, field_part)| {
+                            let placeholder = format!("#u{}p{}", idx + 1, j + 1);
+                            expression_attribute_names
+                                .insert(placeholder.clone(), field_part.to_string());
+                            placeholder
+                        })
+                        .collect::<Vec<_>>()
+                        .join(".");
                     let condition = format!(
                         "(attribute_exists({p}) AND NOT attribute_type({p}, NULL))",
-                        p = placeholder,
+                        p = path,
                     );
-                    expression_attribute_names.insert(placeholder, field);
                     custom_conditions.push(condition);
                 }
             }

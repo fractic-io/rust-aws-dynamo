@@ -93,6 +93,10 @@ pub struct IndexConfig {
 
 #[derive(Debug)]
 pub struct CreateToken<T: DynamoObject> {
+    // NOTE: It's important that this struct does not implement Clone, provides
+    // no constructor, and has private fields. This way tokens can't be used
+    // more than once, since they can't be duplicated and must be moved when
+    // building `CreateOptions`.
     id: PkSk,
     _phantom: std::marker::PhantomData<T>,
 }

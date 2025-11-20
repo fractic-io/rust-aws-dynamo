@@ -443,13 +443,14 @@ impl DynamoUtil {
             .id;
         let sort: Option<f64> = options.custom_sort;
         let ttl: Option<i64> = options.ttl.map(|ttl| ttl.compute_timestamp());
+        let now = Timestamp::now();
         let map = build_dynamo_map_for_new_obj::<T>(
             &data,
             pk.clone(),
             sk.clone(),
             Some(vec![
-                (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
-                (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+                (AUTO_FIELDS_CREATED_AT, Box::new(now.clone())),
+                (AUTO_FIELDS_UPDATED_AT, Box::new(now)),
                 (AUTO_FIELDS_SORT, Box::new(sort)),
                 (AUTO_FIELDS_TTL, Box::new(ttl)),
             ]),
@@ -501,14 +502,15 @@ impl DynamoUtil {
                 )?;
                 let sort: Option<f64> = options.custom_sort;
                 let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
+                let now = Timestamp::now();
                 Ok((
                     build_dynamo_map_for_new_obj::<T>(
                         data,
                         pk.clone(),
                         sk.clone(),
                         Some(vec![
-                            (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
-                            (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+                            (AUTO_FIELDS_CREATED_AT, Box::new(now.clone())),
+                            (AUTO_FIELDS_UPDATED_AT, Box::new(now)),
                             (AUTO_FIELDS_SORT, Box::new(sort)),
                             (AUTO_FIELDS_TTL, Box::new(ttl)),
                         ]),
@@ -1008,13 +1010,14 @@ impl DynamoUtil {
                 };
 
                 let flattenable = Flattenable::<T> { l: chunk.to_vec() };
+                let now = Timestamp::now();
                 build_dynamo_map_internal::<Flattenable<T>>(
                     &flattenable,
                     Some(pk),
                     Some(sk),
                     Some(vec![
-                        (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
-                        (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
+                        (AUTO_FIELDS_CREATED_AT, Box::new(now.clone())),
+                        (AUTO_FIELDS_UPDATED_AT, Box::new(now)),
                         (AUTO_FIELDS_SORT, Box::new(None::<f64>)),
                         (AUTO_FIELDS_TTL, Box::new(None::<i64>)),
                     ]),

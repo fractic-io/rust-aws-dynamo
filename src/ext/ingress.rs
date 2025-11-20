@@ -89,8 +89,7 @@ where
 #[derive(Debug, Clone)]
 pub enum PassFetchOrCreate<O, C>
 where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
+    O: DynamoObject,
     C: CreateArgs<O>,
 {
     Pass(O),
@@ -100,8 +99,7 @@ where
 
 impl<O, C> From<O> for PassFetchOrCreate<O, C>
 where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
+    O: DynamoObject,
     C: CreateArgs<O>,
 {
     fn from(value: O) -> Self {
@@ -111,22 +109,11 @@ where
 
 impl<O, C> From<PkSk> for PassFetchOrCreate<O, C>
 where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
+    O: DynamoObject,
     C: CreateArgs<O>,
 {
     fn from(value: PkSk) -> Self {
         Self::Fetch(value)
-    }
-}
-
-impl<O> From<O::Data> for PassFetchOrCreate<O, UnorderedCreate<O>>
-where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
-{
-    fn from(value: O::Data) -> Self {
-        Self::Create(UnorderedCreate::<O>::from(value))
     }
 }
 
@@ -136,15 +123,6 @@ pub trait CreateArgs<O: DynamoObject>: DeserializeOwned {}
 #[derive(Debug, Clone, Deserialize)]
 pub struct UnorderedCreate<O: DynamoObject> {
     pub create: O::Data,
-}
-
-impl<O> From<O::Data> for UnorderedCreate<O>
-where
-    O: DynamoObject,
-{
-    fn from(data: O::Data) -> Self {
-        Self { create: data }
-    }
 }
 
 impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {}
@@ -179,8 +157,7 @@ impl<O: DynamoObject> CreateArgs<O> for OrderedCreateWithParent<O> {}
 
 impl<'de, O, C> Deserialize<'de> for PassFetchOrCreate<O, C>
 where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
+    O: DynamoObject,
     C: CreateArgs<O>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -205,11 +182,7 @@ where
     }
 }
 
-impl<O> PassFetchOrCreate<O, UnorderedCreate<O>>
-where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
-{
+impl<O: DynamoObject> PassFetchOrCreate<O, UnorderedCreate<O>> {
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
@@ -229,11 +202,7 @@ where
     }
 }
 
-impl<O> PassFetchOrCreate<O, OrderedCreate<O>>
-where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
-{
+impl<O: DynamoObject> PassFetchOrCreate<O, OrderedCreate<O>> {
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
@@ -262,11 +231,7 @@ where
     }
 }
 
-impl<O> PassFetchOrCreate<O, UnorderedCreateWithParent<O>>
-where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
-{
+impl<O: DynamoObject> PassFetchOrCreate<O, UnorderedCreateWithParent<O>> {
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
         match self {
             PassFetchOrCreate::Pass(obj) => Ok(obj),
@@ -282,11 +247,7 @@ where
     }
 }
 
-impl<O> PassFetchOrCreate<O, OrderedCreateWithParent<O>>
-where
-    O: DynamoObject + DeserializeOwned,
-    O::Data: DeserializeOwned,
-{
+impl<O: DynamoObject> PassFetchOrCreate<O, OrderedCreateWithParent<O>> {
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
         match self {
             PassFetchOrCreate::Pass(obj) => Ok(obj),

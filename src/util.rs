@@ -617,14 +617,11 @@ impl DynamoUtil {
         Ok(object_after)
     }
 
-    /// Updates fields of an existing item with additional, flexible conditions.
+    /// Similar to `update_item`, but aborts the update if the provided
+    /// conditions are not met (returning an error if aborted).
     ///
-    /// In addition to equality checks using a partially-filled `T::Data`, this supports:
-    /// - Numeric comparisons (>, >=, <, <=) for any numeric fields set in `data`
-    /// - Attribute presence checks (null/non-set vs set/non-null)
-    ///
-    /// This automatically adds an existence check for the item being updated.
-    /// Fields with null values in `object` are removed (same as `update_item`).
+    /// Update conditions are directly supported by Dynamo, so this is very
+    /// efficient.
     pub async fn update_item_with_conditions<T: DynamoObject>(
         &self,
         object: &T,
@@ -633,13 +630,14 @@ impl DynamoUtil {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
-        // Equality conditions: attribute -> value
+
+        // Equality conditions.
         let mut eq_attribute_conditions: HashMap<String, AttributeValue> = HashMap::new();
-        // Custom condition expressions requiring additional placeholders
+
+        // Custom condition expressions (which reference expression attribute names/values).
         let mut custom_conditions: Vec<String> = vec![Self::ITEM_EXISTS_CONDITION.to_string()];
-        // Additional placeholders for names/values used by custom conditions
-        let mut extra_expression_attribute_names: HashMap<String, String> = HashMap::new();
-        let mut extra_expression_attribute_values: HashMap<String, AttributeValue> = HashMap::new();
+        let mut expression_attribute_names: HashMap<String, String> = HashMap::new();
+        let mut expression_attribute_values: HashMap<String, AttributeValue> = HashMap::new();
 
         for cond in conditions {
             match cond {
@@ -675,10 +673,9 @@ impl DynamoUtil {
                             .collect::<String>();
                         let name_placeholder = format!("#cond_{}", suffix);
                         let value_placeholder = format!(":cv_{}", suffix);
-                        extra_expression_attribute_names
-                            .insert(name_placeholder.clone(), k.clone());
+                        expression_attribute_names.insert(name_placeholder.clone(), k.clone());
                         // Last-wins if duplicate fields in multiple conditions; acceptable
-                        extra_expression_attribute_values.insert(value_placeholder.clone(), v);
+                        expression_attribute_values.insert(value_placeholder.clone(), v);
                         let op_str = match op {
                             NumericOp::GreaterThan => ">",
                             NumericOp::GreaterThanOrEquals => ">=",
@@ -698,8 +695,7 @@ impl DynamoUtil {
                             .map(|c| if c.is_alphanumeric() { c } else { '_' })
                             .collect::<String>();
                         let name_placeholder = format!("#cond_{}", suffix);
-                        extra_expression_attribute_names
-                            .insert(name_placeholder.clone(), f.to_string());
+                        expression_attribute_names.insert(name_placeholder.clone(), f.to_string());
                         let expr = format!(
                             "(attribute_not_exists({name}) OR attribute_type({name}, 'NULL'))",
                             name = name_placeholder
@@ -714,8 +710,7 @@ impl DynamoUtil {
                             .map(|c| if c.is_alphanumeric() { c } else { '_' })
                             .collect::<String>();
                         let name_placeholder = format!("#cond_{}", suffix);
-                        extra_expression_attribute_names
-                            .insert(name_placeholder.clone(), f.to_string());
+                        expression_attribute_names.insert(name_placeholder.clone(), f.to_string());
                         let expr = format!(
                             "(attribute_exists({name}) AND NOT attribute_type({name}, 'NULL'))",
                             name = name_placeholder
@@ -730,21 +725,19 @@ impl DynamoUtil {
             object,
             eq_attribute_conditions,
             custom_conditions,
-            extra_expression_attribute_names,
-            extra_expression_attribute_values,
+            expression_attribute_names,
+            expression_attribute_values,
         )
         .await
     }
 
-    /// Lower-level update that allows injecting additional expression attribute
-    /// names/values for custom condition placeholders.
     async fn update_item_internal<T: DynamoObject>(
         &self,
         object: &T,
         attribute_conditions: HashMap<String, AttributeValue>,
         custom_conditions: Vec<String>,
-        extra_expression_attribute_names: HashMap<String, String>,
-        extra_expression_attribute_values: HashMap<String, AttributeValue>,
+        mut expression_attribute_names: HashMap<String, String>,
+        mut expression_attribute_values: HashMap<String, AttributeValue>,
     ) -> Result<(), ServerError> {
         validate_id::<T>(object.id())?;
         let key = collection! {
@@ -757,9 +750,7 @@ impl DynamoUtil {
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
         )?;
 
-        // Build update expression:
-        let mut expression_attribute_names = extra_expression_attribute_names;
-        let mut expression_attribute_values = extra_expression_attribute_values;
+        // Build update expression.
         let set_expression = match map.is_empty() {
             true => "".to_string(),
             false => {
@@ -796,23 +787,26 @@ impl DynamoUtil {
         };
         let update_expression = format!("{} {}", set_expression, remove_expression);
 
-        // Custom conditions + attribute equality conditions:
-        let mut all_conditions: Vec<String> = Vec::new();
-        // Start with any provided custom conditions
-        all_conditions.extend(custom_conditions.into_iter());
-        // Append equality conditions, using keyed placeholders to avoid ambiguity
-        for (key, value) in attribute_conditions.into_iter() {
-            let suffix = key
-                .chars()
-                .map(|c| if c.is_alphanumeric() { c } else { '_' })
-                .collect::<String>();
-            let key_placeholder = format!("#c_{}", suffix);
-            let value_placeholder = format!(":cv_{}", suffix);
-            expression_attribute_names.insert(key_placeholder.clone(), key);
-            expression_attribute_values.insert(value_placeholder.clone(), value);
-            all_conditions.push(format!("{} = {}", key_placeholder, value_placeholder));
-        }
-        let condition_expression = all_conditions.join(" AND ");
+        // Build custom conditions & attribute equality conditions.
+        let condition_expression = custom_conditions
+            .into_iter()
+            .chain(
+                // Append equality conditions, using keyed placeholders to avoid
+                // ambiguity.
+                attribute_conditions.into_iter().map(|(key, value)| {
+                    let suffix = key
+                        .chars()
+                        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                        .collect::<String>();
+                    let key_placeholder = format!("#c_{}", suffix);
+                    let value_placeholder = format!(":cv_{}", suffix);
+                    expression_attribute_names.insert(key_placeholder.clone(), key);
+                    expression_attribute_values.insert(value_placeholder.clone(), value);
+                    format!("{} = {}", key_placeholder, value_placeholder)
+                }),
+            )
+            .collect::<Vec<String>>()
+            .join(" AND ");
 
         self.backend
             .update_item(

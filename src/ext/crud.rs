@@ -21,7 +21,7 @@ pub trait DynamoCrudAlgorithms: Send + Sync {
 /// Multiple valid parents are supported.
 ///
 /// Example:
-/// ```
+/// ```rust,ignore
 /// struct Parent1;
 /// struct Parent2;
 /// struct Child;

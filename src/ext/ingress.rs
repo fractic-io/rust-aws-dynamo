@@ -97,6 +97,12 @@ where
     Create(C),
 }
 
+pub type PassFetchOrCreateUnordered<O> = PassFetchOrCreate<O, UnorderedCreate<O>>;
+pub type PassFetchOrCreateOrdered<O> = PassFetchOrCreate<O, OrderedCreate<O>>;
+pub type PassFetchOrCreateUnorderedWithParent<O> =
+    PassFetchOrCreate<O, UnorderedCreateWithParent<O>>;
+pub type PassFetchOrCreateOrderedWithParent<O> = PassFetchOrCreate<O, OrderedCreateWithParent<O>>;
+
 impl<O, C> From<O> for PassFetchOrCreate<O, C>
 where
     O: DynamoObject,

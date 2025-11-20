@@ -91,8 +91,20 @@ pub struct IndexConfig {
     pub sort_field: &'static str,
 }
 
-#[derive(Debug, Default)]
-pub struct CreateOptions {
+#[derive(Debug)]
+pub struct CreateToken<T: DynamoObject> {
+    id: PkSk,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: DynamoObject> CreateToken<T> {
+    pub fn id(&self) -> &PkSk {
+        &self.id
+    }
+}
+
+#[derive(Debug)]
+pub struct CreateOptions<T: DynamoObject> {
     pub custom_sort: Option<f64>,
     /// If provided, the given item is automatically deleted by Dynamo after the
     /// expiry time, usually within a day or two.
@@ -100,6 +112,17 @@ pub struct CreateOptions {
     /// IMPORTANT: This requires TTL to be enabled on the table, using attribute
     /// name 'ttl'.
     pub ttl: Option<TtlConfig>,
+    pub token: Option<CreateToken<T>>,
+}
+
+impl<T: DynamoObject> Default for CreateOptions<T> {
+    fn default() -> Self {
+        Self {
+            custom_sort: None,
+            ttl: None,
+            token: None,
+        }
+    }
 }
 
 /// Comparison operators for numeric conditions.
@@ -384,6 +407,18 @@ impl DynamoUtil {
         Ok(response.item.is_some())
     }
 
+    pub fn create_token<T: DynamoObject>(
+        &self,
+        parent_id: PkSk,
+        data: &T::Data,
+    ) -> Result<CreateToken<T>, ServerError> {
+        let (pk, sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
+        Ok(CreateToken {
+            id: PkSk { pk, sk },
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
     pub async fn create_item<T: DynamoObject>(
         &self,
         parent_id: PkSk,
@@ -397,18 +432,21 @@ impl DynamoUtil {
         &self,
         parent_id: PkSk,
         data: T::Data,
-        options: CreateOptions,
+        options: CreateOptions<T>,
     ) -> Result<T, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
-        let (new_pk, new_sk) = generate_pk_sk::<T>(&data, &parent_id.pk, &parent_id.sk)?;
+        let PkSk { pk, sk } = options
+            .token
+            .map_or_else(|| self.create_token(parent_id, &data), |t| Ok(t))?
+            .id;
         let sort: Option<f64> = options.custom_sort;
         let ttl: Option<i64> = options.ttl.map(|ttl| ttl.compute_timestamp());
         let map = build_dynamo_map_for_new_obj::<T>(
             &data,
-            new_pk.clone(),
-            new_sk.clone(),
+            pk.clone(),
+            sk.clone(),
             Some(vec![
                 (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
                 (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
@@ -420,13 +458,7 @@ impl DynamoUtil {
             .put_item(self.table.clone(), map)
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-        Ok(T::new(
-            PkSk {
-                pk: new_pk,
-                sk: new_sk,
-            },
-            data,
-        ))
+        Ok(T::new(PkSk { pk, sk }, data))
     }
 
     pub async fn batch_create_item<T: DynamoObject>(
@@ -446,7 +478,7 @@ impl DynamoUtil {
     pub async fn batch_create_item_opt<T: DynamoObject>(
         &self,
         parent_id: PkSk,
-        data_and_options: Vec<(T::Data, CreateOptions)>,
+        data_and_options: Vec<(T::Data, CreateOptions<T>)>,
     ) -> Result<Vec<T>, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
@@ -463,14 +495,17 @@ impl DynamoUtil {
         let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_options
             .iter()
             .map(|(data, options)| {
-                let (new_pk, new_sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
+                let PkSk { pk, sk } = options.token.as_ref().map_or_else(
+                    || Ok(self.create_token::<T>(parent_id.clone(), data)?.id),
+                    |t| Ok(t.id.clone()),
+                )?;
                 let sort: Option<f64> = options.custom_sort;
                 let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
                 Ok((
                     build_dynamo_map_for_new_obj::<T>(
                         data,
-                        new_pk.clone(),
-                        new_sk.clone(),
+                        pk.clone(),
+                        sk.clone(),
                         Some(vec![
                             (AUTO_FIELDS_CREATED_AT, Box::new(Timestamp::now())),
                             (AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now())),
@@ -478,10 +513,7 @@ impl DynamoUtil {
                             (AUTO_FIELDS_TTL, Box::new(ttl)),
                         ]),
                     )?,
-                    PkSk {
-                        pk: new_pk,
-                        sk: new_sk,
-                    },
+                    PkSk { pk, sk },
                 ))
             })
             .collect::<Result<Vec<(DynamoMap, PkSk)>, ServerError>>()?

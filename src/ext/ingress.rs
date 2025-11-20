@@ -295,10 +295,9 @@ where
                 Some(obj) => Ok(obj),
                 None => Err(DynamoNotFound::new()),
             },
-            PassFetchOrCreate::Create(UnorderedCreateWithParent {
-                parent_id: parent,
-                data,
-            }) => dynamo_util.create_item::<O>(parent, data, None).await,
+            PassFetchOrCreate::Create(UnorderedCreateWithParent { parent_id, data }) => {
+                dynamo_util.create_item::<O>(parent_id, data, None).await
+            }
         }
     }
 }
@@ -315,7 +314,7 @@ where
                 None => Err(DynamoNotFound::new()),
             },
             PassFetchOrCreate::Create(OrderedCreateWithParent {
-                parent_id: parent,
+                parent_id,
                 data,
                 after,
             }) => {
@@ -324,7 +323,7 @@ where
                     None => DynamoInsertPosition::Last,
                 };
                 dynamo_util
-                    .create_item_ordered::<O>(parent, data, insert_position)
+                    .create_item_ordered::<O>(parent_id, data, insert_position)
                     .await
             }
         }

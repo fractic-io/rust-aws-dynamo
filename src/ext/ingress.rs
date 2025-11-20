@@ -19,7 +19,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum PassOrFetch<O>
 where
-    O: DynamoObject + DeserializeOwned,
+    O: DynamoObject,
 {
     Pass(O),
     Fetch(PkSk),
@@ -27,7 +27,7 @@ where
 
 impl<O> From<O> for PassOrFetch<O>
 where
-    O: DynamoObject + DeserializeOwned,
+    O: DynamoObject,
 {
     fn from(value: O) -> Self {
         Self::Pass(value)
@@ -36,7 +36,7 @@ where
 
 impl<O> From<PkSk> for PassOrFetch<O>
 where
-    O: DynamoObject + DeserializeOwned,
+    O: DynamoObject,
 {
     fn from(value: PkSk) -> Self {
         Self::Fetch(value)
@@ -45,7 +45,7 @@ where
 
 impl<'de, O> Deserialize<'de> for PassOrFetch<O>
 where
-    O: DynamoObject + DeserializeOwned,
+    O: DynamoObject,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -66,7 +66,7 @@ where
 
 impl<O> PassOrFetch<O>
 where
-    O: DynamoObject + DeserializeOwned,
+    O: DynamoObject,
 {
     /// Resolves into a concrete `O` by either passing through the provided
     /// object or fetching it via `DynamoUtil`.
@@ -117,7 +117,11 @@ where
     }
 }
 
-pub trait CreateArgs<O: DynamoObject>: DeserializeOwned {}
+pub trait CreateArgs<O>: DeserializeOwned
+where
+    O: DynamoObject,
+{
+}
 
 /// Unordered create.
 #[derive(Debug, Clone, Deserialize)]
@@ -143,7 +147,7 @@ pub struct UnorderedCreateWithParent<O: DynamoObject> {
     pub create: O::Data,
 }
 
-impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {}
+impl<O> CreateArgs<O> for UnorderedCreateWithParent<O> where O: DynamoObject {}
 
 /// Ordered create with parent passed in by caller.
 #[derive(Debug, Clone, Deserialize)]
@@ -153,7 +157,43 @@ pub struct OrderedCreateWithParent<O: DynamoObject> {
     pub after: Option<PkSk>,
 }
 
-impl<O: DynamoObject> CreateArgs<O> for OrderedCreateWithParent<O> {}
+impl<O> CreateArgs<O> for OrderedCreateWithParent<O> where O: DynamoObject {}
+
+impl<O> From<UnorderedCreate<O>> for PassFetchOrCreate<O, UnorderedCreate<O>>
+where
+    O: DynamoObject,
+{
+    fn from(value: UnorderedCreate<O>) -> Self {
+        Self::Create(value)
+    }
+}
+
+impl<O> From<OrderedCreate<O>> for PassFetchOrCreate<O, OrderedCreate<O>>
+where
+    O: DynamoObject,
+{
+    fn from(value: OrderedCreate<O>) -> Self {
+        Self::Create(value)
+    }
+}
+
+impl<O> From<UnorderedCreateWithParent<O>> for PassFetchOrCreate<O, UnorderedCreateWithParent<O>>
+where
+    O: DynamoObject,
+{
+    fn from(value: UnorderedCreateWithParent<O>) -> Self {
+        Self::Create(value)
+    }
+}
+
+impl<O> From<OrderedCreateWithParent<O>> for PassFetchOrCreate<O, OrderedCreateWithParent<O>>
+where
+    O: DynamoObject,
+{
+    fn from(value: OrderedCreateWithParent<O>) -> Self {
+        Self::Create(value)
+    }
+}
 
 impl<'de, O, C> Deserialize<'de> for PassFetchOrCreate<O, C>
 where
@@ -182,7 +222,10 @@ where
     }
 }
 
-impl<O: DynamoObject> PassFetchOrCreate<O, UnorderedCreate<O>> {
+impl<O> PassFetchOrCreate<O, UnorderedCreate<O>>
+where
+    O: DynamoObject,
+{
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
@@ -202,7 +245,10 @@ impl<O: DynamoObject> PassFetchOrCreate<O, UnorderedCreate<O>> {
     }
 }
 
-impl<O: DynamoObject> PassFetchOrCreate<O, OrderedCreate<O>> {
+impl<O> PassFetchOrCreate<O, OrderedCreate<O>>
+where
+    O: DynamoObject,
+{
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
@@ -231,7 +277,10 @@ impl<O: DynamoObject> PassFetchOrCreate<O, OrderedCreate<O>> {
     }
 }
 
-impl<O: DynamoObject> PassFetchOrCreate<O, UnorderedCreateWithParent<O>> {
+impl<O> PassFetchOrCreate<O, UnorderedCreateWithParent<O>>
+where
+    O: DynamoObject,
+{
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
         match self {
             PassFetchOrCreate::Pass(obj) => Ok(obj),
@@ -247,7 +296,10 @@ impl<O: DynamoObject> PassFetchOrCreate<O, UnorderedCreateWithParent<O>> {
     }
 }
 
-impl<O: DynamoObject> PassFetchOrCreate<O, OrderedCreateWithParent<O>> {
+impl<O> PassFetchOrCreate<O, OrderedCreateWithParent<O>>
+where
+    O: DynamoObject,
+{
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
         match self {
             PassFetchOrCreate::Pass(obj) => Ok(obj),

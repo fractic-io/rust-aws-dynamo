@@ -329,3 +329,85 @@ where
         }
     }
 }
+
+/// Allows callers to either pass a reference to an already-fetched object `&O`,
+/// or an id `PkSk` to be fetched lazily (or, for compatibility with serde, it
+/// can directly take ownership of an `O` built from deserialization). The
+/// resolved reference is valid for the lifetime of the `RefOrFetch` itself.
+pub enum RefOrFetch<'a, O>
+where
+    O: DynamoObject,
+{
+    Ref(&'a O),
+    Owned(O),
+    Fetch { id: PkSk, cached: Option<O> },
+}
+
+impl<'a, O> From<&'a O> for RefOrFetch<'a, O>
+where
+    O: DynamoObject,
+{
+    fn from(value: &'a O) -> Self {
+        Self::Ref(value)
+    }
+}
+
+impl<'a, O> From<PkSk> for RefOrFetch<'a, O>
+where
+    O: DynamoObject,
+{
+    fn from(value: PkSk) -> Self {
+        Self::Fetch {
+            id: value,
+            cached: None,
+        }
+    }
+}
+
+impl<'a, O> RefOrFetch<'a, O>
+where
+    O: DynamoObject,
+{
+    pub async fn resolve<'s>(&'s mut self, dynamo_util: &DynamoUtil) -> Result<&'s O, ServerError> {
+        match self {
+            RefOrFetch::Ref(reference) => Ok(*reference),
+            RefOrFetch::Owned(object) => Ok(object),
+            RefOrFetch::Fetch { id, cached } => {
+                if cached.is_none() {
+                    *cached = dynamo_util.get_item::<O>(id.clone()).await?;
+                }
+                cached.as_ref().ok_or_else(DynamoNotFound::new)
+            }
+        }
+    }
+}
+
+impl<'a, O> From<O> for RefOrFetch<'a, O>
+where
+    O: DynamoObject,
+{
+    fn from(value: O) -> Self {
+        Self::Owned(value)
+    }
+}
+
+impl<'de, 'a, O> Deserialize<'de> for RefOrFetch<'a, O>
+where
+    O: DynamoObject + DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = JsonValue::deserialize(deserializer)?;
+
+        // 1) Try as PkSk.
+        if let Some(Ok(id)) = v.as_str().map(|s| PkSk::from_string(&s)) {
+            return Ok(RefOrFetch::Fetch { id, cached: None });
+        }
+
+        // 2) Otherwise, deserialize the full object and store it owned.
+        let obj = serde_json::from_value::<O>(v).map_err(|e| de::Error::custom(e))?;
+        Ok(RefOrFetch::Owned(obj))
+    }
+}

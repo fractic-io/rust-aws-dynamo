@@ -147,7 +147,7 @@ pub struct UnorderedCreateWithParent<O: DynamoObject> {
     pub create: O::Data,
 }
 
-impl<O> CreateArgs<O> for UnorderedCreateWithParent<O> where O: DynamoObject {}
+impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {}
 
 /// Ordered create with parent passed in by caller.
 #[derive(Debug, Clone, Deserialize)]
@@ -157,7 +157,7 @@ pub struct OrderedCreateWithParent<O: DynamoObject> {
     pub after: Option<PkSk>,
 }
 
-impl<O> CreateArgs<O> for OrderedCreateWithParent<O> where O: DynamoObject {}
+impl<O: DynamoObject> CreateArgs<O> for OrderedCreateWithParent<O> {}
 
 impl<O> From<UnorderedCreate<O>> for PassFetchOrCreate<O, UnorderedCreate<O>>
 where

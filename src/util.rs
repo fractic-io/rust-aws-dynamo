@@ -33,7 +33,7 @@ use crate::{
     util::{
         chunk_helpers::WithMetadataFrom as _,
         id_helpers::{child_search_prefix, validate_id, validate_parent_id},
-        update_helpers::{CmpOp, Sanitize as _},
+        update_helpers::CmpOp,
     },
     DynamoCtxView,
 };
@@ -648,7 +648,7 @@ impl DynamoUtil {
         let mut expression_attribute_names: HashMap<String, String> = HashMap::new();
         let expression_attribute_values: HashMap<String, AttributeValue> = HashMap::new();
 
-        for cond in conditions {
+        for (idx, cond) in conditions.into_iter().enumerate() {
             match cond {
                 UpdateCondition::PartialEq(data) => {
                     // Convert partial data into a map; nulls are skipped by serializer.
@@ -685,7 +685,7 @@ impl DynamoUtil {
                     );
                 }
                 UpdateCondition::FieldIsNone(field) => {
-                    let placeholder = format!("#cond_{}", field.sanitized());
+                    let placeholder = format!("#u{}", idx + 1);
                     let condition = format!(
                         "(attribute_not_exists({p}) OR attribute_type({p}, NULL))",
                         p = placeholder,
@@ -694,7 +694,7 @@ impl DynamoUtil {
                     custom_conditions.push(condition);
                 }
                 UpdateCondition::FieldIsSome(field) => {
-                    let placeholder = format!("#cond_{}", field.sanitized());
+                    let placeholder = format!("#u{}", idx + 1);
                     let condition = format!(
                         "(attribute_exists({p}) AND NOT attribute_type({p}, NULL))",
                         p = placeholder,
@@ -777,15 +777,17 @@ impl DynamoUtil {
             .chain(
                 // Append comparison conditions, using keyed placeholders to avoid
                 // ambiguity.
-                attribute_conditions.into_iter().map(|(key, (value, op))| {
-                    let suffix = key.sanitized();
-                    let key_placeholder = format!("#c_{}", suffix);
-                    let value_placeholder = format!(":cv_{}", suffix);
-                    let condition = format!("{} {} {}", key_placeholder, op, value_placeholder);
-                    expression_attribute_names.insert(key_placeholder, key);
-                    expression_attribute_values.insert(value_placeholder, value);
-                    condition
-                }),
+                attribute_conditions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (key, (value, op)))| {
+                        let key_placeholder = format!("#c_{}", idx + 1);
+                        let value_placeholder = format!(":cv_{}", idx + 1);
+                        let condition = format!("{} {} {}", key_placeholder, op, value_placeholder);
+                        expression_attribute_names.insert(key_placeholder, key);
+                        expression_attribute_values.insert(value_placeholder, value);
+                        condition
+                    }),
             )
             .collect::<Vec<String>>()
             .join(" AND ");

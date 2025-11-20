@@ -781,8 +781,8 @@ impl DynamoUtil {
                     .into_iter()
                     .enumerate()
                     .map(|(idx, (key, (value, op)))| {
-                        let key_placeholder = format!("#c_{}", idx + 1);
-                        let value_placeholder = format!(":cv_{}", idx + 1);
+                        let key_placeholder = format!("#c{}", idx + 1);
+                        let value_placeholder = format!(":cv{}", idx + 1);
                         let condition = format!("{} {} {}", key_placeholder, op, value_placeholder);
                         expression_attribute_names.insert(key_placeholder, key);
                         expression_attribute_values.insert(value_placeholder, value);

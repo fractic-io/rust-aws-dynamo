@@ -229,7 +229,7 @@ where
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
-        parent: Option<PkSk>,
+        parent_id: Option<PkSk>,
     ) -> Result<O, ServerError> {
         match self {
             PassFetchOrCreate::Pass(obj) => Ok(obj),
@@ -238,7 +238,7 @@ where
                 None => Err(DynamoNotFound::new()),
             },
             PassFetchOrCreate::Create(UnorderedCreate { create: data }) => {
-                let parent_id = parent.unwrap_or_else(PkSk::root);
+                let parent_id = parent_id.unwrap_or_else(PkSk::root);
                 dynamo_util.create_item::<O>(parent_id, data, None).await
             }
         }
@@ -252,7 +252,7 @@ where
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
-        parent: Option<PkSk>,
+        parent_id: Option<PkSk>,
     ) -> Result<O, ServerError> {
         match self {
             PassFetchOrCreate::Pass(obj) => Ok(obj),
@@ -264,7 +264,7 @@ where
                 create: data,
                 after,
             }) => {
-                let parent_id = parent.unwrap_or_else(PkSk::root);
+                let parent_id = parent_id.unwrap_or_else(PkSk::root);
                 let insert_position = match after {
                     Some(a) => DynamoInsertPosition::After(a),
                     None => DynamoInsertPosition::Last,

@@ -55,16 +55,19 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         _ => {}
     }
     // Build pk / sk:
-    let new_obj_id =
-        match T::id_logic() {
-            IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
-            IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
-            IdLogic::Singleton => format!("@{}", T::id_label()),
-            IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
-            IdLogic::BatchOptimized { .. } => return Err(CriticalError::new(
-                "IDs for IdLogic::BatchOptimized should be generated manually in DynamoUtil::batch_replace_all_ordered(...), but generate_pk_sk(...) was unexpectedly called",
-            )),
-        };
+    let new_obj_id = match T::id_logic() {
+        IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
+        IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
+        IdLogic::Singleton => format!("@{}", T::id_label()),
+        IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
+        IdLogic::BatchOptimized { .. } => {
+            return Err(CriticalError::new(
+                "IDs for IdLogic::BatchOptimized should be generated manually in \
+                 DynamoUtil::batch_replace_all_ordered(...), but generate_pk_sk(...) was \
+                 unexpectedly called",
+            ))
+        }
+    };
     match T::nesting_logic() {
         NestingLogic::Root => Ok(("ROOT".to_string(), new_obj_id)),
         NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
@@ -280,7 +283,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_root_uuid() {
         let obj = TestObjectRootUuid {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectRootUuidData::default(),
         };
@@ -306,7 +309,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_root_timestamp() {
         let obj = TestObjectRootTimestamp {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectRootTimestampData::default(),
         };
@@ -333,7 +336,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_top_level_child_uuid() {
         let obj = TestObjectTopLevelChildUuid {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectTopLevelChildUuidData::default(),
         };
@@ -360,7 +363,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_inline_child_uuid() {
         let obj = TestObjectInlineChildUuid {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectInlineChildUuidData::default(),
         };
@@ -379,7 +382,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_singleton_parent_error() {
         let obj = TestObjectTopLevelChildUuid {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectTopLevelChildUuidData::default(),
         };
@@ -409,7 +412,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_top_level_child_of_parent() {
         let obj = TestObjectTopLevelChildOfParent {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectTopLevelChildOfParentData::default(),
         };
@@ -427,7 +430,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_top_level_child_of_parent_error() {
         let obj = TestObjectTopLevelChildOfParent {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectTopLevelChildOfParentData::default(),
         };
@@ -458,7 +461,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_singleton() {
         let obj = TestObjectSingleton {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectSingletonData::default(),
         };
@@ -488,7 +491,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_singleton_family() {
         let obj = TestObjectSingletonFamily {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectSingletonFamilyData {
                 key_field: "key123".to_string(),
@@ -506,7 +509,7 @@ mod tests {
     #[test]
     fn test_generate_pk_sk_invalid_parent_sk_format() {
         let obj = TestObjectTopLevelChildOfParent {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: TestObjectTopLevelChildOfParentData::default(),
         };

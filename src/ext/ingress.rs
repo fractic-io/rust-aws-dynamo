@@ -248,7 +248,7 @@ where
                 None => Err(DynamoNotFound::new()),
             },
             PassFetchOrCreate::Create(UnorderedCreate { data }) => {
-                let parent_id = parent_id.unwrap_or_else(PkSk::root);
+                let parent_id = parent_id.as_ref().unwrap_or(PkSk::root());
                 dynamo_util.create_item::<O>(parent_id, data).await
             }
         }
@@ -271,7 +271,7 @@ where
                 None => Err(DynamoNotFound::new()),
             },
             PassFetchOrCreate::Create(OrderedCreate { data, after }) => {
-                let parent_id = parent_id.unwrap_or_else(PkSk::root);
+                let parent_id = parent_id.as_ref().unwrap_or(PkSk::root());
                 let insert_position = match after {
                     Some(a) => DynamoInsertPosition::After(a),
                     None => DynamoInsertPosition::Last,
@@ -296,7 +296,7 @@ where
                 None => Err(DynamoNotFound::new()),
             },
             PassFetchOrCreate::Create(UnorderedCreateWithParent { parent_id, data }) => {
-                dynamo_util.create_item::<O>(parent_id, data).await
+                dynamo_util.create_item::<O>(&parent_id, data).await
             }
         }
     }
@@ -323,7 +323,7 @@ where
                     None => DynamoInsertPosition::Last,
                 };
                 dynamo_util
-                    .create_item_ordered::<O>(parent_id, data, insert_position)
+                    .create_item_ordered::<O>(&parent_id, data, insert_position)
                     .await
             }
         }

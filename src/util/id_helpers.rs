@@ -20,7 +20,7 @@ pub fn validate_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError> {
 #[track_caller]
 pub fn validate_parent_id<T: DynamoObject>(parent_id: &PkSk) -> Result<(), ServerError> {
     match T::nesting_logic() {
-        NestingLogic::Root if *parent_id != PkSk::root() => {
+        NestingLogic::Root if parent_id != PkSk::root() => {
             return Err(DynamoInvalidOperation::new(
                 "parent ID does not match root, as expected for NestingLogic::Root",
             ));
@@ -44,7 +44,7 @@ pub fn validate_parent_id<T: DynamoObject>(parent_id: &PkSk) -> Result<(), Serve
     Ok(())
 }
 
-pub fn child_search_prefix<T: DynamoObject>(parent_id: PkSk) -> PkSk {
+pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
     // * Singleton / SingletonFamily →  "@LABEL"
     // * Everything else             →  "LABEL#"
     let sk_search_prefix = match T::id_logic() {
@@ -60,11 +60,11 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: PkSk) -> PkSk {
             sk: sk_search_prefix,
         },
         NestingLogic::TopLevelChildOfAny | NestingLogic::TopLevelChildOf(_) => PkSk {
-            pk: parent_id.sk,
+            pk: parent_id.sk.clone(),
             sk: sk_search_prefix,
         },
         NestingLogic::InlineChildOfAny | NestingLogic::InlineChildOf(_) => PkSk {
-            pk: parent_id.pk,
+            pk: parent_id.pk.clone(),
             sk: format!("{}#{}", parent_id.sk, sk_search_prefix),
         },
     }
@@ -221,7 +221,7 @@ mod tests {
             sk: "GROUP#1".into(),
         };
         assert_eq!(
-            child_search_prefix::<GroupEvent>(top_level_child_search.clone()),
+            child_search_prefix::<GroupEvent>(&top_level_child_search),
             PkSk {
                 pk: "GROUP#1".into(),
                 sk: "EVENT#".into()
@@ -234,7 +234,7 @@ mod tests {
             sk: "GROUP#1".into(),
         };
         assert_eq!(
-            child_search_prefix::<GroupTask>(inline_child_search.clone()),
+            child_search_prefix::<GroupTask>(&inline_child_search),
             PkSk {
                 pk: "ROOT".into(),
                 sk: "GROUP#1#TASK#".into()
@@ -247,7 +247,7 @@ mod tests {
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<InlineSingleton>(inline_singleton_search.clone()),
+            child_search_prefix::<InlineSingleton>(&inline_singleton_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S#@INLSINGLE".into()
@@ -260,7 +260,7 @@ mod tests {
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<InlineSingletonFam>(inline_singleton_family_search.clone()),
+            child_search_prefix::<InlineSingletonFam>(&inline_singleton_family_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S#@INLFAM".into()
@@ -273,7 +273,7 @@ mod tests {
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<InlineBatch>(inline_batch_search.clone()),
+            child_search_prefix::<InlineBatch>(&inline_batch_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S#INLBATCH#".into()
@@ -286,7 +286,7 @@ mod tests {
             sk: "S#123#N#456".into(),
         };
         assert_eq!(
-            child_search_prefix::<TopLevelBatch>(top_level_batch_search.clone()),
+            child_search_prefix::<TopLevelBatch>(&top_level_batch_search),
             PkSk {
                 pk: "S#123#N#456".into(),
                 sk: "TOPLBATCH#".into()

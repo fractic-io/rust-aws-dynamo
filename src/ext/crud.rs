@@ -339,7 +339,7 @@ impl<O: DynamoObject> ManageOrderedChild<O> {
             None => DynamoInsertPosition::Last,
         };
         self.dynamo_util
-            .create_item_ordered::<O>(parent.id().clone(), data, insert_position)
+            .create_item_ordered::<O>(parent.id(), data, insert_position)
             .await
     }
 
@@ -357,7 +357,7 @@ impl<O: DynamoObject> ManageOrderedChild<O> {
             None => DynamoInsertPosition::Last,
         };
         self.dynamo_util
-            .batch_create_item_ordered::<O>(parent.id().clone(), data, insert_position)
+            .batch_create_item_ordered::<O>(parent.id(), data, insert_position)
             .await
     }
 
@@ -384,16 +384,14 @@ impl<O: DynamoObject> ManageOrderedChild<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+        self.dynamo_util.query_all::<O>(parent.id()).await
     }
 
     pub async fn batch_delete_all<P>(&self, parent: &P) -> Result<(), ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .batch_delete_all::<O>(parent.id().clone())
-            .await
+        self.dynamo_util.batch_delete_all::<O>(parent.id()).await
     }
 }
 
@@ -441,7 +439,7 @@ impl<O: DynamoObject> ManageOrderedChildWithChildren<O> {
             None => DynamoInsertPosition::Last,
         };
         self.dynamo_util
-            .create_item_ordered::<O>(parent.id().clone(), data, insert_position)
+            .create_item_ordered::<O>(parent.id(), data, insert_position)
             .await
     }
 
@@ -459,7 +457,7 @@ impl<O: DynamoObject> ManageOrderedChildWithChildren<O> {
             None => DynamoInsertPosition::Last,
         };
         self.dynamo_util
-            .batch_create_item_ordered::<O>(parent.id().clone(), data, insert_position)
+            .batch_create_item_ordered::<O>(parent.id(), data, insert_position)
             .await
     }
 
@@ -496,16 +494,14 @@ impl<O: DynamoObject> ManageOrderedChildWithChildren<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+        self.dynamo_util.query_all::<O>(parent.id()).await
     }
 
     pub async fn batch_delete_all_non_recursive<P>(&self, parent: &P) -> Result<(), ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .batch_delete_all::<O>(parent.id().clone())
-            .await
+        self.dynamo_util.batch_delete_all::<O>(parent.id()).await
     }
 }
 
@@ -544,9 +540,7 @@ impl<O: DynamoObject> ManageUnorderedChild<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .create_item::<O>(parent.id().clone(), data)
-            .await
+        self.dynamo_util.create_item::<O>(parent.id(), data).await
     }
 
     pub async fn batch_add<P>(&self, parent: &P, data: Vec<O::Data>) -> Result<Vec<O>, ServerError>
@@ -554,7 +548,7 @@ impl<O: DynamoObject> ManageUnorderedChild<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .batch_create_item::<O>(parent.id().clone(), data)
+            .batch_create_item::<O>(parent.id(), data)
             .await
     }
 
@@ -581,16 +575,14 @@ impl<O: DynamoObject> ManageUnorderedChild<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+        self.dynamo_util.query_all::<O>(parent.id()).await
     }
 
     pub async fn batch_delete_all<P>(&self, parent: &P) -> Result<(), ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .batch_delete_all::<O>(parent.id().clone())
-            .await
+        self.dynamo_util.batch_delete_all::<O>(parent.id()).await
     }
 }
 
@@ -628,9 +620,7 @@ impl<O: DynamoObject> ManageUnorderedChildWithChildren<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .create_item::<O>(parent.id().clone(), data)
-            .await
+        self.dynamo_util.create_item::<O>(parent.id(), data).await
     }
 
     pub async fn batch_add<P>(&self, parent: &P, data: Vec<O::Data>) -> Result<Vec<O>, ServerError>
@@ -638,7 +628,7 @@ impl<O: DynamoObject> ManageUnorderedChildWithChildren<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .batch_create_item::<O>(parent.id().clone(), data)
+            .batch_create_item::<O>(parent.id(), data)
             .await
     }
 
@@ -675,16 +665,14 @@ impl<O: DynamoObject> ManageUnorderedChildWithChildren<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+        self.dynamo_util.query_all::<O>(parent.id()).await
     }
 
     pub async fn batch_delete_all_non_recursive<P>(&self, parent: &P) -> Result<(), ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .batch_delete_all::<O>(parent.id().clone())
-            .await
+        self.dynamo_util.batch_delete_all::<O>(parent.id()).await
     }
 }
 
@@ -715,16 +703,14 @@ impl<O: DynamoObject> ManageBatchChild<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+        self.dynamo_util.query_all::<O>(parent.id()).await
     }
 
     pub async fn batch_delete_all<P>(&self, parent: &P) -> Result<(), ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .batch_delete_all::<O>(parent.id().clone())
-            .await
+        self.dynamo_util.batch_delete_all::<O>(parent.id()).await
     }
 
     pub async fn batch_replace_all_ordered<P>(
@@ -736,7 +722,7 @@ impl<O: DynamoObject> ManageBatchChild<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .batch_replace_all_ordered::<O>(parent.id().clone(), data)
+            .batch_replace_all_ordered::<O>(parent.id(), data)
             .await
     }
 }
@@ -777,9 +763,7 @@ impl<O: DynamoObject> ManageSingletonChild<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .create_item::<O>(parent.id().clone(), data)
-            .await
+        self.dynamo_util.create_item::<O>(parent.id(), data).await
     }
 
     pub async fn delete<P>(&self, parent: &P) -> Result<(), ServerError>
@@ -847,9 +831,7 @@ impl<O: DynamoObject> ManageSingletonFamilyChild<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .create_item::<O>(parent.id().clone(), data)
-            .await
+        self.dynamo_util.create_item::<O>(parent.id(), data).await
     }
 
     pub async fn batch_set<P>(&self, parent: &P, data: Vec<O::Data>) -> Result<Vec<O>, ServerError>
@@ -857,7 +839,7 @@ impl<O: DynamoObject> ManageSingletonFamilyChild<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .batch_create_item::<O>(parent.id().clone(), data)
+            .batch_create_item::<O>(parent.id(), data)
             .await
     }
 
@@ -886,16 +868,14 @@ impl<O: DynamoObject> ManageSingletonFamilyChild<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+        self.dynamo_util.query_all::<O>(parent.id()).await
     }
 
     pub async fn batch_delete_all<P>(&self, parent: &P) -> Result<(), ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .batch_delete_all::<O>(parent.id().clone())
-            .await
+        self.dynamo_util.batch_delete_all::<O>(parent.id()).await
     }
 
     // Helpers:

@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, sync::LazyLock};
 
 use fractic_server_error::ServerError;
 use serde::{
@@ -17,12 +17,14 @@ use super::{
     DynamoObject, PkSk,
 };
 
+static ROOT: LazyLock<PkSk> = LazyLock::new(|| PkSk {
+    pk: "ROOT".to_string(),
+    sk: "ROOT".to_string(),
+});
+
 impl PkSk {
-    pub fn root() -> PkSk {
-        PkSk {
-            pk: "ROOT".to_string(),
-            sk: "ROOT".to_string(),
-        }
+    pub fn root() -> &'static PkSk {
+        &ROOT
     }
 
     pub fn generate<T: DynamoObject>(

@@ -49,7 +49,7 @@ fn _sk_strip_uuid<T: DynamoObject>(
 
 pub(crate) async fn calculate_sort_values<T: DynamoObject>(
     util: &DynamoUtil,
-    parent_id: PkSk,
+    parent_id: &PkSk,
     data: &T::Data,
     insert_position: DynamoInsertPosition,
     num: usize,
@@ -110,12 +110,12 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
                 .collect()
         }
         DynamoInsertPosition::After(id) => {
-            let insert_after_index = existing_vals
-                .iter()
-                .position(|item| item.id == id)
-                .ok_or(DynamoInvalidOperation::new(
-                    "the ID provided in DynamoInsertPosition::After(id) does not exist as a sorted item of type T in the database",
-                ))?;
+            let insert_after_index = existing_vals.iter().position(|item| item.id == id).ok_or(
+                DynamoInvalidOperation::new(
+                    "the ID provided in DynamoInsertPosition::After(id) does not exist as a \
+                     sorted item of type T in the database",
+                ),
+            )?;
             let insert_after = existing_vals.get(insert_after_index).unwrap();
             let insert_before = existing_vals.get(insert_after_index + 1);
             match insert_before {
@@ -226,7 +226,7 @@ mod tests {
 
         let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
-            parent_id,
+            &parent_id,
             &object.data,
             DynamoInsertPosition::First,
             2,
@@ -266,7 +266,7 @@ mod tests {
 
         let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
-            parent_id,
+            &parent_id,
             &object.data,
             DynamoInsertPosition::Last,
             2,
@@ -311,7 +311,7 @@ mod tests {
 
         let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
-            parent_id,
+            &parent_id,
             &object.data,
             DynamoInsertPosition::After(after_id),
             2,
@@ -356,7 +356,7 @@ mod tests {
 
         let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
-            parent_id,
+            &parent_id,
             &object.data,
             DynamoInsertPosition::After(after_id),
             2,
@@ -391,7 +391,7 @@ mod tests {
 
         let sort_values = calculate_sort_values::<TestDynamoObject>(
             &util,
-            parent_id,
+            &parent_id,
             &object.data,
             DynamoInsertPosition::First,
             2,

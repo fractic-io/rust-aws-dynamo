@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn test_auto_fields_default() {
         let obj = Test1 {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: Test1Data::default(),
         };
@@ -398,7 +398,7 @@ mod tests {
         };
 
         let obj = Test1 {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: auto_fields.clone(),
             data: Test1Data::default(),
         };
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn test_singleton_family_key_fn() {
         let obj = Test4 {
-            id: PkSk::root(),
+            id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
             data: Test4Data {
                 key: String::from("KEY"),

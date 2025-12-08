@@ -563,7 +563,7 @@ mod tests {
 
         let result = util
             .create_item_opt::<TestDynamoObject>(
-                PkSk {
+                &PkSk {
                     pk: "ROOT".to_string(),
                     sk: "GROUP#123".to_string(),
                 },
@@ -617,7 +617,7 @@ mod tests {
 
         let result = util
             .create_item_opt::<TestDynamoObject>(
-                PkSk {
+                &PkSk {
                     pk: "ROOT".to_string(),
                     sk: "GROUP#123".to_string(),
                 },
@@ -676,7 +676,7 @@ mod tests {
 
         let result = util
             .batch_create_item_opt::<TestDynamoObject>(
-                PkSk {
+                &PkSk {
                     pk: "ROOT".to_string(),
                     sk: "GROUP#123".to_string(),
                 },
@@ -1039,7 +1039,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query_all::<TestDynamoObject>(PkSk {
+            .query_all::<TestDynamoObject>(&PkSk {
                 pk: "ROOT".to_string(),
                 sk: "GROUP#123".to_string(),
             })
@@ -1090,7 +1090,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .batch_delete_all::<TestDynamoObject>(PkSk {
+            .batch_delete_all::<TestDynamoObject>(&PkSk {
                 pk: "ROOT".to_string(),
                 sk: "GROUP#123".to_string(),
             })
@@ -1188,7 +1188,7 @@ mod tests {
         ];
 
         let result = util
-            .batch_replace_all_ordered::<BatchOptTopLevelDynamoObject>(parent_id, new_items)
+            .batch_replace_all_ordered::<BatchOptTopLevelDynamoObject>(&parent_id, new_items)
             .await;
 
         assert!(result.is_ok());
@@ -1282,7 +1282,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         let result = util
-            .batch_replace_all_ordered::<BatchOptInlineDynamoObject>(parent_id, new_items)
+            .batch_replace_all_ordered::<BatchOptInlineDynamoObject>(&parent_id, new_items)
             .await;
 
         assert!(result.is_ok());
@@ -1355,7 +1355,7 @@ mod tests {
         ];
 
         let result = util
-            .batch_replace_all_ordered::<BatchOptTopLevelDynamoObject>(parent_id, new_items)
+            .batch_replace_all_ordered::<BatchOptTopLevelDynamoObject>(&parent_id, new_items)
             .await;
 
         assert!(result.is_ok());

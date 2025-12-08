@@ -215,8 +215,11 @@ impl DynamoUtil {
 
     /// Efficiently queries all children of type `T` belonging to the given
     /// `parent_id`. Handles all nesting logic types.
-    pub async fn query_all<T: DynamoObject>(&self, parent_id: PkSk) -> Result<Vec<T>, ServerError> {
-        validate_parent_id::<T>(&parent_id)?;
+    pub async fn query_all<T: DynamoObject>(
+        &self,
+        parent_id: &PkSk,
+    ) -> Result<Vec<T>, ServerError> {
+        validate_parent_id::<T>(parent_id)?;
         self.query::<T>(
             None,
             child_search_prefix::<T>(parent_id),
@@ -413,7 +416,7 @@ impl DynamoUtil {
 
     pub fn create_token<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
         let (pk, sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
@@ -425,7 +428,7 @@ impl DynamoUtil {
 
     pub async fn create_item<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
         data: T::Data,
     ) -> Result<T, ServerError> {
         self.create_item_opt(parent_id, data, CreateOptions::default())
@@ -434,7 +437,7 @@ impl DynamoUtil {
 
     pub async fn create_item_opt<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
         data: T::Data,
         options: CreateOptions<T>,
     ) -> Result<T, ServerError> {
@@ -468,7 +471,7 @@ impl DynamoUtil {
 
     pub async fn batch_create_item<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
         data: Vec<T::Data>,
     ) -> Result<Vec<T>, ServerError> {
         self.batch_create_item_opt(
@@ -482,7 +485,7 @@ impl DynamoUtil {
 
     pub async fn batch_create_item_opt<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
         data_and_options: Vec<(T::Data, CreateOptions<T>)>,
     ) -> Result<Vec<T>, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
@@ -501,7 +504,7 @@ impl DynamoUtil {
             .iter()
             .map(|(data, options)| {
                 let PkSk { pk, sk } = options.token.as_ref().map_or_else(
-                    || Ok(self.create_token::<T>(parent_id.clone(), data)?.id),
+                    || Ok(self.create_token::<T>(parent_id, data)?.id),
                     |t| Ok(t.id.clone()),
                 )?;
                 let sort: Option<f64> = options.custom_sort;
@@ -558,20 +561,19 @@ impl DynamoUtil {
     /// sort values once), or consider using timestamp-based IDs instead.
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
         data: T::Data,
         insert_position: DynamoInsertPosition,
     ) -> Result<T, ServerError> {
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
-        let sort_val =
-            calculate_sort_values::<T>(self, parent_id.clone(), &data, insert_position, 1)
-                .await?
-                .pop()
-                .ok_or(DynamoInvalidOperation::new(
-                    "failed to generate new ordered ID",
-                ))?;
+        let sort_val = calculate_sort_values::<T>(self, parent_id, &data, insert_position, 1)
+            .await?
+            .pop()
+            .ok_or(DynamoInvalidOperation::new(
+                "failed to generate new ordered ID",
+            ))?;
         self.create_item_opt::<T>(
             parent_id,
             data,
@@ -585,7 +587,7 @@ impl DynamoUtil {
 
     pub async fn batch_create_item_ordered<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
         data: Vec<T::Data>,
         insert_position: DynamoInsertPosition,
     ) -> Result<Vec<T>, ServerError> {
@@ -597,7 +599,7 @@ impl DynamoUtil {
         }
         let new_ids = calculate_sort_values::<T>(
             self,
-            parent_id.clone(),
+            parent_id,
             data.first().unwrap(),
             insert_position,
             data.len(),
@@ -919,7 +921,7 @@ impl DynamoUtil {
     /// Deletes *all* children of type T on the parent.
     pub async fn batch_delete_all<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
     ) -> Result<(), ServerError> {
         // Ensure we dedup IDs, since query logic expands chunks internally.
         let children_ids: HashSet<PkSk> = self
@@ -938,11 +940,11 @@ impl DynamoUtil {
     /// in large chunks (which get flattened by query logic).
     pub async fn batch_replace_all_ordered<T: DynamoObject>(
         &self,
-        parent_id: PkSk,
+        parent_id: &PkSk,
         data: Vec<T::Data>,
     ) -> Result<(), ServerError> {
         // Validations.
-        validate_parent_id::<T>(&parent_id)?;
+        validate_parent_id::<T>(parent_id)?;
         let chunk_size = match T::id_logic() {
             IdLogic::BatchOptimized { chunk_size } => {
                 if chunk_size == 0 {
@@ -955,7 +957,7 @@ impl DynamoUtil {
             _ => None,
         };
 
-        self.batch_delete_all::<T>(parent_id.clone()).await?;
+        self.batch_delete_all::<T>(parent_id).await?;
         if data.is_empty() {
             return Ok(());
         }

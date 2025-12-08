@@ -32,13 +32,13 @@ pub trait DynamoCrudAlgorithms: Send + Sync {
 pub trait ParentOf<O: DynamoObject>: DynamoObject {}
 
 /// Type-safe accessor for CRUD operations on a root object.
-pub struct ManageRoot<O: DynamoObject> {
+pub struct ManageRootUnordered<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageRoot<O> {
+impl<O: DynamoObject> ManageRootUnordered<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -99,13 +99,13 @@ impl<O: DynamoObject> ManageRoot<O> {
 }
 
 /// Type-safe accessor for CRUD operations on a root object with children.
-pub struct ManageRootWithChildren<O: DynamoObject> {
+pub struct ManageRootUnorderedWithChildren<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageRootWithChildren<O> {
+impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -297,13 +297,13 @@ impl<O: DynamoObject> ManageRootSingletonFamily<O> {
 /// Type-safe accessor for CRUD operations on an ordered child object (i.e. has
 /// a parent, and whose `add` and `batch_add` operations should use more costly
 /// sort-key-based insertion).
-pub struct ManageOrderedChild<O: DynamoObject> {
+pub struct ManageChildOrdered<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageOrderedChild<O> {
+impl<O: DynamoObject> ManageChildOrdered<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -397,13 +397,13 @@ impl<O: DynamoObject> ManageOrderedChild<O> {
 
 /// Type-safe accessor for CRUD operations on an ordered child object, which
 /// itself also has children.
-pub struct ManageOrderedChildWithChildren<O: DynamoObject> {
+pub struct ManageChildOrderedWithChildren<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageOrderedChildWithChildren<O> {
+impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -508,13 +508,13 @@ impl<O: DynamoObject> ManageOrderedChildWithChildren<O> {
 /// Type-safe accessor for CRUD operations on an unordered child object (i.e.
 /// has a parent, and whose order should be based directly on the ID logic,
 /// avoiding costly sort-key determination).
-pub struct ManageUnorderedChild<O: DynamoObject> {
+pub struct ManageChildUnordered<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageUnorderedChild<O> {
+impl<O: DynamoObject> ManageChildUnordered<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -588,13 +588,13 @@ impl<O: DynamoObject> ManageUnorderedChild<O> {
 
 /// Type-safe accessor for CRUD operations on an unordered child object, which
 /// itself also has children.
-pub struct ManageUnorderedChildWithChildren<O: DynamoObject> {
+pub struct ManageChildUnorderedWithChildren<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageUnorderedChildWithChildren<O> {
+impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -678,13 +678,13 @@ impl<O: DynamoObject> ManageUnorderedChildWithChildren<O> {
 
 /// Type-safe accessor for CRUD operations on a child with
 /// IdLogic::BatchOptimized.
-pub struct ManageBatchChild<O: DynamoObject> {
+pub struct ManageChildBatch<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageBatchChild<O> {
+impl<O: DynamoObject> ManageChildBatch<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -728,13 +728,13 @@ impl<O: DynamoObject> ManageBatchChild<O> {
 }
 
 /// Type-safe accessor for CRUD operations on a singleton child object.
-pub struct ManageSingletonChild<O: DynamoObject> {
+pub struct ManageChildSingleton<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageSingletonChild<O> {
+impl<O: DynamoObject> ManageChildSingleton<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -796,13 +796,13 @@ impl<O: DynamoObject> ManageSingletonChild<O> {
 }
 
 /// Type-safe accessor for CRUD operations on a singleton family child object.
-pub struct ManageSingletonFamilyChild<O: DynamoObject> {
+pub struct ManageChildSingletonFamily<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageSingletonFamilyChild<O> {
+impl<O: DynamoObject> ManageChildSingletonFamily<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,

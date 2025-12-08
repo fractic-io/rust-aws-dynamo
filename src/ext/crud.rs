@@ -7,7 +7,7 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoNotFound,
-    schema::{DynamoObject, PkSk},
+    schema::{DynamoObject, NestingLogic, PkSk},
     util::{DynamoInsertPosition, DynamoUtil},
 };
 
@@ -172,6 +172,125 @@ impl<O: DynamoObject> ManageRootWithChildren<O> {
 
     pub async fn batch_delete_all_non_recursive(&self) -> Result<(), ServerError> {
         self.dynamo_util.batch_delete_all::<O>(PkSk::root()).await
+    }
+}
+
+/// Type-safe accessor for CRUD operations on a root singleton object.
+pub struct ManageRootSingleton<O: DynamoObject> {
+    dynamo_util: Arc<DynamoUtil>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    _phantom: PhantomData<O>,
+}
+
+impl<O: DynamoObject> ManageRootSingleton<O> {
+    pub fn new(
+        dynamo_util: Arc<DynamoUtil>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    ) -> Self {
+        Self {
+            dynamo_util,
+            _crud_algorithms: crud_algorithms,
+            _phantom: PhantomData::<O>,
+        }
+    }
+
+    // Item operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn get(&self) -> Result<O, ServerError> {
+        self.dynamo_util
+            .get_item::<O>(self.id_for())
+            .await?
+            .ok_or_else(|| DynamoNotFound::new())
+    }
+
+    pub async fn set(&self, data: O::Data) -> Result<O, ServerError> {
+        self.dynamo_util.create_item::<O>(PkSk::root(), data).await
+    }
+
+    pub async fn delete(&self) -> Result<(), ServerError> {
+        self.dynamo_util.delete_item::<O>(self.id_for()).await
+    }
+
+    // Helpers:
+    // -----------------------------------------------------------------------
+
+    fn id_for(&self) -> PkSk {
+        PkSk {
+            pk: "ROOT".to_string(),
+            sk: format!("@{}", O::id_label()),
+        }
+    }
+}
+
+/// Type-safe accessor for CRUD operations on a root singleton family object.
+pub struct ManageRootSingletonFamily<O: DynamoObject> {
+    dynamo_util: Arc<DynamoUtil>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    _phantom: PhantomData<O>,
+}
+
+impl<O: DynamoObject> ManageRootSingletonFamily<O> {
+    pub fn new(
+        dynamo_util: Arc<DynamoUtil>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    ) -> Self {
+        Self {
+            dynamo_util,
+            _crud_algorithms: crud_algorithms,
+            _phantom: PhantomData::<O>,
+        }
+    }
+
+    // Item operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn get(&self, key: &str) -> Result<O, ServerError> {
+        self.dynamo_util
+            .get_item::<O>(self.id_for(key))
+            .await?
+            .ok_or_else(|| DynamoNotFound::new())
+    }
+
+    pub async fn set(&self, data: O::Data) -> Result<O, ServerError> {
+        self.dynamo_util.create_item::<O>(PkSk::root(), data).await
+    }
+
+    pub async fn batch_set(&self, data: Vec<O::Data>) -> Result<Vec<O>, ServerError> {
+        self.dynamo_util
+            .batch_create_item::<O>(PkSk::root(), data)
+            .await
+    }
+
+    pub async fn delete(&self, key: &str) -> Result<(), ServerError> {
+        self.dynamo_util.delete_item::<O>(self.id_for(key)).await
+    }
+
+    pub async fn batch_delete(&self, keys: Vec<&str>) -> Result<(), ServerError> {
+        self.dynamo_util
+            .batch_delete_item::<O>(keys.iter().map(|k| self.id_for(k)).collect())
+            .await
+    }
+
+    // Global operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn query_all(&self) -> Result<Vec<O>, ServerError> {
+        self.dynamo_util.query_all::<O>(PkSk::root()).await
+    }
+
+    pub async fn batch_delete_all(&self) -> Result<(), ServerError> {
+        self.dynamo_util.batch_delete_all::<O>(PkSk::root()).await
+    }
+
+    // Helpers:
+    // -----------------------------------------------------------------------
+
+    fn id_for(&self, key: &str) -> PkSk {
+        PkSk {
+            pk: "ROOT".to_string(),
+            sk: format!("@{}[{}]", O::id_label(), key),
+        }
     }
 }
 
@@ -619,5 +738,184 @@ impl<O: DynamoObject> ManageBatchChild<O> {
         self.dynamo_util
             .batch_replace_all_ordered::<O>(parent.id().clone(), data)
             .await
+    }
+}
+
+/// Type-safe accessor for CRUD operations on a singleton child object.
+pub struct ManageSingletonChild<O: DynamoObject> {
+    dynamo_util: Arc<DynamoUtil>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    _phantom: PhantomData<O>,
+}
+
+impl<O: DynamoObject> ManageSingletonChild<O> {
+    pub fn new(
+        dynamo_util: Arc<DynamoUtil>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    ) -> Self {
+        Self {
+            dynamo_util,
+            _crud_algorithms: crud_algorithms,
+            _phantom: PhantomData::<O>,
+        }
+    }
+
+    // Item operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn get<P>(&self, parent: &P) -> Result<O, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util
+            .get_item::<O>(self.id_for(parent))
+            .await?
+            .ok_or_else(|| DynamoNotFound::new())
+    }
+
+    pub async fn set<P>(&self, parent: &P, data: O::Data) -> Result<O, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util
+            .create_item::<O>(parent.id().clone(), data)
+            .await
+    }
+
+    pub async fn delete<P>(&self, parent: &P) -> Result<(), ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util.delete_item::<O>(self.id_for(parent)).await
+    }
+
+    // Helpers:
+    // -----------------------------------------------------------------------
+
+    fn id_for<P>(&self, parent: &P) -> PkSk
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        match P::nesting_logic() {
+            NestingLogic::Root
+            | NestingLogic::TopLevelChildOfAny
+            | NestingLogic::TopLevelChildOf(_) => PkSk {
+                pk: parent.id().sk.clone(),
+                sk: format!("@{}", O::id_label()),
+            },
+            NestingLogic::InlineChildOfAny | NestingLogic::InlineChildOf(_) => PkSk {
+                pk: parent.id().pk.clone(),
+                sk: format!("{}@{}", parent.id().sk, O::id_label()),
+            },
+        }
+    }
+}
+
+/// Type-safe accessor for CRUD operations on a singleton family child object.
+pub struct ManageSingletonFamilyChild<O: DynamoObject> {
+    dynamo_util: Arc<DynamoUtil>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    _phantom: PhantomData<O>,
+}
+
+impl<O: DynamoObject> ManageSingletonFamilyChild<O> {
+    pub fn new(
+        dynamo_util: Arc<DynamoUtil>,
+        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    ) -> Self {
+        Self {
+            dynamo_util,
+            _crud_algorithms: crud_algorithms,
+            _phantom: PhantomData::<O>,
+        }
+    }
+
+    // Item operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn get<P>(&self, parent: &P, key: &str) -> Result<O, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util
+            .get_item::<O>(self.id_for(parent, key))
+            .await?
+            .ok_or_else(|| DynamoNotFound::new())
+    }
+
+    pub async fn set<P>(&self, parent: &P, data: O::Data) -> Result<O, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util
+            .create_item::<O>(parent.id().clone(), data)
+            .await
+    }
+
+    pub async fn batch_set<P>(&self, parent: &P, data: Vec<O::Data>) -> Result<Vec<O>, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util
+            .batch_create_item::<O>(parent.id().clone(), data)
+            .await
+    }
+
+    pub async fn delete<P>(&self, parent: &P, key: &str) -> Result<(), ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util
+            .delete_item::<O>(self.id_for(parent, key))
+            .await
+    }
+
+    pub async fn batch_delete<P>(&self, parent: &P, keys: Vec<&str>) -> Result<(), ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util
+            .batch_delete_item::<O>(keys.iter().map(|k| self.id_for(parent, k)).collect())
+            .await
+    }
+
+    // Global operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn query_all<P>(&self, parent: &P) -> Result<Vec<O>, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util.query_all::<O>(parent.id().clone()).await
+    }
+
+    pub async fn batch_delete_all<P>(&self, parent: &P) -> Result<(), ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        self.dynamo_util
+            .batch_delete_all::<O>(parent.id().clone())
+            .await
+    }
+
+    // Helpers:
+    // -----------------------------------------------------------------------
+
+    fn id_for<P>(&self, parent: &P, key: &str) -> PkSk
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        match P::nesting_logic() {
+            NestingLogic::Root
+            | NestingLogic::TopLevelChildOfAny
+            | NestingLogic::TopLevelChildOf(_) => PkSk {
+                pk: parent.id().sk.clone(),
+                sk: format!("@{}[{}]", O::id_label(), key),
+            },
+            NestingLogic::InlineChildOfAny | NestingLogic::InlineChildOf(_) => PkSk {
+                pk: parent.id().pk.clone(),
+                sk: format!("{}@{}[{}]", parent.id().sk, O::id_label(), key),
+            },
+        }
     }
 }

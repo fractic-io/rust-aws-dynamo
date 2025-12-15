@@ -366,6 +366,10 @@ where
     }
 }
 
+// NOTE:
+//   No From<..> implementation for O -> RefOrFetch::Owned(O), since that's not
+//   an intended use-case.
+
 impl<'a, O> RefOrFetch<'a, O>
 where
     O: DynamoObject,
@@ -381,15 +385,6 @@ where
                 cached.as_ref().ok_or_else(DynamoNotFound::new)
             }
         }
-    }
-}
-
-impl<'a, O> From<O> for RefOrFetch<'a, O>
-where
-    O: DynamoObject,
-{
-    fn from(value: O) -> Self {
-        Self::Owned(value)
     }
 }
 
@@ -444,16 +439,6 @@ where
 {
     fn from(value: &'a O) -> Self {
         Self::Ref(value)
-    }
-}
-
-impl<'a, O, C> From<O> for RefFetchOrCreate<'a, O, C>
-where
-    O: DynamoObject,
-    C: CreateArgs<O>,
-{
-    fn from(value: O) -> Self {
-        Self::Owned(value)
     }
 }
 
@@ -518,6 +503,10 @@ where
         }
     }
 }
+
+// NOTE:
+//   No From<..> implementation for O -> RefFetchOrCreate::Owned(O), since
+//   that's not an intended use-case.
 
 impl<'de, 'a, O, C> Deserialize<'de> for RefFetchOrCreate<'a, O, C>
 where

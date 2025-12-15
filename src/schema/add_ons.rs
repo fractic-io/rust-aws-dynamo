@@ -53,6 +53,13 @@ macro_rules! with_maybe_committed_scaffolding {
                     $type::Uncommitted(data) => data,
                 }
             }
+
+            fn into_data(self) -> $datatype {
+                match self {
+                    $type::Committed(object) => object.data,
+                    $type::Uncommitted(data) => data,
+                }
+            }
         }
     };
 }

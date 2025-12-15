@@ -230,6 +230,7 @@ pub trait MaybeCommittedDynamoObject<T: DynamoObject> {
     fn id(&self) -> Option<&PkSk>;
     fn data(&self) -> &T::Data;
     fn data_mut(&mut self) -> &mut T::Data;
+    fn into_data(self) -> T::Data;
 }
 
 // Standard sub-structs:

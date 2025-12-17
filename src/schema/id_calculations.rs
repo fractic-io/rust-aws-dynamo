@@ -138,6 +138,8 @@ pub(crate) fn set_pk_sk_in_map(map: &mut DynamoMap, pk: String, sk: String) {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use aws_sdk_dynamodb::types::AttributeValue;
     use fractic_core::collection;
     use serde::{Deserialize, Serialize};
@@ -482,9 +484,9 @@ mod tests {
         TestObjectSingletonFamily,
         TestObjectSingletonFamilyData,
         "FAMILY",
-        IdLogic::SingletonFamily(Box::new(|obj: &TestObjectSingletonFamilyData| obj
-            .key_field
-            .clone())),
+        IdLogic::SingletonFamily(Box::new(|obj: &TestObjectSingletonFamilyData| {
+            Cow::Borrowed(&obj.key_field)
+        })),
         NestingLogic::Root
     );
 

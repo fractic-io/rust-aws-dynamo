@@ -143,6 +143,7 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
     use std::{collections::HashMap, sync::Arc};
 
     use super::*;
@@ -435,9 +436,9 @@ mod tests {
         );
         assert_eq!(
             _sk_strip_uuid::<TestDynamoObject>(
-                IdLogic::<TestDynamoObjectData>::SingletonFamily(Box::new(
-                    |_| "samplekey".to_string()
-                )),
+                IdLogic::<TestDynamoObjectData>::SingletonFamily(Box::new(|_| Cow::Borrowed(
+                    "samplekey"
+                ))),
                 "@SINGLETONFAM[samplekey]".to_string()
             )
             .unwrap(),

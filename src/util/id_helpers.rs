@@ -74,6 +74,8 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
 mod tests {
     #![allow(unused)]
 
+    use std::borrow::Cow;
+
     use super::*;
 
     use serde::{Deserialize, Serialize};
@@ -150,7 +152,9 @@ mod tests {
         InlineSingletonFam,
         InlineSingletonFamData,
         "INLFAM",
-        IdLogic::SingletonFamily(Box::new(|data: &InlineSingletonFamData| data.key.clone())),
+        IdLogic::SingletonFamily(Box::new(|data: &InlineSingletonFamData| Cow::Borrowed(
+            &data.key
+        ))),
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -48,7 +48,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// efficiently queried.
     ///
     /// <new-obj-id>: @LABEL[<key>]
-    SingletonFamily(Box<dyn Fn(&T) -> String>),
+    SingletonFamily(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 
     /// WARNING: Individual item CRUD not possible.
     ///
@@ -345,7 +345,7 @@ mod tests {
         Test4,
         Test4Data,
         "TEST4",
-        IdLogic::SingletonFamily(Box::new(|obj: &Test4Data| obj.key.clone())),
+        IdLogic::SingletonFamily(Box::new(|obj: &Test4Data| Cow::Borrowed(&obj.key))),
         NestingLogic::InlineChildOf("TEST3")
     );
 

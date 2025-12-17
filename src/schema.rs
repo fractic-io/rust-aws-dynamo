@@ -251,7 +251,7 @@ pub struct PkSk {
 /// PkSk can be reconstructed by manually providing the context Pk and Sk
 /// prefixes. This can be particularly useful for singleton family keys or GSIs.
 #[derive(Debug, PartialEq, Clone, Hash, Eq)]
-pub struct ForeignRef(String);
+pub struct ForeignRef<'a>(Cow<'a, str>);
 
 /// Fields automatically populated by DynamoUtil. This struct is automatically
 /// included in all DynamoObjects as a flattened field:

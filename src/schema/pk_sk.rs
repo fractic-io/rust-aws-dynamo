@@ -60,11 +60,11 @@ impl PkSk {
         is_singleton(&self.pk, &self.sk)
     }
 
-    pub fn extract_ref(&self) -> ForeignRef {
+    pub fn build_ref<'a>(&'a self) -> ForeignRef<'a> {
         ForeignRef::from(self)
     }
 
-    pub fn into_ref(self) -> ForeignRef {
+    pub fn into_ref(self) -> ForeignRef<'static> {
         ForeignRef::from(self)
     }
 }

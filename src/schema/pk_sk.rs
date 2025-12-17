@@ -14,7 +14,7 @@ use super::{
     id_calculations::{
         generate_pk_sk, get_object_type, get_pk_sk_from_string, is_singleton, set_pk_sk_in_map,
     },
-    DynamoObject, PkSk,
+    DynamoObject, ForeignRef, PkSk,
 };
 
 static ROOT: LazyLock<PkSk> = LazyLock::new(|| PkSk {
@@ -58,6 +58,14 @@ impl PkSk {
 
     pub fn is_singleton(&self) -> bool {
         is_singleton(&self.pk, &self.sk)
+    }
+
+    pub fn extract_ref(&self) -> ForeignRef {
+        ForeignRef::from(self)
+    }
+
+    pub fn into_ref(self) -> ForeignRef {
+        ForeignRef::from(self)
     }
 }
 

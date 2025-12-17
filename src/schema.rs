@@ -5,6 +5,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub mod add_ons;
 pub mod coordinate;
 pub mod display;
+pub mod foreign_ref;
 pub(crate) mod id_calculations;
 pub mod parsing;
 pub mod pk_sk;

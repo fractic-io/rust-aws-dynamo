@@ -5,6 +5,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub mod add_ons;
 pub mod coordinate;
 pub mod display;
+pub mod foreign_ref;
 pub(crate) mod id_calculations;
 pub mod parsing;
 pub mod pk_sk;
@@ -244,6 +245,13 @@ pub struct PkSk {
     pub pk: String,
     pub sk: String,
 }
+
+/// Custom struct to hold a minimal reference to a PkSk for efficient database
+/// storage, generally only storing the last 16 digits (UUID-part). The original
+/// PkSk can be reconstructed by manually providing the context Pk and Sk
+/// prefixes. This can be particularly useful for singleton family keys or GSIs.
+#[derive(Debug, PartialEq, Clone, Hash, Eq)]
+pub struct ForeignRef<'a>(Cow<'a, str>);
 
 /// Fields automatically populated by DynamoUtil. This struct is automatically
 /// included in all DynamoObjects as a flattened field:

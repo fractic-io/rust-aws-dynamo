@@ -24,11 +24,19 @@ impl<'a> ForeignRef<'a> {
     /// - Singleton: `ref_str == ""`
     /// - SingletonFamily: `ref_str` is the family key
     /// - Other: `ref_str` is the last segment after the final `#`
-    pub fn deref<F>(self, build: F) -> PkSk
+    pub fn deref<F>(&self, build: F) -> PkSk
     where
         F: FnOnce(&str) -> PkSk,
     {
         build(&self.0)
+    }
+
+    /// Like `deref(...)`, but consumes `self`.
+    pub fn into_deref<F>(self, build: F) -> PkSk
+    where
+        F: FnOnce(Cow<'a, str>) -> PkSk,
+    {
+        build(self.0)
     }
 }
 

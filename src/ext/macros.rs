@@ -3,7 +3,7 @@
 ///
 /// Syntax:
 /// ```
-/// let (a, b, c) = crate::query_generic!(
+/// let (a, b, c) = query_generic!(
 ///     dynamo_util => (
 ///         None, id, DynamoQueryMatchType::BeginsWith
 ///     );

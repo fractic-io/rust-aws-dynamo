@@ -9,4 +9,5 @@ pub use context::*;
 pub mod ext {
     pub mod crud;
     pub mod ingress;
+    pub mod macros;
 }

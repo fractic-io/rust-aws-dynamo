@@ -755,7 +755,7 @@ impl DynamoUtil {
                         })
                         .collect::<Vec<_>>()
                         .join(".");
-                    let null_type_placeholder = format!(":u{}null", idx + 1);
+                    let null_type_placeholder = format!(":u{}n", idx + 1);
                     expression_attribute_values.insert(
                         null_type_placeholder.clone(),
                         AttributeValue::S("NULL".to_string()),
@@ -779,7 +779,7 @@ impl DynamoUtil {
                         })
                         .collect::<Vec<_>>()
                         .join(".");
-                    let null_type_placeholder = format!(":u{}null", idx + 1);
+                    let null_type_placeholder = format!(":u{}n", idx + 1);
                     expression_attribute_values.insert(
                         null_type_placeholder.clone(),
                         AttributeValue::S("NULL".to_string()),

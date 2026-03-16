@@ -779,7 +779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_item_with_field_is_none_condition() {
+    async fn test_update_item_with_condition_field_is_none() {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_update_item()
@@ -790,7 +790,7 @@ mod tests {
                     && values.get(":v1").is_some()
                     && values.get(":v2").is_some()
                     && values.get(":v3").is_some()
-                    && values.get(":u1null").unwrap().as_s().unwrap() == "NULL"
+                    && values.get(":u1n").unwrap().as_s().unwrap() == "NULL"
                     && {
                         let mut v = vec![
                             keys.get("#k1").unwrap(),
@@ -809,7 +809,7 @@ mod tests {
                     && *condition
                         == Some(
                             "attribute_exists(pk) AND (attribute_not_exists(#u1p1) OR \
-                             attribute_type(#u1p1, :u1null))"
+                             attribute_type(#u1p1, :u1n))"
                                 .to_string(),
                         )
             })

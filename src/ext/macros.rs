@@ -2,7 +2,7 @@
 /// filter+parse items into typed `Vec<T>` outputs in a single pass.
 ///
 /// Syntax:
-/// ```
+/// ```rust,ignore
 /// let (a, b, c) = query_generic!(
 ///     dynamo_util => (
 ///         None, id, DynamoQueryMatchType::BeginsWith

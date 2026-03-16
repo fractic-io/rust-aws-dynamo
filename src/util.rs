@@ -705,7 +705,7 @@ impl DynamoUtil {
         // attribute names/values).
         let mut custom_conditions: Vec<String> = vec![Self::ITEM_EXISTS_CONDITION.to_string()];
         let mut expression_attribute_names: HashMap<String, String> = HashMap::new();
-        let expression_attribute_values: HashMap<String, AttributeValue> = HashMap::new();
+        let mut expression_attribute_values: HashMap<String, AttributeValue> = HashMap::new();
 
         for (idx, cond) in conditions.into_iter().enumerate() {
             match cond {
@@ -755,9 +755,15 @@ impl DynamoUtil {
                         })
                         .collect::<Vec<_>>()
                         .join(".");
+                    let null_type_placeholder = format!(":u{}null", idx + 1);
+                    expression_attribute_values.insert(
+                        null_type_placeholder.clone(),
+                        AttributeValue::S("NULL".to_string()),
+                    );
                     let condition = format!(
-                        "(attribute_not_exists({p}) OR attribute_type({p}, NULL))",
+                        "(attribute_not_exists({p}) OR attribute_type({p}, {t}))",
                         p = path,
+                        t = null_type_placeholder,
                     );
                     custom_conditions.push(condition);
                 }
@@ -773,9 +779,15 @@ impl DynamoUtil {
                         })
                         .collect::<Vec<_>>()
                         .join(".");
+                    let null_type_placeholder = format!(":u{}null", idx + 1);
+                    expression_attribute_values.insert(
+                        null_type_placeholder.clone(),
+                        AttributeValue::S("NULL".to_string()),
+                    );
                     let condition = format!(
-                        "(attribute_exists({p}) AND NOT attribute_type({p}, NULL))",
+                        "(attribute_exists({p}) AND NOT attribute_type({p}, {t}))",
                         p = path,
+                        t = null_type_placeholder,
                     );
                     custom_conditions.push(condition);
                 }

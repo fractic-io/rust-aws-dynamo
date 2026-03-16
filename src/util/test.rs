@@ -3,7 +3,9 @@ mod tests {
     use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
-    use crate::util::{CreateOptions, TtlConfig, AUTO_FIELDS_TTL, FLATTEN_RESERVED_KEY};
+    use crate::util::{
+        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, FLATTEN_RESERVED_KEY,
+    };
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
@@ -773,6 +775,67 @@ mod tests {
         };
 
         let result = util.update_item(&update_item).await.unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_with_field_is_none_condition() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "TEST#321"
+                    && update_expr.trim() == "SET #k1 = :v1, #k2 = :v2, #k3 = :v3"
+                    && values.get(":v1").is_some()
+                    && values.get(":v2").is_some()
+                    && values.get(":v3").is_some()
+                    && values.get(":u1null").unwrap().as_s().unwrap() == "NULL"
+                    && {
+                        let mut v = vec![
+                            keys.get("#k1").unwrap(),
+                            keys.get("#k2").unwrap(),
+                            keys.get("#k3").unwrap(),
+                        ];
+                        v.sort();
+                        v
+                    } == vec![
+                        &"updated_at".to_string(),
+                        &"val_non_null".to_string(),
+                        &"val_nullable".to_string(),
+                    ]
+                    && keys.get("#rmk1").is_none()
+                    && keys.get("#u1p1").unwrap() == "val_nullable"
+                    && *condition
+                        == Some(
+                            "attribute_exists(pk) AND (attribute_not_exists(#u1p1) OR \
+                             attribute_type(#u1p1, :u1null))"
+                                .to_string(),
+                        )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = TestDynamoObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "TEST#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: TestDynamoObjectData {
+                val_non_null: "new_data".into(),
+                val_nullable: Some("claimed".into()),
+            },
+        };
+
+        let result = util
+            .update_item_with_conditions(
+                &update_item,
+                vec![UpdateCondition::FieldIsNone("val_nullable".into())],
+            )
+            .await
+            .unwrap();
         assert_eq!(result, ());
     }
 

@@ -287,7 +287,7 @@ pub struct PkSk {
 /// Custom struct to hold a minimal reference to a PkSk for efficient database
 /// storage, generally only storing the last 16 digits (UUID-part). The original
 /// PkSk can be reconstructed by manually providing the context Pk and Sk
-/// prefixes. This can be particularly useful for singleton family keys or GSIs.
+/// prefixes. This can be particularly useful for indexed singleton keys or GSIs.
 #[derive(Debug, PartialEq, Clone, Hash, Eq)]
 pub struct ForeignRef<'a>(Cow<'a, str>);
 
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_singleton_family_key_fn() {
+    fn test_indexed_singleton_key_fn() {
         let obj = Test4 {
             id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
@@ -493,7 +493,7 @@ mod tests {
             },
         };
         let IdLogic::IndexedSingleton(key_fn) = Test4::id_logic() else {
-            panic!("Expected SingletonFamily.");
+            panic!("Expected IndexedSingleton.");
         };
         assert_eq!(key_fn(&obj.data), "KEY");
     }

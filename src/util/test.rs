@@ -268,22 +268,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_with_chunk() {
+    async fn test_query_with_batch() {
         let sample_timestamp = Timestamp::now();
 
-        let sample_chunk_id_1 = PkSk {
+        let sample_batch_id_1 = PkSk {
             pk: "GROUP#456".to_string(),
             sk: "TEST#0001".to_string(),
         };
-        let sample_chunk_id_2 = PkSk {
+        let sample_batch_id_2 = PkSk {
             pk: "GROUP#456".to_string(),
             sk: "TEST#0002".to_string(),
         };
-        let non_chunk_id = build_item_no_data().0.id;
+        let non_batch_id = build_item_no_data().0.id;
 
         let mut backend = MockDynamoBackend::new();
-        let cid1 = sample_chunk_id_1.clone();
-        let cid2 = sample_chunk_id_2.clone();
+        let bid1 = sample_batch_id_1.clone();
+        let bid2 = sample_batch_id_2.clone();
         let tm_str = serde_json::to_string(&sample_timestamp)
             .unwrap()
             .strip_prefix("\"")
@@ -305,12 +305,12 @@ mod tests {
             .returning(move |_, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
-                        // Non-chunk item:
+                        // Non-batch item:
                         build_item_no_data().1,
-                        // Chunk item without sort:
+                        // Batch item without sort:
                         collection! {
-                            "pk".to_string() => AttributeValue::S(cid1.pk.clone()),
-                            "sk".to_string() => AttributeValue::S(cid1.sk.clone()),
+                            "pk".to_string() => AttributeValue::S(bid1.pk.clone()),
+                            "sk".to_string() => AttributeValue::S(bid1.sk.clone()),
                             EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
@@ -321,10 +321,10 @@ mod tests {
                             "pk".to_string() => AttributeValue::S("GROUP#456".to_string()),
                             "sk".to_string() => AttributeValue::S("OTHER#5555".to_string()),
                         },
-                        // Chunk item with sort:
+                        // Batch item with sort:
                         collection! {
-                            "pk".to_string() => AttributeValue::S(cid2.pk.clone()),
-                            "sk".to_string() => AttributeValue::S(cid2.sk.clone()),
+                            "pk".to_string() => AttributeValue::S(bid2.pk.clone()),
+                            "sk".to_string() => AttributeValue::S(bid2.sk.clone()),
                             AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
                             AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
                             EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
@@ -350,7 +350,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Should have expanded chunk into individual items.
+        // Should have expanded the batch into individual items.
         assert_eq!(result.len(), 5);
         let (item_1, item_2, item_3, item_4, item_5) = {
             let mut iter = result.into_iter();
@@ -363,7 +363,7 @@ mod tests {
             )
         };
 
-        // Within a chunk, should be sorted by chunk order (inner sort value
+        // Within a batch, should be sorted by batch order (inner sort value
         // should be dropped). At the top-level, however, sorting should still
         // work as normal.
         assert_eq!(item_1.data.val_non_null, "high_sort");
@@ -377,14 +377,14 @@ mod tests {
         assert_eq!(item_5.data.val_non_null, "low_sort");
         assert_eq!(item_5.auto_fields.sort, None);
 
-        // Chunk items should have (share) the chunk's ID:
-        assert_eq!(*item_1.id(), sample_chunk_id_2);
-        assert_eq!(*item_2.id(), sample_chunk_id_2);
-        assert_eq!(*item_3.id(), non_chunk_id);
-        assert_eq!(*item_4.id(), sample_chunk_id_1);
-        assert_eq!(*item_5.id(), sample_chunk_id_1);
+        // Batch items should have (share) the batch's ID:
+        assert_eq!(*item_1.id(), sample_batch_id_2);
+        assert_eq!(*item_2.id(), sample_batch_id_2);
+        assert_eq!(*item_3.id(), non_batch_id);
+        assert_eq!(*item_4.id(), sample_batch_id_1);
+        assert_eq!(*item_5.id(), sample_batch_id_1);
 
-        // And the chunk's metadata:
+        // And the batch's metadata:
         assert_eq!(
             item_1.auto_fields.created_at,
             Some(sample_timestamp.clone())
@@ -1217,7 +1217,7 @@ mod tests {
                     return false;
                 }
 
-                // Expect 2 chunks with ids #0 and #1.
+                // Expect 2 batches with ids #0 and #1.
                 if items.len() != 2 {
                     return false;
                 }
@@ -1303,7 +1303,7 @@ mod tests {
                     return false;
                 }
 
-                // Expect 11 chunks with 2-digit indices (00-10).
+                // Expect 11 batches with 2-digit indices (00-10).
                 if items.len() != 11 {
                     return false;
                 }
@@ -1352,7 +1352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_replace_all_ordered_single_chunk() {
+    async fn test_batch_replace_all_ordered_single_batch() {
         let mut backend = MockDynamoBackend::new();
 
         let parent_id = PkSk {
@@ -1442,14 +1442,14 @@ mod tests {
         let util = build_util(backend).await;
         let result = util.raw_full_table_scan().await.unwrap();
 
-        // Should be exactly as returned by Dynamo (no sort/flatten), and in the same order.
+        // Should be exactly as returned by Dynamo (no sort/expansion), and in the same order.
         assert_eq!(result.len(), 2);
         assert_eq!(result[0], build_item_low_sort().1);
         assert_eq!(result[1], build_item_high_sort().1);
     }
 
     #[tokio::test]
-    async fn test_raw_full_table_scan_with_pages_and_no_flatten() {
+    async fn test_raw_full_table_scan_with_pages_and_no_expand() {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_scan()
@@ -1462,7 +1462,7 @@ mod tests {
                     ScanOutput::builder()
                         .set_items(Some(vec![collection! {
                             "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                            "sk".to_string() => AttributeValue::S("GROUP#000#CHUNK".to_string()),
+                            "sk".to_string() => AttributeValue::S("GROUP#000#BATCH".to_string()),
                             EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1.clone()),
                                 AttributeValue::M(build_item_low_sort().1.clone()),
@@ -1475,11 +1475,11 @@ mod tests {
         let util = build_util(backend).await;
         let result = util.raw_full_table_scan().await.unwrap();
 
-        // Flattening should not occur: we expect exactly 2 items.
+        // Expansion should not occur: we expect exactly 2 items.
         assert_eq!(result.len(), 2);
         // First item should be the exact no-data item.
         assert_eq!(result[0], build_item_no_data().1);
-        // Second item should still contain the FLATTEN_RESERVED_KEY as a list.
+        // Second item should still contain the EXPAND_RESERVED_KEY as a list.
         let second = &result[1];
         assert!(second.get(EXPAND_RESERVED_KEY).is_some());
         assert!(matches!(

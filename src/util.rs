@@ -345,7 +345,7 @@ impl DynamoUtil {
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
 
-        // Expand chunked items.
+        // Expand batched items.
         let mut items: Vec<DynamoMap> = response
             .into_iter()
             .flat_map(|page| page.items.unwrap_or_default().into_iter())
@@ -533,10 +533,10 @@ impl DynamoUtil {
             .collect::<Result<Vec<(DynamoMap, PkSk)>, ServerError>>()?
             .into_iter()
             .unzip();
-        // Split into 25-item chunks (max supported by DynamoDB).
-        for chunk in items.chunks(25) {
+        // Split into 25-item batches (max supported by DynamoDB).
+        for batch in items.chunks(25) {
             self.backend
-                .batch_put_item(self.table.clone(), chunk.to_vec())
+                .batch_put_item(self.table.clone(), batch.to_vec())
                 .await
                 .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         }
@@ -940,7 +940,7 @@ impl DynamoUtil {
         &self,
         parent_id: &PkSk,
     ) -> Result<(), ServerError> {
-        // Ensure we dedup IDs, since query logic expands chunks internally.
+        // Ensure we dedup IDs, since query logic expands batches internally.
         let children_ids: HashSet<PkSk> = self
             .query_all::<T>(parent_id)
             .await?
@@ -954,7 +954,7 @@ impl DynamoUtil {
     /// Replaces *all* children of type T on the parent.
     ///
     /// For BatchOptimized item types, this function internally stores the data
-    /// in large chunks (which get flattened by query logic).
+    /// in large batches (which get expanded by query logic).
     pub async fn batch_replace_all_ordered<T: DynamoObject>(
         &self,
         parent_id: &PkSk,
@@ -962,16 +962,14 @@ impl DynamoUtil {
     ) -> Result<(), ServerError> {
         // Validations.
         validate_parent_id::<T>(parent_id)?;
-        let chunk_size = match T::id_logic() {
-            IdLogic::BatchOptimized {
-                batch_size: chunk_size,
-            } => {
-                if chunk_size == 0 {
+        let batch_size = match T::id_logic() {
+            IdLogic::BatchOptimized { batch_size } => {
+                if batch_size == 0 {
                     return Err(DynamoInvalidOperation::new(
-                        "invalid IdLogic::BatchOptimized usage; chunk_size must be greater than 0",
+                        "invalid IdLogic::BatchOptimized usage; batch_size must be greater than 0",
                     ));
                 }
-                Some(chunk_size)
+                Some(batch_size)
             }
             _ => None,
         };
@@ -989,36 +987,36 @@ impl DynamoUtil {
             return Ok(());
         }
 
-        // For batch-optimized ID logic, batch into flattenable chunks.
+        // For batch-optimized ID logic, group the data into expandable batches.
         // -------------------------------------------------------------------
-        req_not_none!(chunk_size, CriticalError);
-        let num_chunks = (data.len() + chunk_size - 1) / chunk_size; // rounds up for partial chunks
+        req_not_none!(batch_size, CriticalError);
+        let num_batches = (data.len() + batch_size - 1) / batch_size; // rounds up for partial batches
 
-        // When building the UUID component of IDs for flattenable items, use
-        // the chunk index (1, 2, 3, ...), padded with 0s to the minimum length
-        // to represent all chunks (ex. if 456 chunks: 001, 002 ... 455).
+        // When building the UUID component of IDs for batched items, use the
+        // batch index (1, 2, 3, ...), padded with 0s to the minimum length to
+        // represent all batches (ex. if 456 batches: 001, 002 ... 455).
         // Padding is important since Dynamo sorts lexicographically.
-        let index_digits = match num_chunks {
+        let index_digits = match num_batches {
             0 => unreachable!("data.is_empty() checked above"),
             1 => 0, // Special case: replaced with '-' later.
             n => (n - 1).ilog10() as usize + 1,
         };
 
-        // Build 'flattenable' items, which wrap the data in chunks. These get
-        // automatically unwrapped by query_generic.
+        // Build expandable batch items, which wrap the data in arrays. These
+        // get automatically expanded by query_generic.
         #[derive(Serialize)]
-        struct Flattenable<T: DynamoObject> {
+        struct ExpandableBatch<T: DynamoObject> {
             #[serde(rename = "..")]
-            l: Vec<T::Data>,
+            items: Vec<T::Data>,
         }
         let maps: Vec<DynamoMap> = data
-            .chunks(chunk_size)
+            .chunks(batch_size)
             .enumerate()
-            .map(|(i, chunk)| {
+            .map(|(i, batch)| {
                 let new_obj_id = if index_digits == 0 {
-                    // If there's only a single chunk, indicate with '-' instead
+                    // If there's only a single batch, indicate with '-' instead
                     // of index, to make it more human-readable (i.e. make it
-                    // clear there's only a single chunk).
+                    // clear there's only a single batch).
                     format!("{}#-", T::id_label())
                 } else {
                     format!("{}#{}", T::id_label(), format!("{:0index_digits$}", i))
@@ -1034,10 +1032,12 @@ impl DynamoUtil {
                     ),
                 };
 
-                let flattenable = Flattenable::<T> { l: chunk.to_vec() };
+                let expandable_batch = ExpandableBatch::<T> {
+                    items: batch.to_vec(),
+                };
                 let now = Timestamp::now();
-                build_dynamo_map_internal::<Flattenable<T>>(
-                    &flattenable,
+                build_dynamo_map_internal::<ExpandableBatch<T>>(
+                    &expandable_batch,
                     Some(pk),
                     Some(sk),
                     Some(vec![
@@ -1055,7 +1055,7 @@ impl DynamoUtil {
     }
 
     /// Performs a full table scan and returns the raw Dynamo items as-is. No
-    /// sorting, chunk expansion, filtering, or other processing.
+    /// sorting, batch expansion, filtering, or other processing.
     ///
     /// In other words, forwarding the items returned from this function
     /// directly into `raw_batch_put_item` would be a no-op.
@@ -1085,10 +1085,10 @@ impl DynamoUtil {
                 }
             })
             .collect::<Vec<_>>();
-        // Split into 25-item chunks (max supported by DynamoDB).
-        for chunk in items.chunks(25) {
+        // Split into 25-item batches (max supported by DynamoDB).
+        for batch in items.chunks(25) {
             self.backend
-                .batch_delete_item(self.table.clone(), chunk.to_vec())
+                .batch_delete_item(self.table.clone(), batch.to_vec())
                 .await
                 .map_err(|e| match e.into_service_error() {
                     BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
@@ -1110,10 +1110,10 @@ impl DynamoUtil {
         if items.is_empty() {
             return Ok(());
         }
-        // Split into 25-item chunks (max supported by DynamoDB).
-        for chunk in items.chunks(25) {
+        // Split into 25-item batches (max supported by DynamoDB).
+        for batch in items.chunks(25) {
             self.backend
-                .batch_put_item(self.table.clone(), chunk.to_vec())
+                .batch_put_item(self.table.clone(), batch.to_vec())
                 .await
                 .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         }

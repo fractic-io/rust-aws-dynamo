@@ -88,8 +88,8 @@ pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, 
     if let Some(pos) = sk.find('@') {
         // '@' indicates object is a singleton. In this case, the only label
         // that matters is the @LABEL, which can by extracted by getting the
-        // text between '@' and '[' (in case of SingletonFamily) or EOL (regular
-        // Singleton).
+        // text between '@' and '[' (in case of IndexedSingleton) or EOL
+        // (regular Singleton).
         let after_excl = &sk[pos + 1..];
         let end_pos = after_excl.find(|c| c == '[').unwrap_or(after_excl.len());
         Ok(&after_excl[..end_pos])
@@ -475,34 +475,34 @@ mod tests {
         assert_eq!(result.1, "@SINGLETON");
     }
 
-    // Test case 9: IdLogic::SingletonFamily
+    // Test case 9: IdLogic::IndexedSingleton
     #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-    pub struct TestObjectSingletonFamilyData {
+    pub struct TestObjectIndexedSingletonData {
         key_field: String,
     }
     dynamo_object!(
-        TestObjectSingletonFamily,
-        TestObjectSingletonFamilyData,
+        TestObjectIndexedSingleton,
+        TestObjectIndexedSingletonData,
         "FAMILY",
-        IdLogic::IndexedSingleton(Box::new(|obj: &TestObjectSingletonFamilyData| {
+        IdLogic::IndexedSingleton(Box::new(|obj: &TestObjectIndexedSingletonData| {
             Cow::Borrowed(&obj.key_field)
         })),
         NestingLogic::Root
     );
 
     #[test]
-    fn test_generate_pk_sk_singleton_family() {
-        let obj = TestObjectSingletonFamily {
+    fn test_generate_pk_sk_indexed_singleton() {
+        let obj = TestObjectIndexedSingleton {
             id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
-            data: TestObjectSingletonFamilyData {
+            data: TestObjectIndexedSingletonData {
                 key_field: "key123".to_string(),
             },
         };
         let parent_pk = "any_pk";
         let parent_sk = "any_sk";
         let result =
-            generate_pk_sk::<TestObjectSingletonFamily>(&obj.data, parent_pk, parent_sk).unwrap();
+            generate_pk_sk::<TestObjectIndexedSingleton>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, "ROOT");
         assert_eq!(result.1, "@FAMILY[key123]");
     }

@@ -223,14 +223,14 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     }
 }
 
-/// Type-safe accessor for CRUD operations on a root singleton family object.
-pub struct ManageRootSingletonFamily<O: DynamoObject> {
+/// Type-safe accessor for CRUD operations on a root indexed singleton object.
+pub struct ManageRootIndexedSingleton<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageRootSingletonFamily<O> {
+impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
@@ -795,14 +795,14 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
     }
 }
 
-/// Type-safe accessor for CRUD operations on a singleton family child object.
-pub struct ManageChildSingletonFamily<O: DynamoObject> {
+/// Type-safe accessor for CRUD operations on an indexed singleton child object.
+pub struct ManageChildIndexedSingleton<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
-impl<O: DynamoObject> ManageChildSingletonFamily<O> {
+impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,

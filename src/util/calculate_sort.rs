@@ -32,7 +32,7 @@ fn _sk_strip_uuid<T: DynamoObject>(
     Ok(match id_logic {
         // For Singleton, no ID to strip.
         IdLogic::Singleton => sk,
-        // For SingletonFamily, strip the key.
+        // For IndexedSingleton, strip the key.
         IdLogic::IndexedSingleton(_) => sk.split('[').next().unwrap().to_string(),
         // For Uuid and Timestamp, take ID until last '#' character.
         IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {

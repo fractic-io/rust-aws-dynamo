@@ -45,8 +45,8 @@ pub fn validate_parent_id<T: DynamoObject>(parent_id: &PkSk) -> Result<(), Serve
 }
 
 pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
-    // * Singleton / SingletonFamily →  "@LABEL"
-    // * Everything else             →  "LABEL#"
+    // * Singleton / IndexedSingleton →  "@LABEL"
+    // * Everything else              →  "LABEL#"
     let sk_search_prefix = match T::id_logic() {
         IdLogic::Singleton | IdLogic::IndexedSingleton(_) => {
             format!("@{}", T::id_label())
@@ -98,7 +98,7 @@ mod tests {
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
     pub struct InlineSingletonData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct InlineSingletonFamData {
+    pub struct InlineIndexedSingletonData {
         key: String,
     }
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -149,10 +149,10 @@ mod tests {
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
-        InlineSingletonFam,
-        InlineSingletonFamData,
+        InlineIndexedSingleton,
+        InlineIndexedSingletonData,
         "INLFAM",
-        IdLogic::IndexedSingleton(Box::new(|data: &InlineSingletonFamData| Cow::Borrowed(
+        IdLogic::IndexedSingleton(Box::new(|data: &InlineIndexedSingletonData| Cow::Borrowed(
             &data.key
         ))),
         NestingLogic::InlineChildOfAny
@@ -258,13 +258,13 @@ mod tests {
             }
         );
 
-        // Inline SingletonFamily:
-        let inline_singleton_family_search = PkSk {
+        // Inline IndexedSingleton:
+        let inline_indexed_singleton_search = PkSk {
             pk: "P".into(),
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<InlineSingletonFam>(&inline_singleton_family_search),
+            child_search_prefix::<InlineIndexedSingleton>(&inline_indexed_singleton_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S#@INLFAM".into()

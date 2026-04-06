@@ -22,7 +22,7 @@ impl<'a> ForeignRef<'a> {
     /// The closure should interpret `ref_str` appropriately for the referenced
     /// type:
     /// - Singleton: `ref_str == ""`
-    /// - SingletonFamily: `ref_str` is the family key
+    /// - IndexedSingleton: `ref_str` is the singleton key
     /// - Other: `ref_str` is the last segment after the final `#`
     pub fn deref<F>(&self, build: F) -> PkSk
     where
@@ -149,7 +149,7 @@ fn normalize_ref(raw: &str) -> &str {
 /// Rules:
 /// - If the sk contains '@' anywhere, it is treated as a singleton:
 ///   - Singleton: empty string ("")
-///   - SingletonFamily: the text between '[' and ']' (if present)
+///   - IndexedSingleton: the text between '[' and ']' (if present)
 /// - Otherwise, returns the text after the final '#'
 fn extract_ref_from_sk(sk: &str) -> &str {
     let mut at: Option<usize> = None;
@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_ref_from_sk_singleton_family_key() {
+    fn test_extract_ref_from_sk_indexed_singleton_key() {
         let sk = "@FAMILY[key123]";
         assert_eq!(extract_ref_from_sk(sk), "key123");
     }
@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn test_foreign_ref_deserialize_backcompat_singleton_family_full_sk() {
+    fn test_foreign_ref_deserialize_backcompat_indexed_singleton_full_sk() {
         let legacy = r#""@FAMILY[key123]""#;
         let r: ForeignRef<'static> = serde_json::from_str(legacy).unwrap();
         assert_eq!(r.raw(), "key123");

@@ -76,10 +76,16 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
             Ok((parent_sk.to_string(), new_obj_id))
         }
-        NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => Ok((
-            parent_pk.to_string(),
-            format!("{}#{}", parent_sk, new_obj_id),
-        )),
+        NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => {
+            let separator = match new_obj_id.as_bytes().first() {
+                Some(b'@' | b'&') => "",
+                _ => "#",
+            };
+            Ok((
+                parent_pk.to_string(),
+                format!("{}{}{}", parent_sk, separator, new_obj_id),
+            ))
+        }
     }
 }
 
@@ -221,23 +227,23 @@ mod tests {
         assert!(is_singleton("USER#123", "@SINGLTN"));
         assert!(is_singleton("ROOT", "@SINGLTN"));
         assert!(is_singleton("ROOT", "@SINGLTN[KEY]"));
-        assert!(is_singleton("USER#123", "ORDER#56#ITEM#1#@SIGNATURE"));
+        assert!(is_singleton("USER#123", "ORDER#56#ITEM#1@SIGNATURE"));
     }
 
     #[test]
     fn test_is_extdata() {
         assert!(!is_extdata("USER#123", "ORDER#456#ITEM#789"));
         assert!(is_extdata("ROOT", "&BIG+0"));
-        assert!(is_extdata("USER#123", "ORDER#56#ITEM#1#&SIGNATURE+12"));
+        assert!(is_extdata("USER#123", "ORDER#56#ITEM#1&SIGNATURE+12"));
     }
 
     #[test]
     fn test_extdata_base_sk_and_index() {
         assert_eq!(extdata_base_sk("&BIG+0"), Some("&BIG"));
-        assert_eq!(extdata_base_sk("ORDER#1#&BIG+12"), Some("ORDER#1#&BIG"));
+        assert_eq!(extdata_base_sk("ORDER#1&BIG+12"), Some("ORDER#1&BIG"));
         assert_eq!(extdata_index_from_sk("&BIG+0"), Some(0));
-        assert_eq!(extdata_index_from_sk("ORDER#1#&BIG+12"), Some(12));
-        assert_eq!(extdata_index_from_sk("ORDER#1#&BIG+X"), None);
+        assert_eq!(extdata_index_from_sk("ORDER#1&BIG+12"), Some(12));
+        assert_eq!(extdata_index_from_sk("ORDER#1&BIG+X"), None);
         assert_eq!(extdata_base_sk("ORDER#1#ITEM#2"), None);
     }
 
@@ -263,18 +269,18 @@ mod tests {
             "PREF"
         );
         assert_eq!(
-            get_object_type("USER#123", "ORDER#56#ITEM#1#@POST").unwrap(),
+            get_object_type("USER#123", "ORDER#56#ITEM#1@POST").unwrap(),
             "POST"
         );
         assert_eq!(
-            get_object_type("USER#123", "ORDER#56#ITEM#1#@POST[key]").unwrap(),
+            get_object_type("USER#123", "ORDER#56#ITEM#1@POST[key]").unwrap(),
             "POST"
         );
 
         // ExtData:
         assert_eq!(get_object_type("ROOT", "&BIG+0").unwrap(), "BIG");
         assert_eq!(
-            get_object_type("USER#123", "ORDER#56#ITEM#1#&POST+12").unwrap(),
+            get_object_type("USER#123", "ORDER#56#ITEM#1&POST+12").unwrap(),
             "POST"
         );
     }
@@ -622,6 +628,6 @@ mod tests {
         let parent_sk = "parent_sk";
         let result = generate_pk_sk::<TestObjectExtData>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, parent_pk);
-        assert_eq!(result.1, "parent_sk#&EXTDATA+0");
+        assert_eq!(result.1, "parent_sk&EXTDATA+0");
     }
 }

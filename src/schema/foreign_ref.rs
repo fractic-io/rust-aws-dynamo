@@ -251,13 +251,13 @@ mod tests {
 
     #[test]
     fn test_extract_ref_from_sk_singleton_embedded() {
-        let sk = "ORDER#AAAAAAAAAAAAAAAA#@FAMILY[key123]";
+        let sk = "ORDER#AAAAAAAAAAAAAAAA@FAMILY[key123]";
         assert_eq!(extract_ref_from_sk(sk), "key123");
     }
 
     #[test]
     fn test_extract_ref_from_sk_extdata() {
-        let sk = "ORDER#AAAAAAAAAAAAAAAA#&BLOB+2";
+        let sk = "ORDER#AAAAAAAAAAAAAAAA&BLOB+2";
         assert_eq!(extract_ref_from_sk(sk), "");
     }
 

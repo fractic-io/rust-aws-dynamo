@@ -452,10 +452,10 @@ mod tests {
         assert_eq!(
             _sk_strip_uuid::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::ExtData,
-                "GROUP#123#&EXTDATA+12".to_string()
+                "GROUP#123&EXTDATA+12".to_string()
             )
             .unwrap(),
-            "GROUP#123#&EXTDATA"
+            "GROUP#123&EXTDATA"
         );
     }
 }

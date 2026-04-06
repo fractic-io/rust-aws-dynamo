@@ -45,8 +45,9 @@ pub fn validate_parent_id<T: DynamoObject>(parent_id: &PkSk) -> Result<(), Serve
 }
 
 pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
-    // * Singleton / SingletonFamily →  "@LABEL"
-    // * Everything else             →  "LABEL#"
+    // * Singleton / SingletonFamily → "@LABEL"
+    // * ExtData                     → "&LABEL+"
+    // * Everything else             → "LABEL#"
     let sk_search_prefix = match T::id_logic() {
         IdLogic::Singleton | IdLogic::SingletonFamily(_) => {
             format!("@{}", T::id_label())
@@ -64,10 +65,16 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
             pk: parent_id.sk.clone(),
             sk: sk_search_prefix,
         },
-        NestingLogic::InlineChildOfAny | NestingLogic::InlineChildOf(_) => PkSk {
-            pk: parent_id.pk.clone(),
-            sk: format!("{}#{}", parent_id.sk, sk_search_prefix),
-        },
+        NestingLogic::InlineChildOfAny | NestingLogic::InlineChildOf(_) => {
+            let separator = match sk_search_prefix.as_bytes().first() {
+                Some(b'@' | b'&') => "",
+                _ => "#",
+            };
+            PkSk {
+                pk: parent_id.pk.clone(),
+                sk: format!("{}{}{}", parent_id.sk, separator, sk_search_prefix),
+            }
+        }
     }
 }
 
@@ -273,7 +280,7 @@ mod tests {
             child_search_prefix::<InlineSingleton>(&inline_singleton_search),
             PkSk {
                 pk: "P".into(),
-                sk: "S#@INLSINGLE".into()
+                sk: "S@INLSINGLE".into()
             }
         );
 
@@ -286,7 +293,7 @@ mod tests {
             child_search_prefix::<InlineSingletonFam>(&inline_singleton_family_search),
             PkSk {
                 pk: "P".into(),
-                sk: "S#@INLFAM".into()
+                sk: "S@INLFAM".into()
             }
         );
 
@@ -321,7 +328,7 @@ mod tests {
             child_search_prefix::<InlineExtData>(&inline_batch_search),
             PkSk {
                 pk: "P".into(),
-                sk: "S#&INLEXT+".into()
+                sk: "S&INLEXT+".into()
             }
         );
 

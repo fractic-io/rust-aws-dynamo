@@ -4,7 +4,7 @@ mod tests {
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, FLATTEN_RESERVED_KEY,
+        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, EXPAND_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
@@ -52,7 +52,7 @@ mod tests {
         BatchOptTopLevelDynamoObject,
         BatchOptTopLevelDynamoObjectData,
         "BATCHOPTTOPLEVEL",
-        IdLogic::BatchOptimized { chunk_size: 2 },
+        IdLogic::BatchOptimized { batch_size: 2 },
         NestingLogic::TopLevelChildOfAny
     );
 
@@ -64,7 +64,7 @@ mod tests {
         BatchOptInlineDynamoObject,
         BatchOptInlineDynamoObjectData,
         "BATCHOPTINLINE",
-        IdLogic::BatchOptimized { chunk_size: 3 },
+        IdLogic::BatchOptimized { batch_size: 3 },
         NestingLogic::InlineChildOfAny
     );
 
@@ -311,7 +311,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S(cid1.pk.clone()),
                             "sk".to_string() => AttributeValue::S(cid1.sk.clone()),
-                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
                             ]),
@@ -327,7 +327,7 @@ mod tests {
                             "sk".to_string() => AttributeValue::S(cid2.sk.clone()),
                             AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
                             AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
-                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
                             ]),
@@ -1180,7 +1180,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                             "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
-                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(collection! {
                                     "val".to_string() => AttributeValue::S("old_a".to_string()),
                                 }),
@@ -1192,7 +1192,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                             "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#1".to_string()),
-                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(collection! {
                                     "val".to_string() => AttributeValue::S("old_c".to_string()),
                                 }),
@@ -1368,7 +1368,7 @@ mod tests {
                     .set_items(Some(vec![collection! {
                         "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                         "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
-                        FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                        EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                             AttributeValue::M(collection! {
                                 "val".to_string() => AttributeValue::S("old_a".to_string()),
                             }),
@@ -1463,7 +1463,7 @@ mod tests {
                         .set_items(Some(vec![collection! {
                             "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                             "sk".to_string() => AttributeValue::S("GROUP#000#CHUNK".to_string()),
-                            FLATTEN_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1.clone()),
                                 AttributeValue::M(build_item_low_sort().1.clone()),
                             ]),
@@ -1481,9 +1481,9 @@ mod tests {
         assert_eq!(result[0], build_item_no_data().1);
         // Second item should still contain the FLATTEN_RESERVED_KEY as a list.
         let second = &result[1];
-        assert!(second.get(FLATTEN_RESERVED_KEY).is_some());
+        assert!(second.get(EXPAND_RESERVED_KEY).is_some());
         assert!(matches!(
-            second.get(FLATTEN_RESERVED_KEY).unwrap(),
+            second.get(EXPAND_RESERVED_KEY).unwrap(),
             AttributeValue::L(_)
         ));
     }

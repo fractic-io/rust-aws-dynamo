@@ -31,7 +31,7 @@ use crate::{
         DynamoObject, IdLogic, NestingLogic, PkSk, Timestamp,
     },
     util::{
-        chunk_helpers::WithMetadataFrom as _,
+        expand_helpers::WithMetadataFrom as _,
         id_helpers::{child_search_prefix, validate_id, validate_parent_id},
         update_helpers::CmpOp,
     },
@@ -40,7 +40,7 @@ use crate::{
 
 pub mod backend;
 mod calculate_sort;
-mod chunk_helpers;
+mod expand_helpers;
 mod id_helpers;
 mod test;
 mod update_helpers;
@@ -51,10 +51,15 @@ pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
 pub const AUTO_FIELDS_SORT: &str = "sort";
 pub const AUTO_FIELDS_TTL: &str = "ttl";
 
-/// In case of chunked items, the '..' key is used to store the children (which
-/// should be flattened before returning to the caller).
-pub const FLATTEN_RESERVED_KEY: &str = ".."; // WARNING: Also hardcoded
-                                             // in batch_replace_all_ordered.
+/// In case of batch items, the '..' key is used to store the children array,
+/// which should be expanded before returning to the caller.
+pub const EXPAND_RESERVED_KEY: &str = ".."; // WARNING: Also hardcoded
+                                            // in batch_replace_all_ordered.
+
+/// In case of partition items, the '##' key is used to store the object
+/// partition string, which should be collapsed with other partitions before
+/// returning to the caller.
+pub const COLLAPSE_RESERVED_KEY: &str = "##";
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -344,7 +349,7 @@ impl DynamoUtil {
         let mut items: Vec<DynamoMap> = response
             .into_iter()
             .flat_map(|page| page.items.unwrap_or_default().into_iter())
-            .flat_map(|mut item| match item.remove(FLATTEN_RESERVED_KEY) {
+            .flat_map(|mut item| match item.remove(EXPAND_RESERVED_KEY) {
                 Some(AttributeValue::L(children)) => children
                     .into_iter()
                     .filter_map(|child| {
@@ -958,7 +963,9 @@ impl DynamoUtil {
         // Validations.
         validate_parent_id::<T>(parent_id)?;
         let chunk_size = match T::id_logic() {
-            IdLogic::BatchOptimized { chunk_size } => {
+            IdLogic::BatchOptimized {
+                batch_size: chunk_size,
+            } => {
                 if chunk_size == 0 {
                     return Err(DynamoInvalidOperation::new(
                         "invalid IdLogic::BatchOptimized usage; chunk_size must be greater than 0",

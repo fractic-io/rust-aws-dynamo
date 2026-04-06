@@ -48,7 +48,7 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
     // * Singleton / SingletonFamily →  "@LABEL"
     // * Everything else             →  "LABEL#"
     let sk_search_prefix = match T::id_logic() {
-        IdLogic::Singleton | IdLogic::SingletonFamily(_) => {
+        IdLogic::Singleton | IdLogic::IndexedSingleton(_) => {
             format!("@{}", T::id_label())
         }
         _ => format!("{}#", T::id_label()),
@@ -152,7 +152,7 @@ mod tests {
         InlineSingletonFam,
         InlineSingletonFamData,
         "INLFAM",
-        IdLogic::SingletonFamily(Box::new(|data: &InlineSingletonFamData| Cow::Borrowed(
+        IdLogic::IndexedSingleton(Box::new(|data: &InlineSingletonFamData| Cow::Borrowed(
             &data.key
         ))),
         NestingLogic::InlineChildOfAny
@@ -161,14 +161,14 @@ mod tests {
         InlineBatch,
         InlineBatchData,
         "INLBATCH",
-        IdLogic::BatchOptimized { chunk_size: 10 },
+        IdLogic::BatchOptimized { batch_size: 10 },
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
         TopLevelBatch,
         TopLevelBatchData,
         "TOPLBATCH",
-        IdLogic::BatchOptimized { chunk_size: 10 },
+        IdLogic::BatchOptimized { batch_size: 10 },
         NestingLogic::TopLevelChildOf("N")
     );
 

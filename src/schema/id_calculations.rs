@@ -59,7 +59,7 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
         IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
         IdLogic::Singleton => format!("@{}", T::id_label()),
-        IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
+        IdLogic::IndexedSingleton(key) => format!("@{}[{}]", T::id_label(), key(data)),
         IdLogic::BatchOptimized { .. } => {
             return Err(CriticalError::new(
                 "IDs for IdLogic::BatchOptimized should be generated manually in \
@@ -484,7 +484,7 @@ mod tests {
         TestObjectSingletonFamily,
         TestObjectSingletonFamilyData,
         "FAMILY",
-        IdLogic::SingletonFamily(Box::new(|obj: &TestObjectSingletonFamilyData| {
+        IdLogic::IndexedSingleton(Box::new(|obj: &TestObjectSingletonFamilyData| {
             Cow::Borrowed(&obj.key_field)
         })),
         NestingLogic::Root

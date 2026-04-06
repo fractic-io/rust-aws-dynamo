@@ -44,30 +44,68 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: @LABEL
     Singleton,
 
-    /// Kind of like an indexable Singleton map, where the key (determined by a
-    /// given field in the object) is used as a key to the label that can be
-    /// efficiently queried.
+    /// A partitioned Singleton.
+    ///
+    /// WARNING: When using this ID logic, each item contains only a single '##'
+    /// key with the object partition as a string. As such, no GSIs or
+    /// property-based Dynamo operations are possible.
+    ///
+    /// Auto-splits the given data into partitions if necessary, allowing
+    /// storage of objects exceeding the max Dynamo item size. Splitting and
+    /// re-assembling is handled behind the scenes, and the client-facing
+    /// interface is the same as for regular Singletons.
+    ///
+    /// It is safe to switch an existing Singleton to SingletonExt (but not in
+    /// reverse).
+    ///
+    /// <new-obj-id>: @LABEL+N
+    SingletonExt,
+
+    /// Acts as a kind of map, where the key (determined by a given field in the
+    /// object) is included in the ID so it can be efficiently queried.
+    /// Subsequent writes for objects with the same key overwrite the existing
+    /// object.
     ///
     /// <new-obj-id>: @LABEL[<key>]
-    SingletonFamily(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
+    IndexedSingleton(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 
-    /// WARNING: Individual item CRUD not possible.
+    /// A partitioned IndexedSingleton.
+    ///
+    /// WARNING: When using this ID logic, each item contains only a single '##'
+    /// key with the object partitions as a string. As such, no GSIs or
+    /// property-based Dynamo operations are possible.
+    ///
+    /// Like SingletonExt, splitting and re-assembling is handled behind the
+    /// scenes, and the client-facing interface is the same as for regular
+    /// IndexedSingletons.
+    ///
+    /// It is safe to switch an existing IndexedSingleton to IndexedSingletonExt
+    /// (but not in reverse).
+    ///
+    /// <new-obj-id>: @LABEL[<key>]+N
+    IndexedSingletonExt(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
+
+    /// Access only by batch operations.
+    ///
+    /// WARNING: When using this ID logic, each item contains only a single '..'
+    /// key with the batch's items as an array. As such, no individual item
+    /// CRUD, GSIs, or property-based Dynamo operations are possible.
     ///
     /// With BatchOptimized, the only supported actions are:
     /// - query::<T>(...) (and variants)
     /// - batch_replace_all_ordered::<T>(...)
     /// - batch_delete_all::<T>(...)
-    /// - item_exists(...) (caveat: only confirms chunk existence)
+    /// - item_exists(...) (caveat: only confirms batch existence)
     ///
-    /// Items are stored in chunks, with chunk_size items per chunk. IDs are
+    /// Items are stored in batches, with batch_size items per batch. IDs are
     /// sequential numbers, zero-padded to the minimum number of digits required
     /// to maintain sortability.
     ///
-    /// <new-obj-id>: LABEL#<chunk-index>
+    /// <new-obj-id>: LABEL#<batch-index>
     BatchOptimized {
-        /// Should be chosen such that each chunk approaches, but never exceeds,
+        /// Should be chosen such that each batch approaches, but never exceeds,
         /// Dynamo's 400KB max item size. Must be greater than 0.
-        chunk_size: usize,
+        batch_size: usize,
     },
 }
 
@@ -353,7 +391,7 @@ mod tests {
         Test4,
         Test4Data,
         "TEST4",
-        IdLogic::SingletonFamily(Box::new(|obj: &Test4Data| Cow::Borrowed(&obj.key))),
+        IdLogic::IndexedSingleton(Box::new(|obj: &Test4Data| Cow::Borrowed(&obj.key))),
         NestingLogic::InlineChildOf("TEST3")
     );
 
@@ -425,7 +463,7 @@ mod tests {
         assert!(matches!(Test1::id_logic(), IdLogic::Uuid));
         assert!(matches!(Test2::id_logic(), IdLogic::Timestamp));
         assert!(matches!(Test3::id_logic(), IdLogic::Singleton));
-        assert!(matches!(Test4::id_logic(), IdLogic::SingletonFamily(_)));
+        assert!(matches!(Test4::id_logic(), IdLogic::IndexedSingleton(_)));
     }
 
     #[test]
@@ -454,7 +492,7 @@ mod tests {
                 key: String::from("KEY"),
             },
         };
-        let IdLogic::SingletonFamily(key_fn) = Test4::id_logic() else {
+        let IdLogic::IndexedSingleton(key_fn) = Test4::id_logic() else {
             panic!("Expected SingletonFamily.");
         };
         assert_eq!(key_fn(&obj.data), "KEY");

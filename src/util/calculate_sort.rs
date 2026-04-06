@@ -34,6 +34,11 @@ fn _sk_strip_uuid<T: DynamoObject>(
         IdLogic::Singleton => sk,
         // For SingletonFamily, strip the key.
         IdLogic::SingletonFamily(_) => sk.split('[').next().unwrap().to_string(),
+        // For ExtData, strip the chunk suffix.
+        IdLogic::ExtData => sk[..sk.rfind('+').ok_or_else(|| {
+            DynamoInvalidId::with_debug("can't strip ExtData suffix since ID didn't contain '+'", &sk)
+        })?]
+            .to_string(),
         // For Uuid and Timestamp, take ID until last '#' character.
         IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {
             sk[..sk.rfind('#').ok_or_else(|| {
@@ -443,6 +448,14 @@ mod tests {
             )
             .unwrap(),
             "@SINGLETONFAM"
+        );
+        assert_eq!(
+            _sk_strip_uuid::<TestDynamoObject>(
+                IdLogic::<TestDynamoObjectData>::ExtData,
+                "GROUP#123#&EXTDATA+12".to_string()
+            )
+            .unwrap(),
+            "GROUP#123#&EXTDATA"
         );
     }
 }

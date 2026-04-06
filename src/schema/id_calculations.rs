@@ -39,8 +39,10 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     parent_sk: &str,
 ) -> Result<(String, String), ServerError> {
     // Validate parent ID:
-    if is_singleton(parent_pk, parent_sk) {
-        return Err(DynamoInvalidParent::new("singletons cannot have children"));
+    if forbids_children(parent_pk, parent_sk) {
+        return Err(DynamoInvalidParent::new(
+            "singleton and extdata objects cannot have children",
+        ));
     }
     match T::nesting_logic() {
         NestingLogic::InlineChildOf(ptype_req) | NestingLogic::TopLevelChildOf(ptype_req) => {
@@ -60,6 +62,7 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
         IdLogic::Singleton => format!("@{}", T::id_label()),
         IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
+        IdLogic::ExtData => format!("&{}+0", T::id_label()),
         IdLogic::BatchOptimized { .. } => {
             return Err(CriticalError::new(
                 "IDs for IdLogic::BatchOptimized should be generated manually in \
@@ -84,15 +87,42 @@ pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
     sk.contains('@')
 }
 
+pub(crate) fn is_extdata(_pk: &str, sk: &str) -> bool {
+    extdata_base_sk(sk).is_some()
+}
+
+pub(crate) fn forbids_children(pk: &str, sk: &str) -> bool {
+    is_singleton(pk, sk) || is_extdata(pk, sk)
+}
+
+pub(crate) fn extdata_base_sk(sk: &str) -> Option<&str> {
+    let amp_pos = sk.rfind('&')?;
+    let plus_pos = sk[amp_pos..].rfind('+')? + amp_pos;
+    Some(&sk[..plus_pos])
+}
+
+pub(crate) fn extdata_index_from_sk(sk: &str) -> Option<usize> {
+    let base = extdata_base_sk(sk)?;
+    sk[base.len() + 1..].parse().ok()
+}
+
 pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, ServerError> {
-    if let Some(pos) = sk.find('@') {
-        // '@' indicates object is a singleton. In this case, the only label
-        // that matters is the @LABEL, which can by extracted by getting the
-        // text between '@' and '[' (in case of SingletonFamily) or EOL (regular
-        // Singleton).
-        let after_excl = &sk[pos + 1..];
-        let end_pos = after_excl.find(|c| c == '[').unwrap_or(after_excl.len());
-        Ok(&after_excl[..end_pos])
+    let singleton_pos = sk.rfind('@');
+    let extdata_pos = sk.rfind('&');
+    if singleton_pos.is_some() || extdata_pos.is_some() {
+        let (marker, pos) = match (singleton_pos, extdata_pos) {
+            (Some(at), Some(amp)) if amp > at => ('&', amp),
+            (Some(at), _) => ('@', at),
+            (None, Some(amp)) => ('&', amp),
+            (None, None) => unreachable!("special marker presence already checked"),
+        };
+        let after_marker = &sk[pos + 1..];
+        let end_pos = match marker {
+            '@' => after_marker.find('[').unwrap_or(after_marker.len()),
+            '&' => after_marker.find('+').unwrap_or(after_marker.len()),
+            _ => unreachable!("unsupported special marker"),
+        };
+        Ok(&after_marker[..end_pos])
     } else {
         // Otherwise, object type is decided by the last label in the
         // PARENT#uuid#CHILD#uuid#... format.
@@ -195,6 +225,23 @@ mod tests {
     }
 
     #[test]
+    fn test_is_extdata() {
+        assert!(!is_extdata("USER#123", "ORDER#456#ITEM#789"));
+        assert!(is_extdata("ROOT", "&BIG+0"));
+        assert!(is_extdata("USER#123", "ORDER#56#ITEM#1#&SIGNATURE+12"));
+    }
+
+    #[test]
+    fn test_extdata_base_sk_and_index() {
+        assert_eq!(extdata_base_sk("&BIG+0"), Some("&BIG"));
+        assert_eq!(extdata_base_sk("ORDER#1#&BIG+12"), Some("ORDER#1#&BIG"));
+        assert_eq!(extdata_index_from_sk("&BIG+0"), Some(0));
+        assert_eq!(extdata_index_from_sk("ORDER#1#&BIG+12"), Some(12));
+        assert_eq!(extdata_index_from_sk("ORDER#1#&BIG+X"), None);
+        assert_eq!(extdata_base_sk("ORDER#1#ITEM#2"), None);
+    }
+
+    #[test]
     fn test_get_object_type() {
         assert!(get_object_type("USER#123", "INVALID").is_err());
         assert_eq!(get_object_type("ROOT", "ORDER#456").unwrap(), "ORDER");
@@ -221,6 +268,13 @@ mod tests {
         );
         assert_eq!(
             get_object_type("USER#123", "ORDER#56#ITEM#1#@POST[key]").unwrap(),
+            "POST"
+        );
+
+        // ExtData:
+        assert_eq!(get_object_type("ROOT", "&BIG+0").unwrap(), "BIG");
+        assert_eq!(
+            get_object_type("USER#123", "ORDER#56#ITEM#1#&POST+12").unwrap(),
             "POST"
         );
     }
@@ -380,9 +434,9 @@ mod tests {
         assert_eq!(result.1.len(), expected_length);
     }
 
-    // Test case 5: Singleton parent cannot have children
+    // Test case 5: Childless parent cannot have children
     #[test]
-    fn test_generate_pk_sk_singleton_parent_error() {
+    fn test_generate_pk_sk_childless_parent_error() {
         let obj = TestObjectTopLevelChildUuid {
             id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
@@ -394,7 +448,26 @@ mod tests {
         assert!(result.is_err());
         if let Err(err) = result {
             let err_msg = err.to_string();
-            assert!(err_msg.contains("singletons cannot have children"));
+            assert!(err_msg.contains("cannot have children"));
+        } else {
+            panic!("Expected error but got Ok");
+        }
+    }
+
+    #[test]
+    fn test_generate_pk_sk_extdata_parent_error() {
+        let obj = TestObjectTopLevelChildUuid {
+            id: PkSk::root().clone(),
+            auto_fields: AutoFields::default(),
+            data: TestObjectTopLevelChildUuidData::default(),
+        };
+        let parent_pk = "any_pk";
+        let parent_sk = "&PARENT+0";
+        let result = generate_pk_sk::<TestObjectTopLevelChildUuid>(&obj.data, parent_pk, parent_sk);
+        assert!(result.is_err());
+        if let Err(err) = result {
+            let err_msg = err.to_string();
+            assert!(err_msg.contains("cannot have children"));
         } else {
             panic!("Expected error but got Ok");
         }
@@ -526,5 +599,29 @@ mod tests {
         } else {
             panic!("Expected error but got Ok");
         }
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+    pub struct TestObjectExtDataData {}
+    dynamo_object!(
+        TestObjectExtData,
+        TestObjectExtDataData,
+        "EXTDATA",
+        IdLogic::ExtData,
+        NestingLogic::InlineChildOfAny
+    );
+
+    #[test]
+    fn test_generate_pk_sk_extdata() {
+        let obj = TestObjectExtData {
+            id: PkSk::root().clone(),
+            auto_fields: AutoFields::default(),
+            data: TestObjectExtDataData::default(),
+        };
+        let parent_pk = "parent_pk";
+        let parent_sk = "parent_sk";
+        let result = generate_pk_sk::<TestObjectExtData>(&obj.data, parent_pk, parent_sk).unwrap();
+        assert_eq!(result.0, parent_pk);
+        assert_eq!(result.1, "parent_sk#&EXTDATA+0");
     }
 }

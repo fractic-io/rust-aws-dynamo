@@ -2,9 +2,10 @@
 mod tests {
     use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
-    use crate::schema::{IdLogic, Timestamp};
+    use crate::schema::{parsing::serialize_dynamo_payload_map, IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, FLATTEN_RESERVED_KEY,
+        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, EXTDATA_RESERVED_KEY,
+        FLATTEN_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
@@ -65,6 +66,31 @@ mod tests {
         BatchOptInlineDynamoObjectData,
         "BATCHOPTINLINE",
         IdLogic::BatchOptimized { chunk_size: 3 },
+        NestingLogic::InlineChildOfAny
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct ExtDataDynamoObjectData {
+        val: String,
+    }
+    dynamo_object!(
+        ExtDataDynamoObject,
+        ExtDataDynamoObjectData,
+        "EXTDATA",
+        IdLogic::ExtData,
+        NestingLogic::InlineChildOfAny
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct InvalidExtDataReservedKeyData {
+        #[serde(rename = "++")]
+        val: String,
+    }
+    dynamo_object!(
+        InvalidExtDataReservedKey,
+        InvalidExtDataReservedKeyData,
+        "BADRES",
+        IdLogic::ExtData,
         NestingLogic::InlineChildOfAny
     );
 
@@ -146,6 +172,64 @@ mod tests {
                 // values are skipped.
             },
         )
+    }
+
+    fn build_extdata_payload_map(
+        pk: &str,
+        sk: &str,
+        val: &str,
+        sort: Option<f64>,
+    ) -> HashMap<String, AttributeValue> {
+        let mut map: HashMap<String, AttributeValue> = collection! {
+            "pk".to_string() => AttributeValue::S(pk.to_string()),
+            "sk".to_string() => AttributeValue::S(sk.to_string()),
+            "val".to_string() => AttributeValue::S(val.to_string()),
+        };
+        if let Some(sort) = sort {
+            map.insert("sort".to_string(), AttributeValue::N(sort.to_string()));
+        }
+        map
+    }
+
+    fn build_extdata_shards(
+        pk: &str,
+        base_sk: &str,
+        val: &str,
+        sort: Option<f64>,
+        split_at: usize,
+    ) -> Vec<HashMap<String, AttributeValue>> {
+        let payload = serialize_dynamo_payload_map(&build_extdata_payload_map(
+            pk,
+            &format!("{}+0", base_sk),
+            val,
+            sort,
+        ))
+        .unwrap();
+        let split_at = split_at.min(payload.len());
+        let mut parts = Vec::new();
+        let first = &payload[..split_at];
+        if !first.is_empty() {
+            parts.push(first.to_string());
+        }
+        let second = &payload[split_at..];
+        if !second.is_empty() {
+            parts.push(second.to_string());
+        }
+        if parts.is_empty() {
+            parts.push(String::new());
+        }
+
+        parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, piece)| {
+                collection! {
+                    "pk".to_string() => AttributeValue::S(pk.to_string()),
+                    "sk".to_string() => AttributeValue::S(format!("{}+{}", base_sk, index)),
+                    EXTDATA_RESERVED_KEY.to_string() => AttributeValue::S(piece),
+                }
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -1422,6 +1506,364 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_query_all_extdata() {
+        let mut backend = MockDynamoBackend::new();
+        let shards = build_extdata_shards("ROOT", "GROUP#123#&EXTDATA", "blob", Some(0.25), 8);
+
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123#&EXTDATA+".to_string()),
+                }),
+            )
+            .returning(move |_, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(shards.clone()))
+                    .build()])
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query_all::<ExtDataDynamoObject>(&PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id().pk, "ROOT");
+        assert_eq!(result[0].id().sk, "GROUP#123#&EXTDATA+0");
+        assert_eq!(result[0].data.val, "blob");
+        assert_eq!(result[0].auto_fields.sort, Some(0.25));
+    }
+
+    #[tokio::test]
+    async fn test_get_item_extdata() {
+        let mut backend = MockDynamoBackend::new();
+        let shards = build_extdata_shards("ROOT", "GROUP#123#&EXTDATA", "blob", Some(0.5), 6);
+
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123#&EXTDATA+".to_string()),
+                }),
+            )
+            .returning(move |_, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(shards.clone()))
+                    .build()])
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .get_item::<ExtDataDynamoObject>(PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123#&EXTDATA+0".to_string(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.id().sk, "GROUP#123#&EXTDATA+0");
+        assert_eq!(result.data.val, "blob");
+        assert_eq!(result.auto_fields.sort, Some(0.5));
+    }
+
+    #[tokio::test]
+    async fn test_query_generic_mixed_with_extdata() {
+        let mut backend = MockDynamoBackend::new();
+        let extdata_shards = build_extdata_shards("ROOT", "GROUP#123#&EXTDATA", "blob", Some(0.2), 7);
+
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123".to_string()),
+                }),
+            )
+            .returning(move |_, _, _, _| {
+                let mut items = vec![build_item_no_data().1];
+                items.extend(extdata_shards.clone());
+                Ok(vec![QueryOutput::builder().set_items(Some(items)).build()])
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query_generic(
+                None,
+                PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: "GROUP#123".to_string(),
+                },
+                DynamoQueryMatchType::BeginsWith,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result[0].get("sk").unwrap().as_s().unwrap(),
+            "GROUP#123#&EXTDATA+0"
+        );
+        assert_eq!(result[0].get("val").unwrap().as_s().unwrap(), "blob");
+        assert_eq!(result[1], build_item_no_data().1);
+    }
+
+    #[tokio::test]
+    async fn test_create_item_extdata_multi_shard() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .withf(|table, _index, _cond, vals| {
+                table == "my_table"
+                    && vals.get(":pk_val").unwrap().as_s().unwrap() == "ROOT"
+                    && vals.get(":sk_val").unwrap().as_s().unwrap() == "GROUP#123#&EXTDATA+"
+            })
+            .returning(|_, _, _, _| Ok(vec![QueryOutput::builder().set_items(Some(vec![])).build()]));
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                table == "my_table"
+                    && items.len() == 2
+                    && items.iter().all(|item| {
+                        item.len() == 3
+                            && item.contains_key("pk")
+                            && item.contains_key("sk")
+                            && item.contains_key(EXTDATA_RESERVED_KEY)
+                    })
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        let result = util
+            .create_item::<ExtDataDynamoObject>(
+                &PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: "GROUP#123".to_string(),
+                },
+                ExtDataDynamoObjectData {
+                    val: "x".repeat(360_000),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.id().pk, "ROOT");
+        assert_eq!(result.id().sk, "GROUP#123#&EXTDATA+0");
+    }
+
+    #[tokio::test]
+    async fn test_update_item_extdata_grows() {
+        let mut backend = MockDynamoBackend::new();
+        let old_shards = build_extdata_shards("ROOT", "GROUP#123#&EXTDATA", "old", Some(0.5), 3);
+
+        backend
+            .expect_query()
+            .times(2)
+            .withf(|table, _index, _cond, vals| {
+                table == "my_table"
+                    && vals.get(":pk_val").unwrap().as_s().unwrap() == "ROOT"
+                    && vals.get(":sk_val").unwrap().as_s().unwrap() == "GROUP#123#&EXTDATA+"
+            })
+            .returning(move |_, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(old_shards.clone()))
+                    .build()])
+            });
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| {
+                table == "my_table"
+                    && items.len() == 2
+                    && items[0].get("sk").unwrap().as_s().unwrap() == "GROUP#123#&EXTDATA+0"
+                    && items[1].get("sk").unwrap().as_s().unwrap() == "GROUP#123#&EXTDATA+1"
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                table == "my_table"
+                    && items.len() == 2
+                    && items[0].contains_key(EXTDATA_RESERVED_KEY)
+                    && items[1].contains_key(EXTDATA_RESERVED_KEY)
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        let item = ExtDataDynamoObject {
+            id: PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123#&EXTDATA+0".to_string(),
+            },
+            data: ExtDataDynamoObjectData {
+                val: "y".repeat(360_000),
+            },
+            auto_fields: AutoFields::default(),
+        };
+
+        util.update_item(&item).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_item_transaction_extdata_shrinks() {
+        let mut backend = MockDynamoBackend::new();
+        let old_shards = build_extdata_shards(
+            "ROOT",
+            "GROUP#123#&EXTDATA",
+            &"z".repeat(360_000),
+            Some(0.75),
+            180_000,
+        );
+
+        backend
+            .expect_query()
+            .times(2)
+            .withf(|table, _index, _cond, vals| {
+                table == "my_table"
+                    && vals.get(":pk_val").unwrap().as_s().unwrap() == "ROOT"
+                    && vals.get(":sk_val").unwrap().as_s().unwrap() == "GROUP#123#&EXTDATA+"
+            })
+            .returning(move |_, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(old_shards.clone()))
+                    .build()])
+            });
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| table == "my_table" && items.len() == 2)
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                table == "my_table"
+                    && items.len() == 1
+                    && items[0].get("sk").unwrap().as_s().unwrap() == "GROUP#123#&EXTDATA+0"
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        let result = util
+            .update_item_transaction::<ExtDataDynamoObject>(
+                PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: "GROUP#123#&EXTDATA+0".to_string(),
+                },
+                |_| {
+                    Ok(ExtDataDynamoObjectData {
+                        val: "small".to_string(),
+                    })
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.id().sk, "GROUP#123#&EXTDATA+0");
+        assert_eq!(result.data.val, "small");
+    }
+
+    #[tokio::test]
+    async fn test_delete_item_extdata() {
+        let mut backend = MockDynamoBackend::new();
+        let old_shards = build_extdata_shards(
+            "ROOT",
+            "GROUP#123#&EXTDATA",
+            &"z".repeat(360_000),
+            None,
+            180_000,
+        );
+
+        backend
+            .expect_query()
+            .withf(|table, _index, _cond, vals| {
+                table == "my_table"
+                    && vals.get(":pk_val").unwrap().as_s().unwrap() == "ROOT"
+                    && vals.get(":sk_val").unwrap().as_s().unwrap() == "GROUP#123#&EXTDATA+"
+            })
+            .returning(move |_, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(old_shards.clone()))
+                    .build()])
+            });
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| table == "my_table" && items.len() == 2)
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        util.delete_item::<ExtDataDynamoObject>(PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123#&EXTDATA+0".to_string(),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_all_extdata_malformed_gap_error() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .returning(|_, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(vec![collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("GROUP#123#&EXTDATA+1".to_string()),
+                        EXTDATA_RESERVED_KEY.to_string() => AttributeValue::S("{}".to_string()),
+                    }]))
+                    .build()])
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query_all::<ExtDataDynamoObject>(&PkSk {
+                pk: "ROOT".to_string(),
+                sk: "GROUP#123".to_string(),
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_create_item_extdata_reserved_key_error() {
+        let backend = MockDynamoBackend::new();
+        let util = build_util(backend).await;
+
+        let result = util
+            .create_item::<InvalidExtDataReservedKey>(
+                &PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: "GROUP#123".to_string(),
+                },
+                InvalidExtDataReservedKeyData {
+                    val: "bad".to_string(),
+                },
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("reserved key '++'"));
     }
 
     #[tokio::test]

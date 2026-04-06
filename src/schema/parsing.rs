@@ -142,6 +142,35 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerErr
         .map_err(|e| DynamoItemParsingError::with_debug("failed to convert from Serde value", &e))
 }
 
+pub(crate) fn serialize_dynamo_payload_map(map: &DynamoMap) -> Result<String, ServerError> {
+    let mut serde_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    for (key, value) in map.iter() {
+        if (key == "pk") || (key == "sk") {
+            continue;
+        }
+        if let Some(v) = attribute_value_to_serde_value(value.clone())? {
+            serde_map.insert(key.clone(), v);
+        }
+    }
+    serde_json::to_string(&serde_json::Value::Object(serde_map))
+        .map_err(|e| DynamoItemParsingError::with_debug("failed to serialize payload map", &e))
+}
+
+pub(crate) fn deserialize_dynamo_payload_map(payload: &str) -> Result<DynamoMap, ServerError> {
+    let parsed: serde_json::Value = serde_json::from_str(payload)
+        .map_err(|e| DynamoItemParsingError::with_debug("failed to deserialize payload map", &e))?;
+    let serde_json::Value::Object(map) = parsed else {
+        return Err(DynamoItemParsingError::new(
+            "failed to deserialize payload map: expected a JSON object",
+        ));
+    };
+
+    map.into_iter()
+        .filter_map(|(key, value)| Some((key, serde_value_to_attribute_value(value).transpose()?)))
+        .map(|(key, value)| Ok((key, value?)))
+        .collect::<Result<DynamoMap, ServerError>>()
+}
+
 // Inner recursive functions.
 // --------------------------------------------------
 

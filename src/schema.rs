@@ -51,6 +51,17 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: @LABEL[<key>]
     SingletonFamily(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 
+    /// Stores a single logical object across one or more DynamoDB items. This
+    /// is intended for objects whose final serialized representation may exceed
+    /// Dynamo's per-item size limit.
+    ///
+    /// Like `Singleton`, only one logical object of this type can exist for a
+    /// given parent, and extdata objects cannot have children. The object is
+    /// transparently reconstructed by the util during reads.
+    ///
+    /// <new-obj-id>: &LABEL+<chunk-index>
+    ExtData,
+
     /// WARNING: Individual item CRUD not possible.
     ///
     /// With BatchOptimized, the only supported actions are:

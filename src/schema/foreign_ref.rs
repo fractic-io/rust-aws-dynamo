@@ -83,11 +83,12 @@ impl<'de> Deserialize<'de> for ForeignRef<'static> {
 ///
 /// The detection is intentionally simple for backwards compatibility:
 /// 1) if it contains `|` => assume `pk|sk` and extract from the `sk` portion
-/// 2) else if it contains `@` or `#` => assume full `sk` and extract from it
+/// 2) else if it contains `@`, `&`, or `#` => assume full `sk` and extract from it
 /// 3) else => assume it is already the minimal reference
 fn normalize_ref(raw: &str) -> &str {
     let mut pipe: Option<usize> = None;
     let mut at: Option<usize> = None;
+    let mut amp: Option<usize> = None;
     let mut last_hash: Option<usize> = None;
     let mut open: Option<usize> = None;
     let mut close: Option<usize> = None;
@@ -99,6 +100,7 @@ fn normalize_ref(raw: &str) -> &str {
             b'|' if pipe.is_none() => {
                 pipe = Some(i);
                 at = None;
+                amp = None;
                 last_hash = None;
                 open = None;
                 close = None;
@@ -106,6 +108,11 @@ fn normalize_ref(raw: &str) -> &str {
             b'@' => {
                 if at.is_none() {
                     at = Some(i);
+                }
+            }
+            b'&' => {
+                if amp.is_none() {
+                    amp = Some(i);
                 }
             }
             b'#' => {
@@ -135,6 +142,11 @@ fn normalize_ref(raw: &str) -> &str {
         return "";
     }
 
+    // ExtData references do not carry any per-object suffix.
+    if amp.is_some() {
+        return "";
+    }
+
     // Otherwise, if we saw any '#', use the suffix after the last one.
     if let Some(h) = last_hash {
         return &raw[h + 1..];
@@ -150,9 +162,12 @@ fn normalize_ref(raw: &str) -> &str {
 /// - If the sk contains '@' anywhere, it is treated as a singleton:
 ///   - Singleton: empty string ("")
 ///   - SingletonFamily: the text between '[' and ']' (if present)
+/// - If the sk contains '&' anywhere, it is treated as extdata and returns an
+///   empty string ("")
 /// - Otherwise, returns the text after the final '#'
 fn extract_ref_from_sk(sk: &str) -> &str {
     let mut at: Option<usize> = None;
+    let mut amp: Option<usize> = None;
     let mut last_hash: Option<usize> = None;
     let mut open: Option<usize> = None;
     let mut close: Option<usize> = None;
@@ -162,6 +177,11 @@ fn extract_ref_from_sk(sk: &str) -> &str {
             b'@' => {
                 if at.is_none() {
                     at = Some(i);
+                }
+            }
+            b'&' => {
+                if amp.is_none() {
+                    amp = Some(i);
                 }
             }
             b'#' => last_hash = Some(i),
@@ -183,6 +203,10 @@ fn extract_ref_from_sk(sk: &str) -> &str {
         if let (Some(o), Some(c)) = (open, close) {
             return &sk[o + 1..c];
         }
+        return "";
+    }
+
+    if amp.is_some() {
         return "";
     }
 
@@ -229,6 +253,12 @@ mod tests {
     fn test_extract_ref_from_sk_singleton_embedded() {
         let sk = "ORDER#AAAAAAAAAAAAAAAA#@FAMILY[key123]";
         assert_eq!(extract_ref_from_sk(sk), "key123");
+    }
+
+    #[test]
+    fn test_extract_ref_from_sk_extdata() {
+        let sk = "ORDER#AAAAAAAAAAAAAAAA#&BLOB+2";
+        assert_eq!(extract_ref_from_sk(sk), "");
     }
 
     #[test]
@@ -283,6 +313,13 @@ mod tests {
     #[test]
     fn test_foreign_ref_deserialize_backcompat_singleton_full_sk() {
         let legacy = r#""@SINGLETON""#;
+        let r: ForeignRef<'static> = serde_json::from_str(legacy).unwrap();
+        assert_eq!(r.raw(), "");
+    }
+
+    #[test]
+    fn test_foreign_ref_deserialize_backcompat_extdata_full_sk() {
+        let legacy = r#""&BLOB+0""#;
         let r: ForeignRef<'static> = serde_json::from_str(legacy).unwrap();
         assert_eq!(r.raw(), "");
     }

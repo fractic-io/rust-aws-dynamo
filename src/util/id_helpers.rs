@@ -51,6 +51,7 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
         IdLogic::Singleton | IdLogic::SingletonFamily(_) => {
             format!("@{}", T::id_label())
         }
+        IdLogic::ExtData => format!("&{}+", T::id_label()),
         _ => format!("{}#", T::id_label()),
     };
 
@@ -105,6 +106,10 @@ mod tests {
     pub struct InlineBatchData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
     pub struct TopLevelBatchData {}
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct InlineExtDataData {}
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct TopLevelExtDataData {}
 
     dynamo_object!(
         RootGroup,
@@ -169,6 +174,20 @@ mod tests {
         TopLevelBatchData,
         "TOPLBATCH",
         IdLogic::BatchOptimized { chunk_size: 10 },
+        NestingLogic::TopLevelChildOf("N")
+    );
+    dynamo_object!(
+        InlineExtData,
+        InlineExtDataData,
+        "INLEXT",
+        IdLogic::ExtData,
+        NestingLogic::InlineChildOfAny
+    );
+    dynamo_object!(
+        TopLevelExtData,
+        TopLevelExtDataData,
+        "TOPEXT",
+        IdLogic::ExtData,
         NestingLogic::TopLevelChildOf("N")
     );
 
@@ -294,6 +313,24 @@ mod tests {
             PkSk {
                 pk: "S#123#N#456".into(),
                 sk: "TOPLBATCH#".into()
+            }
+        );
+
+        // Inline ExtData:
+        assert_eq!(
+            child_search_prefix::<InlineExtData>(&inline_batch_search),
+            PkSk {
+                pk: "P".into(),
+                sk: "S#&INLEXT+".into()
+            }
+        );
+
+        // Top-level ExtData:
+        assert_eq!(
+            child_search_prefix::<TopLevelExtData>(&top_level_batch_search),
+            PkSk {
+                pk: "S#123#N#456".into(),
+                sk: "&TOPEXT+".into()
             }
         );
     }

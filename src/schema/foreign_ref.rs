@@ -22,7 +22,7 @@ impl<'a> ForeignRef<'a> {
     /// The closure should interpret `ref_str` appropriately for the referenced
     /// type:
     /// - Singleton: `ref_str == ""`
-    /// - IndexedSingleton: `ref_str` is the singleton key
+    /// - IndexedSingleton: `ref_str` is the index key
     /// - Other: `ref_str` is the last segment after the final `#`
     pub fn deref<F>(&self, build: F) -> PkSk
     where

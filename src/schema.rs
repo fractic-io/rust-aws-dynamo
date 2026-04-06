@@ -85,7 +85,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: @LABEL[<key>]+N
     IndexedSingletonExt(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 
-    /// Access only by batch operations.
+    /// Efficient batch-only access.
     ///
     /// WARNING: When using this ID logic, each item contains only a single '..'
     /// key with the batch's items as an array. As such, no individual item

@@ -51,7 +51,7 @@ pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
 pub const AUTO_FIELDS_SORT: &str = "sort";
 pub const AUTO_FIELDS_TTL: &str = "ttl";
 
-/// In case of batch items, the '..' key is used to store the children array,
+/// In case of batch items, the '..' key is used to store the batch items array,
 /// which should be expanded before returning to the caller.
 pub const EXPAND_RESERVED_KEY: &str = ".."; // WARNING: Also hardcoded
                                             // in batch_replace_all_ordered.

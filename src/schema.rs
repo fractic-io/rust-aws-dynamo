@@ -46,7 +46,7 @@ pub enum IdLogic<T: DynamoObjectData> {
 
     /// A variant of `Singleton` that supports large objects.
     ///
-    /// Auto-splits the given data into partitions, allowing storage of objects
+    /// Auto-splits the Singleton into partitions, allowing storage of objects
     /// exceeding the max Dynamo item size. Splitting and re-assembling is
     /// handled behind the scenes, and the client-facing interface is the same
     /// as for regular Singletons.
@@ -69,7 +69,8 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: @LABEL[<key>]
     IndexedSingleton(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 
-    /// A variant of `IndexedSingleton` that supports large objects.
+    /// A variant of `IndexedSingleton` that supports large objects via
+    /// partitioning.
     ///
     /// Like `SingletonExt`, splitting and re-assembling is handled behind the
     /// scenes, and the client-facing interface is the same as for regular

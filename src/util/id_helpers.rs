@@ -48,7 +48,10 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
     // * Singleton / IndexedSingleton →  "@LABEL"
     // * Everything else              →  "LABEL#"
     let sk_search_prefix = match T::id_logic() {
-        IdLogic::Singleton | IdLogic::IndexedSingleton(_) => {
+        IdLogic::Singleton
+        | IdLogic::SingletonExt
+        | IdLogic::IndexedSingleton(_)
+        | IdLogic::IndexedSingletonExt(_) => {
             format!("@{}", T::id_label())
         }
         _ => format!("{}#", T::id_label()),
@@ -99,6 +102,12 @@ mod tests {
     pub struct InlineSingletonData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
     pub struct InlineIndexedSingletonData {
+        key: String,
+    }
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct InlineSingletonExtData {}
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct InlineIndexedSingletonExtData {
         key: String,
     }
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -155,6 +164,22 @@ mod tests {
         IdLogic::IndexedSingleton(Box::new(|data: &InlineIndexedSingletonData| Cow::Borrowed(
             &data.key
         ))),
+        NestingLogic::InlineChildOfAny
+    );
+    dynamo_object!(
+        InlineSingletonExt,
+        InlineSingletonExtData,
+        "INLSINGLEEXT",
+        IdLogic::SingletonExt,
+        NestingLogic::InlineChildOfAny
+    );
+    dynamo_object!(
+        InlineIndexedSingletonExt,
+        InlineIndexedSingletonExtData,
+        "INLFAMEXT",
+        IdLogic::IndexedSingletonExt(Box::new(
+            |data: &InlineIndexedSingletonExtData| Cow::Borrowed(&data.key)
+        )),
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
@@ -268,6 +293,24 @@ mod tests {
             PkSk {
                 pk: "P".into(),
                 sk: "S#@INLFAM".into()
+            }
+        );
+
+        // Inline SingletonExt:
+        assert_eq!(
+            child_search_prefix::<InlineSingletonExt>(&inline_singleton_search),
+            PkSk {
+                pk: "P".into(),
+                sk: "S#@INLSINGLEEXT".into()
+            }
+        );
+
+        // Inline IndexedSingletonExt:
+        assert_eq!(
+            child_search_prefix::<InlineIndexedSingletonExt>(&inline_indexed_singleton_search),
+            PkSk {
+                pk: "P".into(),
+                sk: "S#@INLFAMEXT".into()
             }
         );
 

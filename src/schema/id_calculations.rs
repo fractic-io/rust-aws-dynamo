@@ -33,6 +33,38 @@ fn _epoch_timestamp_16_chars() -> String {
     format!("{:016}", timestamp)
 }
 
+pub(crate) fn strip_ext_partition_suffix(sk: &str) -> &str {
+    let digits_start = sk
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(idx, _)| idx);
+    let Some(digits_start) = digits_start else {
+        return sk;
+    };
+    if digits_start == 0 {
+        return sk;
+    }
+    match sk.as_bytes().get(digits_start - 1) {
+        Some(b'+') => &sk[..digits_start - 1],
+        _ => sk,
+    }
+}
+
+pub(crate) fn get_ext_partition_index(sk: &str) -> Option<usize> {
+    let digits_start = sk
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(idx, _)| idx)?;
+    if digits_start == 0 || !matches!(sk.as_bytes().get(digits_start - 1), Some(b'+')) {
+        return None;
+    }
+    sk[digits_start..].parse::<usize>().ok()
+}
+
 pub(crate) fn generate_pk_sk<T: DynamoObject>(
     data: &T::Data,
     parent_pk: &str,
@@ -58,8 +90,10 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     let new_obj_id = match T::id_logic() {
         IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
         IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
-        IdLogic::Singleton => format!("@{}", T::id_label()),
-        IdLogic::IndexedSingleton(key) => format!("@{}[{}]", T::id_label(), key(data)),
+        IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
+        IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
+            format!("@{}[{}]", T::id_label(), key(data))
+        }
         IdLogic::BatchOptimized { .. } => {
             return Err(CriticalError::new(
                 "IDs for IdLogic::BatchOptimized should be generated manually in \
@@ -81,10 +115,11 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
 }
 
 pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
-    sk.contains('@')
+    strip_ext_partition_suffix(sk).contains('@')
 }
 
 pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, ServerError> {
+    let sk = strip_ext_partition_suffix(sk);
     if let Some(pos) = sk.find('@') {
         // '@' indicates object is a singleton. In this case, the only label
         // that matters is the @LABEL, which can by extracted by getting the
@@ -189,8 +224,10 @@ mod tests {
     fn test_is_singleton() {
         assert!(!is_singleton("USER#123", "ORDER#456#ITEM#789"));
         assert!(is_singleton("USER#123", "@SINGLTN"));
+        assert!(is_singleton("USER#123", "@SINGLTN+0"));
         assert!(is_singleton("ROOT", "@SINGLTN"));
         assert!(is_singleton("ROOT", "@SINGLTN[KEY]"));
+        assert!(is_singleton("ROOT", "@SINGLTN[KEY]+12"));
         assert!(is_singleton("USER#123", "ORDER#56#ITEM#1#@SIGNATURE"));
     }
 
@@ -222,6 +259,31 @@ mod tests {
         assert_eq!(
             get_object_type("USER#123", "ORDER#56#ITEM#1#@POST[key]").unwrap(),
             "POST"
+        );
+        assert_eq!(get_object_type("ROOT", "@SINGLTN+0").unwrap(), "SINGLTN");
+        assert_eq!(
+            get_object_type("ROOT", "@PREF[key]+12").unwrap(),
+            "PREF"
+        );
+    }
+
+    #[test]
+    fn test_strip_ext_partition_suffix() {
+        assert_eq!(strip_ext_partition_suffix("@SINGLTN"), "@SINGLTN");
+        assert_eq!(strip_ext_partition_suffix("@SINGLTN+0"), "@SINGLTN");
+        assert_eq!(
+            strip_ext_partition_suffix("PARENT#1#@FAMILY[key]+12"),
+            "PARENT#1#@FAMILY[key]"
+        );
+    }
+
+    #[test]
+    fn test_get_ext_partition_index() {
+        assert_eq!(get_ext_partition_index("@SINGLTN"), None);
+        assert_eq!(get_ext_partition_index("@SINGLTN+0"), Some(0));
+        assert_eq!(
+            get_ext_partition_index("PARENT#1#@FAMILY[key]+12"),
+            Some(12)
         );
     }
 
@@ -475,6 +537,29 @@ mod tests {
         assert_eq!(result.1, "@SINGLETON");
     }
 
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+    pub struct TestObjectSingletonExtData {}
+    dynamo_object!(
+        TestObjectSingletonExt,
+        TestObjectSingletonExtData,
+        "SINGLETONEXT",
+        IdLogic::SingletonExt,
+        NestingLogic::Root
+    );
+
+    #[test]
+    fn test_generate_pk_sk_singleton_ext() {
+        let obj = TestObjectSingletonExt {
+            id: PkSk::root().clone(),
+            auto_fields: AutoFields::default(),
+            data: TestObjectSingletonExtData::default(),
+        };
+        let result =
+            generate_pk_sk::<TestObjectSingletonExt>(&obj.data, "any_pk", "any_sk").unwrap();
+        assert_eq!(result.0, "ROOT");
+        assert_eq!(result.1, "@SINGLETONEXT");
+    }
+
     // Test case 9: IdLogic::IndexedSingleton
     #[derive(Debug, Serialize, Deserialize, Default, Clone)]
     pub struct TestObjectIndexedSingletonData {
@@ -505,6 +590,35 @@ mod tests {
             generate_pk_sk::<TestObjectIndexedSingleton>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, "ROOT");
         assert_eq!(result.1, "@FAMILY[key123]");
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+    pub struct TestObjectIndexedSingletonExtData {
+        key_field: String,
+    }
+    dynamo_object!(
+        TestObjectIndexedSingletonExt,
+        TestObjectIndexedSingletonExtData,
+        "FAMILYEXT",
+        IdLogic::IndexedSingletonExt(Box::new(
+            |obj: &TestObjectIndexedSingletonExtData| { Cow::Borrowed(&obj.key_field) }
+        )),
+        NestingLogic::Root
+    );
+
+    #[test]
+    fn test_generate_pk_sk_indexed_singleton_ext() {
+        let obj = TestObjectIndexedSingletonExt {
+            id: PkSk::root().clone(),
+            auto_fields: AutoFields::default(),
+            data: TestObjectIndexedSingletonExtData {
+                key_field: "key123".to_string(),
+            },
+        };
+        let result = generate_pk_sk::<TestObjectIndexedSingletonExt>(&obj.data, "any_pk", "any_sk")
+            .unwrap();
+        assert_eq!(result.0, "ROOT");
+        assert_eq!(result.1, "@FAMILYEXT[key123]");
     }
 
     // Test case 10: Invalid parent_sk format

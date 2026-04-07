@@ -31,9 +31,11 @@ fn _sk_strip_uuid<T: DynamoObject>(
 ) -> Result<String, ServerError> {
     Ok(match id_logic {
         // For Singleton, no ID to strip.
-        IdLogic::Singleton => sk,
+        IdLogic::Singleton | IdLogic::SingletonExt => sk,
         // For IndexedSingleton, strip the key.
-        IdLogic::IndexedSingleton(_) => sk.split('[').next().unwrap().to_string(),
+        IdLogic::IndexedSingleton(_) | IdLogic::IndexedSingletonExt(_) => {
+            sk.split('[').next().unwrap().to_string()
+        }
         // For Uuid and Timestamp, take ID until last '#' character.
         IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {
             sk[..sk.rfind('#').ok_or_else(|| {
@@ -436,9 +438,27 @@ mod tests {
         );
         assert_eq!(
             _sk_strip_uuid::<TestDynamoObject>(
+                IdLogic::<TestDynamoObjectData>::SingletonExt,
+                "@SINGLETONEXT".to_string()
+            )
+            .unwrap(),
+            "@SINGLETONEXT"
+        );
+        assert_eq!(
+            _sk_strip_uuid::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::IndexedSingleton(Box::new(|_| Cow::Borrowed(
                     "samplekey"
                 ))),
+                "@SINGLETONFAM[samplekey]".to_string()
+            )
+            .unwrap(),
+            "@SINGLETONFAM"
+        );
+        assert_eq!(
+            _sk_strip_uuid::<TestDynamoObject>(
+                IdLogic::<TestDynamoObjectData>::IndexedSingletonExt(Box::new(
+                    |_| Cow::Borrowed("samplekey")
+                )),
                 "@SINGLETONFAM[samplekey]".to_string()
             )
             .unwrap(),

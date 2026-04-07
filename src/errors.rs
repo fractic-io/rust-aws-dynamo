@@ -22,7 +22,16 @@ define_client_error!(
     "Item-level operations are not supported for items with IdLogic::BatchOptimized. Use batch_replace_all_ordered instead."
 );
 define_client_error!(
+    DynamoInvalidPartitionedUpdateUsage,
+    "Update-style operations are not supported for items with IdLogic::SingletonExt or IdLogic::IndexedSingletonExt. Use full set/create operations instead."
+);
+define_client_error!(
     DynamoInvalidParent,
     "Invalid parent object type: {details}.",
+    { details: &str }
+);
+define_internal_error!(
+    DynamoUnexpectedItemCount,
+    "Unexpected DynamoDB item count: {details}.",
     { details: &str }
 );

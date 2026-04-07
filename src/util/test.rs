@@ -4,7 +4,8 @@ mod tests {
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, EXPAND_RESERVED_KEY,
+        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, COLLAPSE_RESERVED_KEY,
+        EXPAND_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
@@ -28,6 +29,7 @@ mod tests {
     use fractic_core::collection;
     use mockall::predicate::*;
     use serde::{Deserialize, Serialize};
+    use std::borrow::Cow;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -66,6 +68,34 @@ mod tests {
         "BATCHOPTINLINE",
         IdLogic::BatchOptimized { batch_size: 3 },
         NestingLogic::InlineChildOfAny
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct PartitionedSingletonData {
+        val: String,
+        num: u32,
+    }
+    dynamo_object!(
+        PartitionedSingleton,
+        PartitionedSingletonData,
+        "PARTSINGLE",
+        IdLogic::SingletonExt,
+        NestingLogic::Root
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct PartitionedIndexedSingletonData {
+        key: String,
+        payload: String,
+    }
+    dynamo_object!(
+        PartitionedIndexedSingleton,
+        PartitionedIndexedSingletonData,
+        "PARTINDEX",
+        IdLogic::IndexedSingletonExt(Box::new(
+            |data: &PartitionedIndexedSingletonData| Cow::Borrowed(&data.key)
+        )),
+        NestingLogic::Root
     );
 
     async fn build_util(mock_backend: MockDynamoBackend) -> DynamoUtil {
@@ -146,6 +176,22 @@ mod tests {
                 // values are skipped.
             },
         )
+    }
+
+    fn build_partitioned_placeholder(pk: &str, sk: &str, total: usize) -> HashMap<String, AttributeValue> {
+        collection! {
+            "pk".to_string() => AttributeValue::S(pk.to_string()),
+            "sk".to_string() => AttributeValue::S(sk.to_string()),
+            "ext_total_partitions".to_string() => AttributeValue::N(total.to_string()),
+        }
+    }
+
+    fn build_partitioned_item(pk: &str, sk: &str, partition: &str) -> HashMap<String, AttributeValue> {
+        collection! {
+            "pk".to_string() => AttributeValue::S(pk.to_string()),
+            "sk".to_string() => AttributeValue::S(sk.to_string()),
+            COLLAPSE_RESERVED_KEY.to_string() => AttributeValue::S(partition.to_string()),
+        }
     }
 
     #[tokio::test]
@@ -454,6 +500,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_query_collapses_partitioned_items() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("@PARTSINGLE".to_string())
+                }),
+            )
+            .returning(|_, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2),
+                        build_partitioned_item("ROOT", "@PARTSINGLE+0", "{\"val\":\"hel"),
+                        build_partitioned_item("ROOT", "@PARTSINGLE+1", "lo\",\"num\":7}"),
+                    ]))
+                    .build()])
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .query::<PartitionedSingleton>(
+                None,
+                PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: "@PARTSINGLE".to_string(),
+                },
+                DynamoQueryMatchType::BeginsWith,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id.pk, "ROOT");
+        assert_eq!(result[0].id.sk, "@PARTSINGLE");
+        assert_eq!(result[0].data.val, "hello");
+        assert_eq!(result[0].data.num, 7);
+        assert_eq!(result[0].auto_fields, AutoFields::default());
+    }
+
+    #[tokio::test]
     async fn test_get_item() {
         let mut backend = MockDynamoBackend::new();
         backend
@@ -488,6 +579,47 @@ mod tests {
         assert_eq!(item.sk(), "GROUP#123#TEST#2");
         assert_eq!(item.data.val_non_null, "high_sort".to_string());
         assert_eq!(item.data.val_nullable, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_item_partitioned_singleton_uses_query_and_collapses() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("@PARTSINGLE".to_string())
+                }),
+            )
+            .returning(|_, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2),
+                        build_partitioned_item("ROOT", "@PARTSINGLE+0", "{\"val\":\"hel"),
+                        build_partitioned_item("ROOT", "@PARTSINGLE+1", "lo\",\"num\":7}"),
+                    ]))
+                    .build()])
+            });
+
+        let util = build_util(backend).await;
+        let result = util
+            .get_item::<PartitionedSingleton>(PkSk {
+                pk: "ROOT".to_string(),
+                sk: "@PARTSINGLE".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let item = result.unwrap();
+        assert_eq!(item.id.pk, "ROOT");
+        assert_eq!(item.id.sk, "@PARTSINGLE");
+        assert_eq!(item.data.val, "hello");
+        assert_eq!(item.data.num, 7);
+        assert_eq!(item.auto_fields, AutoFields::default());
     }
 
     #[tokio::test]
@@ -638,6 +770,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_item_partitioned_singleton_overwrites_stale_partitions() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
+                }),
+                eq(Some("pk, ext_total_partitions".to_string())),
+            )
+            .returning(|_, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "ext_total_partitions".to_string() => AttributeValue::N("3".to_string()),
+                    }))
+                    .build())
+            });
+        backend
+            .expect_batch_delete_item()
+            .with(
+                eq("my_table".to_string()),
+                eq(vec![collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("@PARTSINGLE+2".to_string()),
+                }]),
+            )
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                table == "my_table"
+                    && items.len() == 3
+                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE")
+                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE+0")
+                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE+1")
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        let result = util
+            .create_item::<PartitionedSingleton>(
+                PkSk::root(),
+                PartitionedSingletonData {
+                    val: "x".repeat(350_000),
+                    num: 7,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.id,
+            PkSk {
+                pk: "ROOT".to_string(),
+                sk: "@PARTSINGLE".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
     async fn test_batch_create_item() {
         let mut backend = MockDynamoBackend::new();
         backend
@@ -688,6 +883,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_batch_create_item_partitioned_indexed_singleton_flattens_writes() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item()
+            .times(2)
+            .returning(|_, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
+        backend
+            .expect_batch_put_item()
+            .withf(|table, items| {
+                table == "my_table"
+                    && items.len() == 4
+                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[a]")
+                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[a]+0")
+                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[b]")
+                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[b]+0")
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        let result = util
+            .batch_create_item::<PartitionedIndexedSingleton>(
+                PkSk::root(),
+                vec![
+                    PartitionedIndexedSingletonData {
+                        key: "a".to_string(),
+                        payload: "one".to_string(),
+                    },
+                    PartitionedIndexedSingletonData {
+                        key: "b".to_string(),
+                        payload: "two".to_string(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].id.sk, "@PARTINDEX[a]");
+        assert_eq!(result[1].id.sk, "@PARTINDEX[b]");
     }
 
     #[tokio::test]
@@ -776,6 +1013,27 @@ mod tests {
 
         let result = util.update_item(&update_item).await.unwrap();
         assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_partitioned_singleton_rejected() {
+        let backend = MockDynamoBackend::new();
+        let util = build_util(backend).await;
+        let err = util
+            .update_item(&PartitionedSingleton {
+                id: PkSk {
+                    pk: "ROOT".to_string(),
+                    sk: "@PARTSINGLE".to_string(),
+                },
+                data: PartitionedSingletonData {
+                    val: "hello".to_string(),
+                    num: 1,
+                },
+                auto_fields: AutoFields::default(),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Update-style operations are not supported"));
     }
 
     #[tokio::test]
@@ -1034,6 +1292,57 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_item_partitioned_singleton_deletes_placeholder_and_partitions() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
+                }),
+                eq(Some("pk, ext_total_partitions".to_string())),
+            )
+            .returning(|_, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "ext_total_partitions".to_string() => AttributeValue::N("2".to_string()),
+                    }))
+                    .build())
+            });
+        backend
+            .expect_batch_delete_item()
+            .with(
+                eq("my_table".to_string()),
+                eq(vec![
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
+                    },
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTSINGLE+0".to_string()),
+                    },
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTSINGLE+1".to_string()),
+                    },
+                ]),
+            )
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        util.delete_item::<PartitionedSingleton>(PkSk {
+            pk: "ROOT".to_string(),
+            sk: "@PARTSINGLE".to_string(),
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

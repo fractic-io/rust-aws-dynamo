@@ -44,19 +44,19 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: @LABEL
     Singleton,
 
-    /// A partitioned Singleton.
+    /// A variant of `Singleton` that supports large objects.
+    ///
+    /// Auto-splits the given data into partitions, allowing storage of objects
+    /// exceeding the max Dynamo item size. Splitting and re-assembling is
+    /// handled behind the scenes, and the client-facing interface is the same
+    /// as for regular Singletons.
     ///
     /// WARNING: When using this ID logic, each item contains only a single '##'
     /// key with the object partition as a string. As such, no GSIs or
     /// property-based Dynamo operations are possible.
     ///
-    /// Auto-splits the given data into partitions if necessary, allowing
-    /// storage of objects exceeding the max Dynamo item size. Splitting and
-    /// re-assembling is handled behind the scenes, and the client-facing
-    /// interface is the same as for regular Singletons.
-    ///
-    /// It is safe to switch an existing Singleton to SingletonExt (but not in
-    /// reverse).
+    /// It is safe to switch an existing `Singleton` to `SingletonExt`, but not
+    /// in reverse.
     ///
     /// <new-obj-id>: @LABEL+N
     SingletonExt,
@@ -69,18 +69,18 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: @LABEL[<key>]
     IndexedSingleton(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 
-    /// A partitioned IndexedSingleton.
+    /// A variant of `IndexedSingleton` that supports large objects.
+    ///
+    /// Like `SingletonExt`, splitting and re-assembling is handled behind the
+    /// scenes, and the client-facing interface is the same as for regular
+    /// IndexedSingletons.
     ///
     /// WARNING: When using this ID logic, each item contains only a single '##'
     /// key with the object partitions as a string. As such, no GSIs or
     /// property-based Dynamo operations are possible.
     ///
-    /// Like SingletonExt, splitting and re-assembling is handled behind the
-    /// scenes, and the client-facing interface is the same as for regular
-    /// IndexedSingletons.
-    ///
-    /// It is safe to switch an existing IndexedSingleton to IndexedSingletonExt
-    /// (but not in reverse).
+    /// It is safe to switch an existing `IndexedSingleton` to
+    /// `IndexedSingletonExt`, but not in reverse.
     ///
     /// <new-obj-id>: @LABEL[<key>]+N
     IndexedSingletonExt(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),

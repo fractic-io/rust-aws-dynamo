@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use aws_sdk_dynamodb::types::AttributeValue;
-use fractic_server_error::{define_internal_error, ServerError};
+use fractic_server_error::ServerError;
 use serde::Serialize;
 
 use crate::{

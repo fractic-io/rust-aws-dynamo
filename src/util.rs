@@ -34,7 +34,7 @@ use crate::{
             build_partition_write_plan, collapse_partitioned_items, expand_partition_delete_ids,
             ext_base_id, is_partitioned_id_logic,
         },
-        expand_helpers::{build_expandable_batch_items, expand_batched_items},
+        expand_helpers::{build_expandable_batch_maps, expand_batched_items},
         id_relations::{child_search_prefix, validate_id, validate_parent_id},
         update_helpers::CmpOp,
     },
@@ -1053,7 +1053,7 @@ impl DynamoUtil {
         // For batch-optimized ID logic, group the data into expandable batches.
         // -------------------------------------------------------------------
         req_not_none!(batch_size, CriticalError);
-        let maps = build_expandable_batch_items::<T>(parent_id, data, batch_size)?;
+        let maps = build_expandable_batch_maps::<T>(parent_id, data, batch_size)?;
 
         self.raw_batch_put_item(maps).await
     }

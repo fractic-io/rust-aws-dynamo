@@ -45,7 +45,7 @@ pub(crate) fn expand_batched_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
 // Write logic.
 // ----------------------------------------------------------------------------
 
-pub(crate) fn build_expandable_batch_items<T: DynamoObject>(
+pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
     parent_id: &PkSk,
     data: Vec<T::Data>,
     batch_size: usize,

@@ -18,6 +18,7 @@ use crate::{
     },
 };
 
+/// Technical limit is 400KB, so use 300KB to leave a buffer for auto-fields.
 const MAX_PARTITION_BYTES: usize = 300 * 1024;
 
 // Core structs.

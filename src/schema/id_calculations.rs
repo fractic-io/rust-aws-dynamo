@@ -151,7 +151,9 @@ pub(crate) fn get_ext_index(sk: &str) -> Option<usize> {
         .take_while(|(_, c)| c.is_ascii_digit())
         .last()
         .map(|(idx, _)| idx)?;
-    if trailing_digits_search == 0 || !matches!(sk.as_bytes().get(trailing_digits_search - 1), Some(b'+')) {
+    if trailing_digits_search == 0
+        || !matches!(sk.as_bytes().get(trailing_digits_search - 1), Some(b'+'))
+    {
         return None;
     }
     sk[trailing_digits_search..].parse::<usize>().ok()
@@ -285,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn test_strip_ext_partition_suffix() {
+    fn test_strip_ext_suffix() {
         assert_eq!(strip_ext_suffix("@SINGLTN"), "@SINGLTN");
         assert_eq!(strip_ext_suffix("@SINGLTN+0"), "@SINGLTN");
         assert_eq!(
@@ -295,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_ext_partition_index() {
+    fn test_get_ext_index() {
         assert_eq!(get_ext_index("@SINGLTN"), None);
         assert_eq!(get_ext_index("@SINGLTN+0"), Some(0));
         assert_eq!(get_ext_index("PARENT#1#@FAMILY[key]+12"), Some(12));

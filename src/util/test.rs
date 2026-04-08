@@ -1711,7 +1711,7 @@ mod tests {
         backend
             .expect_query()
             .withf(|table, _index, _cond, _vals, projection| {
-                table == "my_table" && projection.is_none()
+                table == "my_table" && projection.as_deref() == Some("pk, sk")
             })
             .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
@@ -1808,7 +1808,7 @@ mod tests {
         backend
             .expect_query()
             .withf(|table, _index, _cond, _vals, projection| {
-                table == "my_table" && projection.is_none()
+                table == "my_table" && projection.as_deref() == Some("pk, sk")
             })
             .returning(|_, _, _, _, _| {
                 Ok(vec![
@@ -1904,7 +1904,7 @@ mod tests {
         backend
             .expect_query()
             .withf(|table, _index, _cond, _vals, projection| {
-                table == "my_table" && projection.is_none()
+                table == "my_table" && projection.as_deref() == Some("pk, sk")
             })
             .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()

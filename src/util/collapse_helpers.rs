@@ -21,8 +21,8 @@ const PARTITION_COUNT_KEY: &str = "#!"; // WARNING: Also hardcoded
                                         // in `ExtPlaceholder` struct.
 const MAX_PARTITION_BYTES: usize = 300 * 1024;
 
-/// Core structs.
-/// ---------------------------------------------------------------------------
+// Core structs.
+// ----------------------------------------------------------------------------
 
 /// Placeholder stored at logical item's ID to indicate object data is spread
 /// across multiple partitions.
@@ -43,8 +43,8 @@ struct CollapsablePartition {
     partition: String,
 }
 
-/// ID logic.
-/// ---------------------------------------------------------------------------
+// ID logic.
+// ----------------------------------------------------------------------------
 
 pub(crate) fn is_partitioned_id_logic<T: DynamoObject>() -> bool {
     matches!(
@@ -61,9 +61,10 @@ pub(crate) fn ext_base_id(id: &PkSk) -> PkSk {
     }
 }
 
-/// Read logic.
-/// ---------------------------------------------------------------------------
+// Read logic.
+// ----------------------------------------------------------------------------
 
+/// Fetches the partition placeholder item to check partition count.
 async fn fetch_num_partitions(
     util: &DynamoUtil,
     base_id: &PkSk,
@@ -200,11 +201,15 @@ pub(crate) fn collapse_partitioned_items(
     Ok(collapsed)
 }
 
-/// Write logic.
-/// ---------------------------------------------------------------------------
+// Write logic.
+// ----------------------------------------------------------------------------
 
 pub(crate) struct PartitionWritePlan {
+    /// New items to write (includes partition placeholder and all partitions).
     pub put_items: Vec<DynamoMap>,
+
+    /// List of lingering items that will not be cleanly overwritten by our new
+    /// put items. These should be deleted to perform a clean overwrite.
     pub stale_delete_ids: Vec<PkSk>,
 }
 
@@ -227,6 +232,8 @@ fn split_json_partitions(serialized: &str) -> Vec<String> {
     parts
 }
 
+/// Auto-field overrides written to partition placeholder and all partition
+/// items. That way fields like TTL will still take effect consistently.
 fn common_overrides(
     now: &Timestamp,
     sort: Option<f64>,
@@ -240,6 +247,7 @@ fn common_overrides(
     ]
 }
 
+/// Uses the minimum number of digits to represent all partition indices.
 fn build_partition_ids(base_id: &PkSk, total_partitions: usize) -> Vec<PkSk> {
     fn partition_digits(total_partitions: usize) -> usize {
         match total_partitions {
@@ -262,6 +270,7 @@ fn build_partition_ids(base_id: &PkSk, total_partitions: usize) -> Vec<PkSk> {
         .collect()
 }
 
+/// NOTE: Internally runs a DB fetch to check existing partition count (if any).
 pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
     util: &DynamoUtil,
     logical_id: &PkSk,
@@ -290,6 +299,7 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
         })
         .unwrap_or_default();
 
+    // Build partition placeholder.
     let now = Timestamp::now();
     let mut put_items = Vec::with_capacity(total_partitions + 1);
     put_items.push(
@@ -303,6 +313,8 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
         )?
         .0,
     );
+
+    // Build partition items.
     for (partition_id, partition) in new_partition_ids
         .into_iter()
         .zip(partition_strings.into_iter())
@@ -324,8 +336,8 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
     })
 }
 
-/// Delete logic.
-/// ---------------------------------------------------------------------------
+// Delete logic.
+// ----------------------------------------------------------------------------
 
 pub(crate) async fn expand_partition_delete_ids<T: DynamoObject>(
     util: &DynamoUtil,

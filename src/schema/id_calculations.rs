@@ -145,16 +145,16 @@ pub(crate) fn strip_ext_suffix(sk: &str) -> &str {
 
 /// Get '...+N' ext-partition suffix index.
 pub(crate) fn get_ext_index(sk: &str) -> Option<usize> {
-    let digits_start = sk
+    let trailing_digits_search = sk
         .char_indices()
         .rev()
         .take_while(|(_, c)| c.is_ascii_digit())
         .last()
         .map(|(idx, _)| idx)?;
-    if digits_start == 0 || !matches!(sk.as_bytes().get(digits_start - 1), Some(b'+')) {
+    if trailing_digits_search == 0 || !matches!(sk.as_bytes().get(trailing_digits_search - 1), Some(b'+')) {
         return None;
     }
-    sk[digits_start..].parse::<usize>().ok()
+    sk[trailing_digits_search..].parse::<usize>().ok()
 }
 
 // Parsing helpers.

@@ -24,9 +24,8 @@ define_client_error!(
 );
 define_client_error!(
     DynamoInvalidExtIdUsage,
-    "Property-level operations (such as update_item) are not supported for
-    ext-partitioned items (ex. items with IdLogic::SingletonExt). Use
-    create/delete operations instead."
+    "Property-level operations (such as update_item) are not supported for ext-partitioned items \
+     (ex. items with IdLogic::SingletonExt). Use create/delete operations instead."
 );
 define_client_error!(
     DynamoInvalidParent,

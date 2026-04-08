@@ -1010,8 +1010,10 @@ impl DynamoUtil {
             .into_iter()
             .map(|c| c.id().clone())
             .collect::<HashSet<_>>();
-        self.raw_batch_delete_ids(children_ids.into_iter().collect())
-            .await
+        self.raw_batch_delete_ids(
+            expand_partition_delete_ids::<T>(self, children_ids.into_iter().collect()).await?,
+        )
+        .await
     }
 
     /// Replaces *all* children of type T on the parent.

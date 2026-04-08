@@ -75,11 +75,7 @@ async fn fetch_num_partitions(
     ]);
     let response = util
         .backend
-        .get_item(
-            util.table.clone(),
-            key,
-            Some(format!("pk, {}", COLLAPSE_PLACEHOLDER_RESERVED_KEY)),
-        )
+        .get_item(util.table.clone(), key, None)
         .await
         .map_err(|e| DynamoCalloutError::with_debug(&e))?;
     Ok(response.item.and_then(|item| {
@@ -95,10 +91,7 @@ async fn fetch_num_partitions_batch(
     base_ids: &[PkSk],
 ) -> Result<HashMap<PkSk, usize>, ServerError> {
     let items = util
-        .raw_batch_get_ids(
-            base_ids.to_vec(),
-            Some(format!("pk, sk, {}", COLLAPSE_PLACEHOLDER_RESERVED_KEY)),
-        )
+        .raw_batch_get_ids(base_ids.to_vec(), None)
         .await?;
     let mut counts = HashMap::new();
     for item in items {

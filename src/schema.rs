@@ -44,24 +44,6 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <new-obj-id>: @LABEL
     Singleton,
 
-    /// A variant of `Singleton` that supports large objects.
-    ///
-    /// Auto-splits the Singleton into partitions, allowing storage of objects
-    /// exceeding the max Dynamo item size. Splitting and re-assembling is
-    /// handled behind the scenes, and the client-facing interface is the same
-    /// as for regular Singletons.
-    ///
-    /// WARNING: When using this ID logic, each item contains only a single '##'
-    /// key with the object partition as a string. As such, no GSIs or
-    /// property-based Dynamo operations are possible.
-    ///
-    /// It is safe to switch an existing `Singleton` to `SingletonExt`, but not
-    /// in reverse.
-    ///
-    /// <placeholder>: @LABEL
-    /// <partition-ids>: @LABEL+N
-    SingletonExt,
-
     /// Acts as a kind of map, where the key (determined by a given field in the
     /// object) is included in the ID so it can be efficiently queried.
     /// Subsequent writes for objects with the same key overwrite the existing
@@ -69,24 +51,6 @@ pub enum IdLogic<T: DynamoObjectData> {
     ///
     /// <new-obj-id>: @LABEL[<key>]
     IndexedSingleton(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
-
-    /// A variant of `IndexedSingleton` that supports large objects via
-    /// partitioning.
-    ///
-    /// Like `SingletonExt`, splitting and re-assembling is handled behind the
-    /// scenes, and the client-facing interface is the same as for regular
-    /// IndexedSingletons.
-    ///
-    /// WARNING: When using this ID logic, each item contains only a single '##'
-    /// key with the object partitions as a string. As such, no GSIs or
-    /// property-based Dynamo operations are possible.
-    ///
-    /// It is safe to switch an existing `IndexedSingleton` to
-    /// `IndexedSingletonExt`, but not in reverse.
-    ///
-    /// <placeholder>: @LABEL[<key>]
-    /// <partition-ids>: @LABEL[<key>]+N
-    IndexedSingletonExt(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 
     /// Efficient batch-only access.
     ///
@@ -110,6 +74,50 @@ pub enum IdLogic<T: DynamoObjectData> {
         /// Dynamo's 400KB max item size. Must be greater than 0.
         batch_size: usize,
     },
+
+    /// A variant of `Singleton` that supports large objects via partitioning.
+    ///
+    /// Auto-splits the Singleton into partitions, allowing storage of objects
+    /// exceeding the max Dynamo item size. Splitting and re-assembling is
+    /// handled behind the scenes, and the client-facing interface is the same
+    /// as for regular Singletons.
+    ///
+    /// WARNING 1: When using this ID logic, each item contains only a single
+    /// '##' key with the object partition as a string. As such, no GSIs or
+    /// property-based Dynamo operations are possible.
+    ///
+    /// WARNING 2: Since a single write operation internally must touch multiple
+    /// rows (and DynamoDB doesn't support transactions), there is a risk that
+    /// reads performed during this time may see an invalid intermediate state.
+    ///
+    /// It is safe to switch an existing `Singleton` to `SingletonExt`, but not
+    /// in reverse.
+    ///
+    /// <placeholder>: @LABEL
+    /// <partition-ids>: @LABEL+N
+    SingletonExt,
+
+    /// A variant of `IndexedSingleton` that supports large objects via
+    /// partitioning.
+    ///
+    /// Like `SingletonExt`, splitting and re-assembling is handled behind the
+    /// scenes, and the client-facing interface is the same as for regular
+    /// IndexedSingletons.
+    ///
+    /// WARNING 1: When using this ID logic, each item contains only a single
+    /// '##' key with the object partitions as a string. As such, no GSIs or
+    /// property-based Dynamo operations are possible.
+    ///
+    /// WARNING 2: Since a single write operation internally must touch multiple
+    /// rows (and DynamoDB doesn't support transactions), there is a risk that
+    /// reads performed during this time may see an invalid intermediate state.
+    ///
+    /// It is safe to switch an existing `IndexedSingleton` to
+    /// `IndexedSingletonExt`, but not in reverse.
+    ///
+    /// <placeholder>: @LABEL[<key>]
+    /// <partition-ids>: @LABEL[<key>]+N
+    IndexedSingletonExt(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 }
 
 #[derive(Debug, PartialEq)]

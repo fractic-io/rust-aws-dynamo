@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use aws_sdk_dynamodb::types::AttributeValue;
-use fractic_server_error::ServerError;
+use fractic_server_error::{define_internal_error, ServerError};
 use serde::Serialize;
 
 use crate::{
-    errors::{DynamoCalloutError, DynamoInvalidOperation},
+    errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoInvalidPartitioning},
     schema::{
         id_calculations::{get_ext_index, strip_ext_suffix},
         parsing::{build_dynamo_map_internal, deserialize_dynamo_map_partitions},
@@ -89,6 +89,11 @@ async fn fetch_num_partitions(
     }))
 }
 
+/// Collapses queried placeholder and partition rows back into their logical
+/// items while preserving the original query order.
+///
+/// Returns an error when a partitioned item's placeholder or partitions are
+/// incomplete or malformed in a way that should be impossible for valid data.
 pub(crate) fn collapse_partitioned_items(
     items: Vec<DynamoMap>,
 ) -> Result<Vec<DynamoMap>, ServerError> {
@@ -128,12 +133,12 @@ pub(crate) fn collapse_partitioned_items(
             OrderedEntry::Item(item) => collapsed.push(item),
             OrderedEntry::Partitioned(base_id) => {
                 let placeholder = placeholder_groups.remove(&base_id).ok_or_else(|| {
-                    DynamoInvalidOperation::new(
+                    DynamoInvalidPartitioning::new(
                         "partitioned item is missing its ext placeholder row",
                     )
                 })?;
                 let mut partitions = partition_groups.remove(&base_id).ok_or_else(|| {
-                    DynamoInvalidOperation::new(
+                    DynamoInvalidPartitioning::new(
                         "partitioned item is missing one or more ext partitions",
                     )
                 })?;
@@ -148,19 +153,16 @@ pub(crate) fn collapse_partitioned_items(
                     .get(PARTITION_COUNT_KEY)
                     .and_then(|v| v.as_n().ok())
                     .ok_or_else(|| {
-                        DynamoInvalidOperation::new(
-                            "ext placeholder row was missing ext_total_partitions",
+                        DynamoInvalidPartitioning::new(
+                            "ext placeholder row was missing partition count",
                         )
                     })?
                     .parse::<usize>()
                     .map_err(|e| {
-                        DynamoInvalidOperation::with_debug(
-                            "failed to parse ext_total_partitions",
-                            &e,
-                        )
+                        DynamoInvalidPartitioning::with_debug("failed to parse partition count", &e)
                     })?;
                 if partitions.len() != expected_total {
-                    return Err(DynamoInvalidOperation::new(&format!(
+                    return Err(DynamoInvalidPartitioning::new(&format!(
                         "partitioned item '{}' expected {} partitions but query returned {}",
                         base_id,
                         expected_total,
@@ -175,8 +177,8 @@ pub(crate) fn collapse_partitioned_items(
                             .and_then(|v| v.as_s().ok())
                             .map(|v| v.to_string())
                             .ok_or_else(|| {
-                                DynamoInvalidOperation::new(
-                                    "ext partition row was missing its ## field",
+                                DynamoInvalidPartitioning::new(
+                                    "ext partition row was missing its data field",
                                 )
                             })
                     })
@@ -190,7 +192,7 @@ pub(crate) fn collapse_partitioned_items(
     }
 
     if !partition_groups.is_empty() || !placeholder_groups.is_empty() {
-        return Err(DynamoInvalidOperation::new(
+        return Err(DynamoInvalidPartitioning::new(
             "partitioned items could not be fully collapsed from query results",
         ));
     }

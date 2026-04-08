@@ -18,8 +18,8 @@ use fractic_server_error::{CriticalError, ServerError};
 
 use crate::{
     errors::{
-        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidOperation,
-        DynamoInvalidPartitionedUpdateUsage, DynamoNotFound, DynamoUnexpectedItemCount,
+        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidExtIdUsage,
+        DynamoInvalidOperation, DynamoNotFound, DynamoUnexpectedItemCount,
     },
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
@@ -677,7 +677,7 @@ impl DynamoUtil {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         if is_partitioned_id_logic::<T>() {
-            return Err(DynamoInvalidPartitionedUpdateUsage::new());
+            return Err(DynamoInvalidExtIdUsage::new());
         }
         self.update_item_internal(
             object,
@@ -707,7 +707,7 @@ impl DynamoUtil {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         if is_partitioned_id_logic::<T>() {
-            return Err(DynamoInvalidPartitionedUpdateUsage::new());
+            return Err(DynamoInvalidExtIdUsage::new());
         }
         let object_before = self.get_item::<T>(id.clone()).await?;
         let (map_before, existance_condition) = match object_before {
@@ -749,7 +749,7 @@ impl DynamoUtil {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
         if is_partitioned_id_logic::<T>() {
-            return Err(DynamoInvalidPartitionedUpdateUsage::new());
+            return Err(DynamoInvalidExtIdUsage::new());
         }
 
         // Attribute comparison conditions.

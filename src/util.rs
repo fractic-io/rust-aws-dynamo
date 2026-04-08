@@ -1005,12 +1005,21 @@ impl DynamoUtil {
     ) -> Result<(), ServerError> {
         // Ensure we dedup IDs, since query logic expands batches internally.
         let children_ids: HashSet<PkSk> = self
+            // Eventually we could make this more efficient by only projecting
+            // pk/sk in this query.
             .query_all::<T>(parent_id)
             .await?
             .into_iter()
             .map(|c| c.id().clone())
             .collect::<HashSet<_>>();
         self.raw_batch_delete_ids(
+            // Note on partition case: This is not really the most efficient,
+            // since we've already fetched all the partitions above and now
+            // we're fetching the placeholder items again to expand partition
+            // IDs. However, the query_all call already collapsed our partitions
+            // which dropped all partition ID information. For now this is fine,
+            // but if there is ever a need to make this more efficient we could
+            // skip this duplicate fetch.
             expand_partition_delete_ids::<T>(self, children_ids.into_iter().collect()).await?,
         )
         .await

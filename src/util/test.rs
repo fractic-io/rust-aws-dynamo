@@ -4,8 +4,8 @@ mod tests {
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, COLLAPSE_RESERVED_KEY,
-        EXPAND_RESERVED_KEY,
+        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL,
+        COLLAPSE_COUNT_RESERVED_KEY, COLLAPSE_RESERVED_KEY, EXPAND_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
@@ -186,7 +186,7 @@ mod tests {
         collection! {
             "pk".to_string() => AttributeValue::S(pk.to_string()),
             "sk".to_string() => AttributeValue::S(sk.to_string()),
-            "#!".to_string() => AttributeValue::N(total.to_string()),
+            COLLAPSE_COUNT_RESERVED_KEY.to_string() => AttributeValue::N(total.to_string()),
         }
     }
 
@@ -788,13 +788,13 @@ mod tests {
                     "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }),
-                eq(Some("pk, #!".to_string())),
+                eq(Some(format!("pk, {}", COLLAPSE_COUNT_RESERVED_KEY))),
             )
             .returning(|_, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
                         "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "#!".to_string() => AttributeValue::N("3".to_string()),
+                        COLLAPSE_COUNT_RESERVED_KEY.to_string() => AttributeValue::N("3".to_string()),
                     }))
                     .build())
             });
@@ -1329,7 +1329,7 @@ mod tests {
                     "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }]),
-                eq(Some("pk, sk, #!".to_string())),
+                eq(Some(format!("pk, sk, {}", COLLAPSE_COUNT_RESERVED_KEY))),
             )
             .returning(|_, _, _| {
                 Ok(BatchGetItemOutput::builder()
@@ -1385,7 +1385,7 @@ mod tests {
                         "sk".to_string() => AttributeValue::S("@PARTINDEX[b]".to_string()),
                     },
                 ]),
-                eq(Some("pk, sk, #!".to_string())),
+                eq(Some(format!("pk, sk, {}", COLLAPSE_COUNT_RESERVED_KEY))),
             )
             .returning(|_, _, _| {
                 Ok(BatchGetItemOutput::builder()

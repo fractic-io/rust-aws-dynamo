@@ -32,7 +32,7 @@ use crate::{
     util::{
         collapse_helpers::{
             build_partition_write_plan, collapse_partitioned_items, expand_partition_delete_ids,
-            ext_base_id, is_partitioned_id_logic,
+            ext_base_id, fetch_num_partitions, fetch_num_partitions_batch, is_partitioned_id_logic,
         },
         expand_helpers::{build_expandable_batch_maps, expand_batched_items},
         id_relations::{child_search_prefix, validate_id, validate_parent_id},
@@ -350,7 +350,13 @@ impl DynamoUtil {
         }
         let response = self
             .backend
-            .query(self.table.clone(), index_name, condition, attribute_values)
+            .query(
+                self.table.clone(),
+                index_name,
+                condition,
+                attribute_values,
+                None,
+            )
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
 
@@ -469,7 +475,14 @@ impl DynamoUtil {
         let ttl: Option<i64> = options.ttl.map(|ttl| ttl.compute_timestamp());
         if is_partitioned_id_logic::<T>() {
             let logical_id = ext_base_id(&PkSk { pk, sk });
-            let plan = build_partition_write_plan::<T>(self, &logical_id, &data, sort, ttl).await?;
+            let num_existing_partitions = fetch_num_partitions(self, &logical_id).await?;
+            let plan = build_partition_write_plan::<T>(
+                &logical_id,
+                &data,
+                sort,
+                ttl,
+                num_existing_partitions,
+            )?;
             self.raw_batch_delete_ids(plan.stale_delete_ids).await?;
             self.raw_batch_put_item(plan.put_items).await?;
             Ok(T::new(logical_id, data))
@@ -526,23 +539,43 @@ impl DynamoUtil {
             return Ok(Vec::new());
         }
         if is_partitioned_id_logic::<T>() {
+            let pending_writes = data_and_options
+                .into_iter()
+                .map(|(data, options)| {
+                    let PkSk { pk, sk } = options
+                        .token
+                        .map_or_else(|| self.create_token::<T>(parent_id, &data), |t| Ok(t))?
+                        .id;
+                    Ok((
+                        ext_base_id(&PkSk { pk, sk }),
+                        data,
+                        options.custom_sort,
+                        options.ttl.map(|ttl| ttl.compute_timestamp()),
+                    ))
+                })
+                .collect::<Result<Vec<_>, ServerError>>()?;
+
+            let mut unique_logical_ids = Vec::new();
+            let mut seen_logical_ids = HashSet::new();
+            for (logical_id, _, _, _) in &pending_writes {
+                if seen_logical_ids.insert(logical_id.clone()) {
+                    unique_logical_ids.push(logical_id.clone());
+                }
+            }
+            let existing_partition_counts =
+                fetch_num_partitions_batch(self, &unique_logical_ids).await?;
+
             let mut items = Vec::new();
             let mut stale_delete_ids = Vec::new();
             let mut created = Vec::new();
-            for (data, options) in data_and_options.into_iter() {
-                let PkSk { pk, sk } = options
-                    .token
-                    .map_or_else(|| self.create_token::<T>(parent_id, &data), |t| Ok(t))?
-                    .id;
-                let logical_id = ext_base_id(&PkSk { pk, sk });
+            for (logical_id, data, sort, ttl) in pending_writes.into_iter() {
                 let plan = build_partition_write_plan::<T>(
-                    self,
                     &logical_id,
                     &data,
-                    options.custom_sort,
-                    options.ttl.map(|ttl| ttl.compute_timestamp()),
-                )
-                .await?;
+                    sort,
+                    ttl,
+                    existing_partition_counts.get(&logical_id).copied(),
+                )?;
                 items.extend(plan.put_items);
                 stale_delete_ids.extend(plan.stale_delete_ids);
                 created.push(T::new(logical_id, data));
@@ -1003,26 +1036,35 @@ impl DynamoUtil {
         &self,
         parent_id: &PkSk,
     ) -> Result<(), ServerError> {
-        // Ensure we dedup IDs, since query logic expands batches internally.
-        let children_ids: HashSet<PkSk> = self
-            // Eventually we could make this more efficient by only projecting
-            // pk/sk in this query.
-            .query_all::<T>(parent_id)
-            .await?
+        validate_parent_id::<T>(parent_id)?;
+        let search_prefix = child_search_prefix::<T>(parent_id);
+        let response = self
+            .backend
+            .query(
+                self.table.clone(),
+                None,
+                "pk = :pk_val AND begins_with(sk, :sk_val)".to_string(),
+                collection! {
+                    ":pk_val".to_string() => AttributeValue::S(search_prefix.pk),
+                    ":sk_val".to_string() => AttributeValue::S(search_prefix.sk),
+                },
+                Some("pk, sk".to_string()),
+            )
+            .await
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+        let ids: HashSet<PkSk> = response
             .into_iter()
-            .map(|c| c.id().clone())
-            .collect::<HashSet<_>>();
-        self.raw_batch_delete_ids(
-            // Note on partition case: This is not really the most efficient,
-            // since we've already fetched all the partitions above and now
-            // we're fetching the placeholder items again to expand partition
-            // IDs. However, the query_all call already collapsed our partitions
-            // which dropped all partition ID information. For now this is fine,
-            // but if there is ever a need to make this more efficient we could
-            // skip this duplicate fetch.
-            expand_partition_delete_ids::<T>(self, children_ids.into_iter().collect()).await?,
-        )
-        .await
+            .flat_map(|page| page.items.unwrap_or_default().into_iter())
+            .filter_map(|item| {
+                let (pk, sk) =
+                    get_pk_sk_from_map(&item).expect("query result item did not have pk/sk.");
+                match get_object_type(pk, sk) {
+                    Ok(label) if label == T::id_label() => Some(PkSk::from_map(&item)),
+                    _ => None,
+                }
+            })
+            .collect::<Result<HashSet<_>, ServerError>>()?;
+        self.raw_batch_delete_ids(ids.into_iter().collect()).await
     }
 
     /// Replaces *all* children of type T on the parent.

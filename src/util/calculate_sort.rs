@@ -208,8 +208,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
-            .withf(|_, _, _, _| true)
-            .returning(|_, _, _, _| {
+            .withf(|_, _, _, _, _| true)
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
@@ -248,8 +248,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
-            .withf(|_, _, _, _| true)
-            .returning(|_, _, _, _| {
+            .withf(|_, _, _, _, _| true)
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
@@ -288,8 +288,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
-            .withf(|_, _, _, _| true)
-            .returning(|_, _, _, _| {
+            .withf(|_, _, _, _, _| true)
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
@@ -333,8 +333,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
-            .withf(|_, _, _, _| true)
-            .returning(|_, _, _, _| {
+            .withf(|_, _, _, _, _| true)
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_dynamo_item("ROOT", "GROUP#123#TEST#1", Some(0.5)),
@@ -378,8 +378,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
-            .withf(|_, _, _, _| true)
-            .returning(|_, _, _, _| {
+            .withf(|_, _, _, _, _| true)
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder().set_items(Some(vec![])).build()])
             });
 

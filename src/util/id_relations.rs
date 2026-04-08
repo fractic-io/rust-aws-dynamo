@@ -2,11 +2,24 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoInvalidOperation,
-    schema::{id_calculations::append_child_sk, DynamoObject, IdLogic, NestingLogic, PkSk},
+    schema::{
+        id_calculations::{append_child_sk, strip_ext_suffix},
+        DynamoObject, IdLogic, NestingLogic, PkSk,
+    },
 };
 
 #[track_caller]
 pub fn validate_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError> {
+    if matches!(
+        T::id_logic(),
+        IdLogic::SingletonExt | IdLogic::IndexedSingletonExt(_)
+    ) && id.sk != strip_ext_suffix(&id.sk)
+    {
+        return Err(DynamoInvalidOperation::new(&format!(
+            "ID must be the logical ext item ID, not a partition row ID: '{}'",
+            id
+        )));
+    }
     if id.object_type()? != T::id_label() {
         return Err(DynamoInvalidOperation::new(&format!(
             "ID does not match object type; expected object type '{}', got ID '{}'",
@@ -230,6 +243,20 @@ mod tests {
         // “Any” variants never fail ----------------------------------------------
         assert!(validate_parent_id::<InlineChildOfAny>(&wrong_parent).is_ok());
         assert!(validate_parent_id::<TopLevelChildOfAny>(&wrong_parent).is_ok());
+    }
+
+    #[test]
+    fn test_validate_id_rejects_ext_partition_row_ids() {
+        assert!(validate_id::<InlineSingletonExt>(&PkSk {
+            pk: "P".into(),
+            sk: "S#@INLSINGLEEXT+0".into(),
+        })
+        .is_err());
+        assert!(validate_id::<InlineIndexedSingletonExt>(&PkSk {
+            pk: "P".into(),
+            sk: "S#@INLFAMEXT[key]+12".into(),
+        })
+        .is_err());
     }
 
     #[test]

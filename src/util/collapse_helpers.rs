@@ -65,7 +65,7 @@ pub(crate) fn ext_base_id(id: &PkSk) -> PkSk {
 // ----------------------------------------------------------------------------
 
 /// Fetches the partition placeholder item to check partition count.
-async fn fetch_num_partitions(
+pub(crate) async fn fetch_num_partitions(
     util: &DynamoUtil,
     base_id: &PkSk,
 ) -> Result<Option<usize>, ServerError> {
@@ -86,13 +86,11 @@ async fn fetch_num_partitions(
 }
 
 /// Batch version of `fetch_num_partitions`.
-async fn fetch_num_partitions_batch(
+pub(crate) async fn fetch_num_partitions_batch(
     util: &DynamoUtil,
     base_ids: &[PkSk],
 ) -> Result<HashMap<PkSk, usize>, ServerError> {
-    let items = util
-        .raw_batch_get_ids(base_ids.to_vec(), None)
-        .await?;
+    let items = util.raw_batch_get_ids(base_ids.to_vec(), None).await?;
     let mut counts = HashMap::new();
     for item in items {
         let id = PkSk::from_map(&item)?;
@@ -250,9 +248,8 @@ fn split_json_partitions(serialized: &str) -> Vec<String> {
     parts
 }
 
-/// Auto-field overrides written to partition placeholder and all partition
-/// items. That way fields like TTL will still take effect consistently.
-fn common_overrides(
+/// Auto-field overrides written to the partition placeholder item.
+fn placeholder_metadata(
     now: &Timestamp,
     sort: Option<f64>,
     ttl: Option<i64>,
@@ -263,6 +260,11 @@ fn common_overrides(
         (AUTO_FIELDS_SORT, Box::new(sort)),
         (AUTO_FIELDS_TTL, Box::new(ttl)),
     ]
+}
+
+/// Auto-field overrides written to each partition item.
+fn partition_metadata(ttl: Option<i64>) -> Vec<(&'static str, Box<dyn erased_serde::Serialize>)> {
+    vec![(AUTO_FIELDS_TTL, Box::new(ttl))]
 }
 
 /// Uses the minimum number of digits to represent all partition indices.
@@ -288,13 +290,12 @@ fn build_partition_ids(base_id: &PkSk, total_partitions: usize) -> Vec<PkSk> {
         .collect()
 }
 
-/// NOTE: Internally runs a DB fetch to check existing partition count (if any).
-pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
-    util: &DynamoUtil,
+pub(crate) fn build_partition_write_plan<T: DynamoObject>(
     logical_id: &PkSk,
     data: &T::Data,
     sort: Option<f64>,
     ttl: Option<i64>,
+    num_existing_partitions: Option<usize>,
 ) -> Result<PartitionWritePlan, ServerError> {
     let base_id = ext_base_id(logical_id);
     let serialized = serde_json::to_string(data).map_err(|e| {
@@ -303,8 +304,7 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
     let partition_strings = split_json_partitions(&serialized);
     let total_partitions = partition_strings.len();
     let new_partition_ids = build_partition_ids(&base_id, total_partitions);
-    let old_partition_total = fetch_num_partitions(util, &base_id).await?;
-    let stale_delete_ids = old_partition_total
+    let stale_delete_ids = num_existing_partitions
         .map(|old_total| {
             let new_partition_sks = new_partition_ids
                 .iter()
@@ -327,7 +327,7 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
             },
             Some(base_id.pk.clone()),
             Some(base_id.sk.clone()),
-            Some(common_overrides(&now, sort, ttl)),
+            Some(placeholder_metadata(&now, sort, ttl)),
         )?
         .0,
     );
@@ -342,7 +342,7 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
                 &CollapsablePartition { partition },
                 Some(base_id.pk.clone()),
                 Some(partition_id.sk),
-                Some(common_overrides(&now, sort, ttl)),
+                Some(partition_metadata(ttl)),
             )?
             .0,
         );

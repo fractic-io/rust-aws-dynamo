@@ -36,6 +36,7 @@ pub trait DynamoBackend: Send + Sync {
         index: Option<String>,
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
+        projection_expression: Option<String>,
     ) -> Result<Vec<QueryOutput>, SdkError<QueryError>>;
 
     async fn scan(&self, table_name: String) -> Result<Vec<ScanOutput>, SdkError<ScanError>>;
@@ -101,12 +102,14 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         index: Option<String>,
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
+        projection_expression: Option<String>,
     ) -> Result<Vec<QueryOutput>, SdkError<QueryError>> {
         self.query()
             .set_table_name(Some(table_name))
             .set_index_name(index)
             .set_key_condition_expression(Some(condition))
             .set_expression_attribute_values(Some(attribute_values))
+            .set_projection_expression(projection_expression)
             .into_paginator()
             .send()
             .try_collect()

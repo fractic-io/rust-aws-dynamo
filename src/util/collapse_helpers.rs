@@ -82,7 +82,6 @@ async fn fetch_num_partitions(
         )
         .await
         .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-
     Ok(response.item.and_then(|item| {
         item.get(COLLAPSE_COUNT_RESERVED_KEY)
             .and_then(|v| v.as_n().ok())
@@ -131,7 +130,7 @@ pub(crate) fn collapse_partitioned_items(
 
     let mut ordered_entries = Vec::new();
     let mut partition_groups: HashMap<PkSk, Vec<DynamoMap>> = HashMap::new();
-    let mut placeholder_groups: HashMap<PkSk, DynamoMap> = HashMap::new();
+    let mut placeholders: HashMap<PkSk, DynamoMap> = HashMap::new();
     let mut seen_partition_groups = HashSet::new();
 
     for item in items {
@@ -150,7 +149,7 @@ pub(crate) fn collapse_partitioned_items(
         if is_partition {
             partition_groups.entry(base_id).or_default().push(item);
         } else {
-            placeholder_groups.insert(base_id, item);
+            placeholders.insert(base_id, item);
         }
     }
 
@@ -159,7 +158,7 @@ pub(crate) fn collapse_partitioned_items(
         match entry {
             OrderedEntry::Item(item) => collapsed.push(item),
             OrderedEntry::Partitioned(base_id) => {
-                let placeholder = placeholder_groups.remove(&base_id).ok_or_else(|| {
+                let placeholder = placeholders.remove(&base_id).ok_or_else(|| {
                     DynamoInvalidPartitioning::new(
                         "partitioned item is missing its ext placeholder row",
                     )
@@ -218,7 +217,7 @@ pub(crate) fn collapse_partitioned_items(
         }
     }
 
-    if !partition_groups.is_empty() || !placeholder_groups.is_empty() {
+    if !partition_groups.is_empty() || !placeholders.is_empty() {
         return Err(DynamoInvalidPartitioning::new(
             "partitioned items could not be fully collapsed from query results",
         ));

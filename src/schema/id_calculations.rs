@@ -119,7 +119,7 @@ fn epoch_timestamp_16_chars() -> String {
 // ----------------------------------------------------------------------------
 
 pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
-    strip_ext_suffix(sk).contains('@')
+    sk.contains('@')
 }
 
 // Ext-partition logic.

@@ -127,21 +127,19 @@ pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
 
 /// Strip '...+N' ext-partition suffix.
 pub(crate) fn strip_ext_suffix(sk: &str) -> &str {
-    let digits_start = sk
+    let trailing_digits_search = sk
         .char_indices()
         .rev()
         .take_while(|(_, c)| c.is_ascii_digit())
         .last()
         .map(|(idx, _)| idx);
-    let Some(digits_start) = digits_start else {
-        return sk;
-    };
-    if digits_start == 0 {
-        return sk;
-    }
-    match sk.as_bytes().get(digits_start - 1) {
-        Some(b'+') => &sk[..digits_start - 1],
-        _ => sk,
+    match trailing_digits_search {
+        None => sk,
+        Some(start) if start == 0 => sk,
+        Some(start) => match sk.as_bytes().get(start - 1) {
+            Some(b'+') => &sk[..start - 1],
+            _ => sk,
+        },
     }
 }
 

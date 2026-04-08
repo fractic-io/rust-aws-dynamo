@@ -13,12 +13,11 @@ use crate::{
     },
     util::{
         metadata_helpers::WithMetadataFrom as _, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
-        AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, COLLAPSE_RESERVED_KEY,
+        AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, COLLAPSE_COUNT_RESERVED_KEY,
+        COLLAPSE_RESERVED_KEY,
     },
 };
 
-const PARTITION_COUNT_KEY: &str = "#!"; // WARNING: Also hardcoded
-                                        // in `ExtPlaceholder` struct.
 const MAX_PARTITION_BYTES: usize = 300 * 1024;
 
 // Core structs.
@@ -78,13 +77,13 @@ async fn fetch_num_partitions(
         .get_item(
             util.table.clone(),
             key,
-            Some(format!("pk, {}", PARTITION_COUNT_KEY)),
+            Some(format!("pk, {}", COLLAPSE_COUNT_RESERVED_KEY)),
         )
         .await
         .map_err(|e| DynamoCalloutError::with_debug(&e))?;
 
     Ok(response.item.and_then(|item| {
-        item.get(PARTITION_COUNT_KEY)
+        item.get(COLLAPSE_COUNT_RESERVED_KEY)
             .and_then(|v| v.as_n().ok())
             .and_then(|v| v.parse::<usize>().ok())
     }))
@@ -98,14 +97,14 @@ async fn fetch_num_partitions_batch(
     let items = util
         .raw_batch_get_ids(
             base_ids.to_vec(),
-            Some(format!("pk, sk, {}", PARTITION_COUNT_KEY)),
+            Some(format!("pk, sk, {}", COLLAPSE_COUNT_RESERVED_KEY)),
         )
         .await?;
     let mut counts = HashMap::new();
     for item in items {
         let id = PkSk::from_map(&item)?;
         let Some(count) = item
-            .get(PARTITION_COUNT_KEY)
+            .get(COLLAPSE_COUNT_RESERVED_KEY)
             .and_then(|v| v.as_n().ok())
             .and_then(|v| v.parse::<usize>().ok())
         else {
@@ -136,7 +135,7 @@ pub(crate) fn collapse_partitioned_items(
 
     for item in items {
         let is_partition = item.contains_key(COLLAPSE_RESERVED_KEY);
-        let is_placeholder = item.contains_key(PARTITION_COUNT_KEY);
+        let is_placeholder = item.contains_key(COLLAPSE_COUNT_RESERVED_KEY);
         if !is_partition && !is_placeholder {
             ordered_entries.push(OrderedEntry::Item(item));
             continue;
@@ -177,7 +176,7 @@ pub(crate) fn collapse_partitioned_items(
                 });
 
                 let expected_total = placeholder
-                    .get(PARTITION_COUNT_KEY)
+                    .get(COLLAPSE_COUNT_RESERVED_KEY)
                     .and_then(|v| v.as_n().ok())
                     .ok_or_else(|| {
                         DynamoInvalidPartitioning::new(

@@ -12,7 +12,7 @@ use crate::{
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
     util::{
-        expand_helpers::WithMetadataFrom as _, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
+        metadata_helpers::WithMetadataFrom as _, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
         AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, COLLAPSE_RESERVED_KEY,
     },
 };

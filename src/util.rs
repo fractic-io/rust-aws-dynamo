@@ -46,6 +46,7 @@ mod calculate_sort;
 mod collapse_helpers;
 mod expand_helpers;
 mod id_helpers;
+mod metadata_helpers;
 mod test;
 mod update_helpers;
 

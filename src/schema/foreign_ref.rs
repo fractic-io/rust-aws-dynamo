@@ -226,8 +226,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_ref_from_sk_singleton_embedded() {
-        let sk = "ORDER#AAAAAAAAAAAAAAAA#@FAMILY[key123]";
+    fn test_extract_ref_from_sk_inline_singleton() {
+        let sk = "ORDER#AAAAAAAAAAAAAAAA@FAMILY[key123]";
         assert_eq!(extract_ref_from_sk(sk), "key123");
     }
 

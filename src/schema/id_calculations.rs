@@ -1,4 +1,5 @@
-// Internal ID calculations. Clients should use PkSk instead.
+//! Crate-private ID calculations. Any external-facing ID calculations should be
+//! built into PkSk instead.
 
 use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_server_error::{CriticalError, ServerError};
@@ -10,29 +11,10 @@ use crate::{
 
 use super::{DynamoObject, IdLogic, NestingLogic};
 
-const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+// Primary ID functions.
+// ----------------------------------------------------------------------------
 
-fn _base62_encode(mut n: u128, num_chars: usize) -> String {
-    let mut result = vec![' '; num_chars];
-
-    for i in 0..num_chars {
-        result[num_chars - 1 - i] = ALPHABET[(n % 62) as usize] as char;
-        n /= 62;
-    }
-
-    result.into_iter().collect()
-}
-
-fn _uuid_16_chars() -> String {
-    let uuid = uuid::Uuid::new_v4();
-    _base62_encode(uuid.as_u128(), 16)
-}
-
-fn _epoch_timestamp_16_chars() -> String {
-    let timestamp = chrono::Utc::now().timestamp_millis();
-    format!("{:016}", timestamp)
-}
-
+/// (Not ext-partition aware.)
 pub(crate) fn generate_pk_sk<T: DynamoObject>(
     data: &T::Data,
     parent_pk: &str,
@@ -56,10 +38,12 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     }
     // Build pk / sk:
     let new_obj_id = match T::id_logic() {
-        IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
-        IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
-        IdLogic::Singleton => format!("@{}", T::id_label()),
-        IdLogic::SingletonFamily(key) => format!("@{}[{}]", T::id_label(), key(data)),
+        IdLogic::Uuid => format!("{}#{}", T::id_label(), uuid_16_chars()),
+        IdLogic::Timestamp => format!("{}#{}", T::id_label(), epoch_timestamp_16_chars()),
+        IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
+        IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
+            format!("@{}[{}]", T::id_label(), key(data))
+        }
         IdLogic::BatchOptimized { .. } => {
             return Err(CriticalError::new(
                 "IDs for IdLogic::BatchOptimized should be generated manually in \
@@ -80,16 +64,13 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     }
 }
 
-pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
-    sk.contains('@')
-}
-
 pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, ServerError> {
+    let sk = strip_ext_suffix(sk);
     if let Some(pos) = sk.find('@') {
         // '@' indicates object is a singleton. In this case, the only label
         // that matters is the @LABEL, which can by extracted by getting the
-        // text between '@' and '[' (in case of SingletonFamily) or EOL (regular
-        // Singleton).
+        // text between '@' and '[' (in case of IndexedSingleton) or EOL
+        // (regular Singleton).
         let after_excl = &sk[pos + 1..];
         let end_pos = after_excl.find(|c| c == '[').unwrap_or(after_excl.len());
         Ok(&after_excl[..end_pos])
@@ -107,6 +88,79 @@ pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, 
         }
     }
 }
+
+// ID construction algorithms.
+// ----------------------------------------------------------------------------
+
+const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+fn base62_encode(mut n: u128, num_chars: usize) -> String {
+    let mut result = vec![' '; num_chars];
+
+    for i in 0..num_chars {
+        result[num_chars - 1 - i] = ALPHABET[(n % 62) as usize] as char;
+        n /= 62;
+    }
+
+    result.into_iter().collect()
+}
+
+fn uuid_16_chars() -> String {
+    let uuid = uuid::Uuid::new_v4();
+    base62_encode(uuid.as_u128(), 16)
+}
+
+fn epoch_timestamp_16_chars() -> String {
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    format!("{:016}", timestamp)
+}
+
+// Predicates.
+// ----------------------------------------------------------------------------
+
+pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
+    sk.contains('@')
+}
+
+// Ext-partition logic.
+// ----------------------------------------------------------------------------
+
+/// Strip '...+N' ext-partition suffix.
+pub(crate) fn strip_ext_suffix(sk: &str) -> &str {
+    let trailing_digits_search = sk
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(idx, _)| idx);
+    match trailing_digits_search {
+        None => sk,
+        Some(start) if start == 0 => sk,
+        Some(start) => match sk.as_bytes().get(start - 1) {
+            Some(b'+') => &sk[..start - 1],
+            _ => sk,
+        },
+    }
+}
+
+/// Get '...+N' ext-partition suffix index.
+pub(crate) fn get_ext_index(sk: &str) -> Option<usize> {
+    let trailing_digits_search = sk
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(idx, _)| idx)?;
+    if trailing_digits_search == 0
+        || !matches!(sk.as_bytes().get(trailing_digits_search - 1), Some(b'+'))
+    {
+        return None;
+    }
+    sk[trailing_digits_search..].parse::<usize>().ok()
+}
+
+// Parsing helpers.
+// ----------------------------------------------------------------------------
 
 // Helper function to grab the pk/sk from a "pk|sk" string.
 pub(crate) fn get_pk_sk_from_string(id: &str) -> Result<(&str, &str), ServerError> {
@@ -136,6 +190,9 @@ pub(crate) fn set_pk_sk_in_map(map: &mut DynamoMap, pk: String, sk: String) {
     map.insert("sk".to_string(), AttributeValue::S(sk));
 }
 
+// Tests.
+// ----------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -153,7 +210,7 @@ mod tests {
 
     #[test]
     fn test_base62_encode_16_chars() {
-        let encoded = _base62_encode(1234567890, 16);
+        let encoded = base62_encode(1234567890, 16);
         assert_eq!(encoded.len(), 16);
         // As the length is fixed, padding may occur; ensure the encoded string meets this condition.
         assert!(encoded.chars().all(|c| ALPHABET.contains(&(c as u8))));
@@ -161,7 +218,7 @@ mod tests {
 
     #[test]
     fn test_base62_encode_20_chars() {
-        let encoded = _base62_encode(1234567890, 20);
+        let encoded = base62_encode(1234567890, 20);
         assert_eq!(encoded.len(), 20);
         // As the length is fixed, padding may occur; ensure the encoded string meets this condition.
         assert!(encoded.chars().all(|c| ALPHABET.contains(&(c as u8))));
@@ -169,7 +226,7 @@ mod tests {
 
     #[test]
     fn test_generate_uuid() {
-        let uuid = _uuid_16_chars();
+        let uuid = uuid_16_chars();
         assert_eq!(uuid.len(), 16);
         // Ensure the UUID is base62 encoded.
         assert!(uuid.chars().all(|c| ALPHABET.contains(&(c as u8))));
@@ -177,9 +234,9 @@ mod tests {
 
     #[test]
     fn test_generate_timestamp() {
-        let timestamp_1 = _epoch_timestamp_16_chars();
+        let timestamp_1 = epoch_timestamp_16_chars();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        let timestamp_2 = _epoch_timestamp_16_chars();
+        let timestamp_2 = epoch_timestamp_16_chars();
         assert_eq!(timestamp_1.len(), 16);
         assert_eq!(timestamp_2.len(), 16);
         assert!(timestamp_2 > timestamp_1);
@@ -189,8 +246,10 @@ mod tests {
     fn test_is_singleton() {
         assert!(!is_singleton("USER#123", "ORDER#456#ITEM#789"));
         assert!(is_singleton("USER#123", "@SINGLTN"));
+        assert!(is_singleton("USER#123", "@SINGLTN+0"));
         assert!(is_singleton("ROOT", "@SINGLTN"));
         assert!(is_singleton("ROOT", "@SINGLTN[KEY]"));
+        assert!(is_singleton("ROOT", "@SINGLTN[KEY]+12"));
         assert!(is_singleton("USER#123", "ORDER#56#ITEM#1#@SIGNATURE"));
     }
 
@@ -223,6 +282,25 @@ mod tests {
             get_object_type("USER#123", "ORDER#56#ITEM#1#@POST[key]").unwrap(),
             "POST"
         );
+        assert_eq!(get_object_type("ROOT", "@SINGLTN+0").unwrap(), "SINGLTN");
+        assert_eq!(get_object_type("ROOT", "@PREF[key]+12").unwrap(), "PREF");
+    }
+
+    #[test]
+    fn test_strip_ext_suffix() {
+        assert_eq!(strip_ext_suffix("@SINGLTN"), "@SINGLTN");
+        assert_eq!(strip_ext_suffix("@SINGLTN+0"), "@SINGLTN");
+        assert_eq!(
+            strip_ext_suffix("PARENT#1#@FAMILY[key]+12"),
+            "PARENT#1#@FAMILY[key]"
+        );
+    }
+
+    #[test]
+    fn test_get_ext_index() {
+        assert_eq!(get_ext_index("@SINGLTN"), None);
+        assert_eq!(get_ext_index("@SINGLTN+0"), Some(0));
+        assert_eq!(get_ext_index("PARENT#1#@FAMILY[key]+12"), Some(12));
     }
 
     #[test]
@@ -475,36 +553,88 @@ mod tests {
         assert_eq!(result.1, "@SINGLETON");
     }
 
-    // Test case 9: IdLogic::SingletonFamily
     #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-    pub struct TestObjectSingletonFamilyData {
+    pub struct TestObjectSingletonExtData {}
+    dynamo_object!(
+        TestObjectSingletonExt,
+        TestObjectSingletonExtData,
+        "SINGLETONEXT",
+        IdLogic::SingletonExt,
+        NestingLogic::Root
+    );
+
+    #[test]
+    fn test_generate_pk_sk_singleton_ext() {
+        let obj = TestObjectSingletonExt {
+            id: PkSk::root().clone(),
+            auto_fields: AutoFields::default(),
+            data: TestObjectSingletonExtData::default(),
+        };
+        let result =
+            generate_pk_sk::<TestObjectSingletonExt>(&obj.data, "any_pk", "any_sk").unwrap();
+        assert_eq!(result.0, "ROOT");
+        assert_eq!(result.1, "@SINGLETONEXT");
+    }
+
+    // Test case 9: IdLogic::IndexedSingleton
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+    pub struct TestObjectIndexedSingletonData {
         key_field: String,
     }
     dynamo_object!(
-        TestObjectSingletonFamily,
-        TestObjectSingletonFamilyData,
+        TestObjectIndexedSingleton,
+        TestObjectIndexedSingletonData,
         "FAMILY",
-        IdLogic::SingletonFamily(Box::new(|obj: &TestObjectSingletonFamilyData| {
+        IdLogic::IndexedSingleton(Box::new(|obj: &TestObjectIndexedSingletonData| {
             Cow::Borrowed(&obj.key_field)
         })),
         NestingLogic::Root
     );
 
     #[test]
-    fn test_generate_pk_sk_singleton_family() {
-        let obj = TestObjectSingletonFamily {
+    fn test_generate_pk_sk_indexed_singleton() {
+        let obj = TestObjectIndexedSingleton {
             id: PkSk::root().clone(),
             auto_fields: AutoFields::default(),
-            data: TestObjectSingletonFamilyData {
+            data: TestObjectIndexedSingletonData {
                 key_field: "key123".to_string(),
             },
         };
         let parent_pk = "any_pk";
         let parent_sk = "any_sk";
         let result =
-            generate_pk_sk::<TestObjectSingletonFamily>(&obj.data, parent_pk, parent_sk).unwrap();
+            generate_pk_sk::<TestObjectIndexedSingleton>(&obj.data, parent_pk, parent_sk).unwrap();
         assert_eq!(result.0, "ROOT");
         assert_eq!(result.1, "@FAMILY[key123]");
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+    pub struct TestObjectIndexedSingletonExtData {
+        key_field: String,
+    }
+    dynamo_object!(
+        TestObjectIndexedSingletonExt,
+        TestObjectIndexedSingletonExtData,
+        "FAMILYEXT",
+        IdLogic::IndexedSingletonExt(Box::new(|obj: &TestObjectIndexedSingletonExtData| {
+            Cow::Borrowed(&obj.key_field)
+        })),
+        NestingLogic::Root
+    );
+
+    #[test]
+    fn test_generate_pk_sk_indexed_singleton_ext() {
+        let obj = TestObjectIndexedSingletonExt {
+            id: PkSk::root().clone(),
+            auto_fields: AutoFields::default(),
+            data: TestObjectIndexedSingletonExtData {
+                key_field: "key123".to_string(),
+            },
+        };
+        let result =
+            generate_pk_sk::<TestObjectIndexedSingletonExt>(&obj.data, "any_pk", "any_sk").unwrap();
+        assert_eq!(result.0, "ROOT");
+        assert_eq!(result.1, "@FAMILYEXT[key123]");
     }
 
     // Test case 10: Invalid parent_sk format

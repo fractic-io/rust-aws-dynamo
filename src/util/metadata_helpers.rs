@@ -4,7 +4,7 @@ use crate::util::{
     DynamoMap, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT,
 };
 
-pub trait WithMetadataFrom {
+pub(crate) trait WithMetadataFrom {
     fn with_metadata_from(self, other: &DynamoMap) -> DynamoMap;
 }
 

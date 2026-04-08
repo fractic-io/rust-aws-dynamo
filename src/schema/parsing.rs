@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::{errors::DynamoItemParsingError, schema::DynamoObject, util::DynamoMap};
 
 // Converting between DynamoMap and DynamoObject.
-// --------------------------------------------------
+// ----------------------------------------------------------------------------
 
 pub enum IdKeys {
     CopyFromObject,
@@ -142,8 +142,36 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerErr
         .map_err(|e| DynamoItemParsingError::with_debug("failed to convert from Serde value", &e))
 }
 
+// Alternative conversion helpers.
+// ----------------------------------------------------------------------------
+
+pub(crate) fn deserialize_dynamo_map_partitions<I, S>(
+    partitions: I,
+) -> Result<DynamoMap, ServerError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut json = String::new();
+    for partition in partitions {
+        json.push_str(partition.as_ref());
+    }
+
+    let value: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| DynamoItemParsingError::with_debug("failed to parse partition json", &e))?;
+    let serde_json::Value::Object(map) = value else {
+        return Err(DynamoItemParsingError::new(
+            "partition json did not decode to an object",
+        ));
+    };
+    map.into_iter()
+        .filter_map(|(k, v)| Some((k, serde_value_to_attribute_value(v).transpose()?)))
+        .map(|(k, v)| Ok((k, v?)))
+        .collect::<Result<DynamoMap, ServerError>>()
+}
+
 // Inner recursive functions.
-// --------------------------------------------------
+// ----------------------------------------------------------------------------
 
 fn serde_value_to_attribute_value(
     value: serde_json::Value,
@@ -220,7 +248,7 @@ fn attribute_value_to_serde_value(
 }
 
 // Tests.
-// --------------------------------------------------
+// ----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -706,5 +734,21 @@ mod tests {
         assert_eq!(output.id, expected_output.id);
         assert_eq!(output.auto_fields, expected_output.auto_fields);
         assert_eq!(output.data, expected_output.data);
+    }
+
+    #[test]
+    fn test_parse_dynamo_map_partitions() {
+        let output =
+            deserialize_dynamo_map_partitions([r#"{"name":"Tes"#, r#"t","nested":{"value":1}}"#])
+                .unwrap();
+
+        let expected_output = collection!(
+            "name".to_string() => AttributeValue::S("Test".to_string()),
+            "nested".to_string() => AttributeValue::M(collection!(
+                "value".to_string() => AttributeValue::N("1".to_string())
+            ))
+        );
+
+        assert_eq!(output, expected_output);
     }
 }

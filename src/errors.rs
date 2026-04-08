@@ -19,10 +19,27 @@ define_client_error!(
 );
 define_client_error!(
     DynamoInvalidBatchOptimizedIdUsage,
-    "Item-level operations are not supported for items with IdLogic::BatchOptimized. Use batch_replace_all_ordered instead."
+    "Item-level operations are not supported for items with IdLogic::BatchOptimized. Use \
+     batch_replace_all_ordered instead."
+);
+define_client_error!(
+    DynamoInvalidExtIdUsage,
+    "Property-level operations (such as update_item) are not supported for ext-partitioned items \
+     (ex. items with IdLogic::SingletonExt). Use create/delete operations instead."
 );
 define_client_error!(
     DynamoInvalidParent,
     "Invalid parent object type: {details}.",
+    { details: &str }
+);
+define_internal_error!(
+    DynamoUnexpectedItemCount,
+    "Unexpected DynamoDB item count: {details}.",
+    { details: &str }
+);
+
+define_internal_error!(
+    DynamoInvalidPartitioning,
+    "Unexpected state of ext-partitioned DynamoDB item: {details}.",
     { details: &str }
 );

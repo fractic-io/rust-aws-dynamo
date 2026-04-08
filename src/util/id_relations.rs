@@ -45,10 +45,13 @@ pub fn validate_parent_id<T: DynamoObject>(parent_id: &PkSk) -> Result<(), Serve
 }
 
 pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
-    // * Singleton / SingletonFamily →  "@LABEL"
-    // * Everything else             →  "LABEL#"
+    // * Singleton / IndexedSingleton →  "@LABEL"
+    // * Everything else              →  "LABEL#"
     let sk_search_prefix = match T::id_logic() {
-        IdLogic::Singleton | IdLogic::SingletonFamily(_) => {
+        IdLogic::Singleton
+        | IdLogic::SingletonExt
+        | IdLogic::IndexedSingleton(_)
+        | IdLogic::IndexedSingletonExt(_) => {
             format!("@{}", T::id_label())
         }
         _ => format!("{}#", T::id_label()),
@@ -98,7 +101,13 @@ mod tests {
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
     pub struct InlineSingletonData {}
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-    pub struct InlineSingletonFamData {
+    pub struct InlineIndexedSingletonData {
+        key: String,
+    }
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct InlineSingletonExtData {}
+    #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+    pub struct InlineIndexedSingletonExtData {
         key: String,
     }
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -149,26 +158,42 @@ mod tests {
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
-        InlineSingletonFam,
-        InlineSingletonFamData,
+        InlineIndexedSingleton,
+        InlineIndexedSingletonData,
         "INLFAM",
-        IdLogic::SingletonFamily(Box::new(|data: &InlineSingletonFamData| Cow::Borrowed(
+        IdLogic::IndexedSingleton(Box::new(|data: &InlineIndexedSingletonData| Cow::Borrowed(
             &data.key
         ))),
+        NestingLogic::InlineChildOfAny
+    );
+    dynamo_object!(
+        InlineSingletonExt,
+        InlineSingletonExtData,
+        "INLSINGLEEXT",
+        IdLogic::SingletonExt,
+        NestingLogic::InlineChildOfAny
+    );
+    dynamo_object!(
+        InlineIndexedSingletonExt,
+        InlineIndexedSingletonExtData,
+        "INLFAMEXT",
+        IdLogic::IndexedSingletonExt(Box::new(
+            |data: &InlineIndexedSingletonExtData| Cow::Borrowed(&data.key)
+        )),
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
         InlineBatch,
         InlineBatchData,
         "INLBATCH",
-        IdLogic::BatchOptimized { chunk_size: 10 },
+        IdLogic::BatchOptimized { batch_size: 10 },
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
         TopLevelBatch,
         TopLevelBatchData,
         "TOPLBATCH",
-        IdLogic::BatchOptimized { chunk_size: 10 },
+        IdLogic::BatchOptimized { batch_size: 10 },
         NestingLogic::TopLevelChildOf("N")
     );
 
@@ -258,16 +283,34 @@ mod tests {
             }
         );
 
-        // Inline SingletonFamily:
-        let inline_singleton_family_search = PkSk {
+        // Inline IndexedSingleton:
+        let inline_indexed_singleton_search = PkSk {
             pk: "P".into(),
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<InlineSingletonFam>(&inline_singleton_family_search),
+            child_search_prefix::<InlineIndexedSingleton>(&inline_indexed_singleton_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S#@INLFAM".into()
+            }
+        );
+
+        // Inline SingletonExt:
+        assert_eq!(
+            child_search_prefix::<InlineSingletonExt>(&inline_singleton_search),
+            PkSk {
+                pk: "P".into(),
+                sk: "S#@INLSINGLEEXT".into()
+            }
+        );
+
+        // Inline IndexedSingletonExt:
+        assert_eq!(
+            child_search_prefix::<InlineIndexedSingletonExt>(&inline_indexed_singleton_search),
+            PkSk {
+                pk: "P".into(),
+                sk: "S#@INLFAMEXT".into()
             }
         );
 

@@ -215,8 +215,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123".to_string())
                 }),
+                eq(None),
             )
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(vec![
                     QueryOutput::builder()
                         .set_items(Some(vec![
@@ -271,8 +272,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123".to_string())
                 }),
+                eq(None),
             )
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(vec![
                     QueryOutput::builder()
                         .set_items(Some(vec![
@@ -355,8 +357,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("GROUP#456".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("TEST#".to_string()),
                 }),
+                eq(None),
             )
-            .returning(move |_, _, _, _| {
+            .returning(move |_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         // Non-batch item:
@@ -476,8 +479,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST".to_string())
                 }),
+                eq(None),
             )
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_item_high_sort().1,
@@ -520,8 +524,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("@PARTSINGLE".to_string())
                 }),
+                eq(None),
             )
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2),
@@ -602,8 +607,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("@PARTSINGLE".to_string())
                 }),
+                eq(None),
             )
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2),
@@ -813,15 +819,24 @@ mod tests {
             .withf(|table, items| {
                 table == "my_table"
                     && items.len() == 3
+                    && items.iter().any(|i| {
+                        i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE"
+                            && i.get(AUTO_FIELDS_CREATED_AT).is_some()
+                            && i.get(AUTO_FIELDS_UPDATED_AT).is_some()
+                            && i.get(AUTO_FIELDS_SORT).is_none()
+                    })
                     && items
                         .iter()
-                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE")
-                    && items
-                        .iter()
-                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE+0")
-                    && items
-                        .iter()
-                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE+1")
+                        .filter(|i| {
+                            matches!(
+                                i.get("sk").and_then(|v| v.as_s().ok()),
+                                Some(sk) if (sk == "@PARTSINGLE+0") || (sk == "@PARTSINGLE+1")
+                            ) && i.get(AUTO_FIELDS_CREATED_AT).is_none()
+                                && i.get(AUTO_FIELDS_UPDATED_AT).is_none()
+                                && i.get(AUTO_FIELDS_SORT).is_none()
+                        })
+                        .count()
+                        == 2
             })
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
@@ -903,9 +918,28 @@ mod tests {
     async fn test_batch_create_item_partitioned_indexed_singleton_flattens_writes() {
         let mut backend = MockDynamoBackend::new();
         backend
-            .expect_get_item()
-            .times(2)
-            .returning(|_, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
+            .expect_batch_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq(vec![
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]".to_string()),
+                    },
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[b]".to_string()),
+                    },
+                ]),
+                eq(None),
+            )
+            .returning(|_, _, _| {
+                Ok(BatchGetItemOutput::builder()
+                    .set_responses(Some(collection! {
+                        "my_table".to_string() => vec![],
+                    }))
+                    .build())
+            });
         backend
             .expect_batch_put_item()
             .withf(|table, items| {
@@ -1496,8 +1530,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
                 }),
+                eq(None),
             )
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_item_high_sort().1,
@@ -1539,8 +1574,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
                 }),
+                eq(Some("pk, sk".to_string())),
             )
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![build_item_no_data().1]))
                     .build()])
@@ -1583,8 +1619,9 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
                     ":sk_val".to_string() => AttributeValue::S("@PARTINDEX".to_string()),
                 }),
+                eq(Some("pk, sk".to_string())),
             )
-            .returning(|_, _, _, _| {
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_partitioned_placeholder("ROOT", "@PARTINDEX[a]", 2),
@@ -1601,65 +1638,65 @@ mod tests {
             });
 
         backend
-            .expect_batch_get_item()
-            .with(
-                eq("my_table".to_string()),
-                eq(vec![
-                    collection! {
-                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]".to_string()),
-                    },
-                    collection! {
-                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "sk".to_string() => AttributeValue::S("@PARTINDEX[b]".to_string()),
-                    },
-                ]),
-                eq(None),
-            )
-            .returning(|_, _, _| {
-                Ok(BatchGetItemOutput::builder()
-                    .set_responses(Some(collection! {
-                        "my_table".to_string() => vec![
-                            build_partitioned_placeholder("ROOT", "@PARTINDEX[a]", 2),
-                            build_partitioned_placeholder("ROOT", "@PARTINDEX[b]", 1),
-                        ],
-                    }))
-                    .build())
-            });
-
-        backend
             .expect_batch_delete_item()
-            .with(
-                eq("my_table".to_string()),
-                eq(vec![
-                    collection! {
-                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]".to_string()),
-                    },
-                    collection! {
-                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]+0".to_string()),
-                    },
-                    collection! {
-                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]+1".to_string()),
-                    },
-                    collection! {
-                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "sk".to_string() => AttributeValue::S("@PARTINDEX[b]".to_string()),
-                    },
-                    collection! {
-                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "sk".to_string() => AttributeValue::S("@PARTINDEX[b]+0".to_string()),
-                    },
-                ]),
-            )
+            .withf(|table, _items| table == "my_table")
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
         let util = build_util(backend).await;
         util.batch_delete_all::<PartitionedIndexedSingleton>(PkSk::root())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_batch_delete_all_batch_optimized_deletes_raw_batch_rows() {
+        let mut backend = MockDynamoBackend::new();
+
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("GROUP#789".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#".to_string()),
+                }),
+                eq(Some("pk, sk".to_string())),
+            )
+            .returning(|_, _, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(vec![
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
+                            "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
+                        },
+                        collection! {
+                            "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
+                            "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#1".to_string()),
+                        },
+                    ]))
+                    .build()])
+            });
+
+        backend
+            .expect_batch_delete_item()
+            .withf(|table, items| {
+                table == "my_table"
+                    && items.len() == 2
+                    && items
+                        .iter()
+                        .all(|item| item.get("pk").unwrap().as_s().unwrap() == "GROUP#789")
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        util.batch_delete_all::<BatchOptTopLevelDynamoObject>(&PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#789".to_string(),
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1673,8 +1710,10 @@ mod tests {
 
         backend
             .expect_query()
-            .withf(|table, _index, _cond, _vals| table == "my_table")
-            .returning(|_, _, _, _| {
+            .withf(|table, _index, _cond, _vals, projection| {
+                table == "my_table" && projection.is_none()
+            })
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         collection! {
@@ -1768,8 +1807,10 @@ mod tests {
 
         backend
             .expect_query()
-            .withf(|table, _index, _cond, _vals| table == "my_table")
-            .returning(|_, _, _, _| {
+            .withf(|table, _index, _cond, _vals, projection| {
+                table == "my_table" && projection.is_none()
+            })
+            .returning(|_, _, _, _, _| {
                 Ok(vec![
                     QueryOutput::builder()
                         .set_items(Some(vec![
@@ -1862,8 +1903,10 @@ mod tests {
 
         backend
             .expect_query()
-            .withf(|table, _index, _cond, _vals| table == "my_table")
-            .returning(|_, _, _, _| {
+            .withf(|table, _index, _cond, _vals, projection| {
+                table == "my_table" && projection.is_none()
+            })
+            .returning(|_, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![collection! {
                         "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),

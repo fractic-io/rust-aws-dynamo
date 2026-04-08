@@ -7,13 +7,13 @@ use serde::Serialize;
 use crate::{
     errors::{DynamoCalloutError, DynamoInvalidOperation},
     schema::{
-        id_calculations::{get_ext_partition_index, strip_ext_partition_suffix},
+        id_calculations::{get_ext_index, strip_ext_suffix},
         parsing::{build_dynamo_map_internal, parse_json_object_to_dynamo_map},
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
     util::{
-        expand_helpers::WithMetadataFrom as _, DynamoMap, DynamoUtil, COLLAPSE_RESERVED_KEY,
-        AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT,
+        expand_helpers::WithMetadataFrom as _, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
+        AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, COLLAPSE_RESERVED_KEY,
     },
 };
 
@@ -46,7 +46,7 @@ pub(crate) fn is_partitioned_id_logic<T: DynamoObject>() -> bool {
 pub(crate) fn ext_base_id(id: &PkSk) -> PkSk {
     PkSk {
         pk: id.pk.clone(),
-        sk: strip_ext_partition_suffix(&id.sk).to_string(),
+        sk: strip_ext_suffix(&id.sk).to_string(),
     }
 }
 
@@ -64,8 +64,9 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
     ttl: Option<i64>,
 ) -> Result<PartitionWritePlan, ServerError> {
     let base_id = ext_base_id(logical_id);
-    let serialized = serde_json::to_string(data)
-        .map_err(|e| DynamoInvalidOperation::with_debug("failed to serialize partitioned item", &e))?;
+    let serialized = serde_json::to_string(data).map_err(|e| {
+        DynamoInvalidOperation::with_debug("failed to serialize partitioned item", &e)
+    })?;
     let partition_strings = split_json_partitions(&serialized);
     let total_partitions = partition_strings.len();
     let new_partition_ids = build_partition_ids(&base_id, total_partitions);
@@ -85,16 +86,21 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
 
     let now = Timestamp::now();
     let mut put_items = Vec::with_capacity(total_partitions + 1);
-    put_items.push(build_dynamo_map_internal(
-        &PartitionPlaceholder {
-            ext_total_partitions: total_partitions,
-        },
-        Some(base_id.pk.clone()),
-        Some(base_id.sk.clone()),
-        Some(common_overrides(&now, sort, ttl)),
-    )?
-    .0);
-    for (partition_id, partition) in new_partition_ids.into_iter().zip(partition_strings.into_iter()) {
+    put_items.push(
+        build_dynamo_map_internal(
+            &PartitionPlaceholder {
+                ext_total_partitions: total_partitions,
+            },
+            Some(base_id.pk.clone()),
+            Some(base_id.sk.clone()),
+            Some(common_overrides(&now, sort, ttl)),
+        )?
+        .0,
+    );
+    for (partition_id, partition) in new_partition_ids
+        .into_iter()
+        .zip(partition_strings.into_iter())
+    {
         put_items.push(
             build_dynamo_map_internal(
                 &CollapsablePartition { partition },
@@ -136,7 +142,9 @@ pub(crate) async fn expand_partition_delete_ids<T: DynamoObject>(
     Ok(out)
 }
 
-pub(crate) fn collapse_partitioned_items(items: Vec<DynamoMap>) -> Result<Vec<DynamoMap>, ServerError> {
+pub(crate) fn collapse_partitioned_items(
+    items: Vec<DynamoMap>,
+) -> Result<Vec<DynamoMap>, ServerError> {
     enum OrderedEntry {
         Item(DynamoMap),
         Partitioned(PkSk),
@@ -185,7 +193,7 @@ pub(crate) fn collapse_partitioned_items(items: Vec<DynamoMap>) -> Result<Vec<Dy
                 partitions.sort_by_key(|item| {
                     PkSk::from_map(item)
                         .ok()
-                        .and_then(|id| get_ext_partition_index(&id.sk))
+                        .and_then(|id| get_ext_index(&id.sk))
                         .unwrap_or(usize::MAX)
                 });
 
@@ -207,7 +215,9 @@ pub(crate) fn collapse_partitioned_items(items: Vec<DynamoMap>) -> Result<Vec<Dy
                 if partitions.len() != expected_total {
                     return Err(DynamoInvalidOperation::new(&format!(
                         "partitioned item '{}' expected {} partitions but query returned {}",
-                        base_id, expected_total, partitions.len()
+                        base_id,
+                        expected_total,
+                        partitions.len()
                     )));
                 }
 
@@ -225,8 +235,8 @@ pub(crate) fn collapse_partitioned_items(items: Vec<DynamoMap>) -> Result<Vec<Dy
                     })
                     .collect::<Result<Vec<_>, ServerError>>()?
                     .join("");
-                let mut logical_item = parse_json_object_to_dynamo_map(&serialized)?
-                    .with_metadata_from(&placeholder);
+                let mut logical_item =
+                    parse_json_object_to_dynamo_map(&serialized)?.with_metadata_from(&placeholder);
                 base_id.write_to_map(&mut logical_item);
                 collapsed.push(logical_item);
             }

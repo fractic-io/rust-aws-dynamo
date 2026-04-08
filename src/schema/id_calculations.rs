@@ -12,7 +12,7 @@ use super::{DynamoObject, IdLogic, NestingLogic};
 
 const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-fn _base62_encode(mut n: u128, num_chars: usize) -> String {
+fn base62_encode(mut n: u128, num_chars: usize) -> String {
     let mut result = vec![' '; num_chars];
 
     for i in 0..num_chars {
@@ -23,17 +23,18 @@ fn _base62_encode(mut n: u128, num_chars: usize) -> String {
     result.into_iter().collect()
 }
 
-fn _uuid_16_chars() -> String {
+fn uuid_16_chars() -> String {
     let uuid = uuid::Uuid::new_v4();
-    _base62_encode(uuid.as_u128(), 16)
+    base62_encode(uuid.as_u128(), 16)
 }
 
-fn _epoch_timestamp_16_chars() -> String {
+fn epoch_timestamp_16_chars() -> String {
     let timestamp = chrono::Utc::now().timestamp_millis();
     format!("{:016}", timestamp)
 }
 
-pub(crate) fn strip_ext_partition_suffix(sk: &str) -> &str {
+/// Strip '...+N' ext-partition suffix.
+pub(crate) fn strip_ext_suffix(sk: &str) -> &str {
     let digits_start = sk
         .char_indices()
         .rev()
@@ -52,7 +53,8 @@ pub(crate) fn strip_ext_partition_suffix(sk: &str) -> &str {
     }
 }
 
-pub(crate) fn get_ext_partition_index(sk: &str) -> Option<usize> {
+/// Get '...+N' ext-partition suffix index.
+pub(crate) fn get_ext_index(sk: &str) -> Option<usize> {
     let digits_start = sk
         .char_indices()
         .rev()
@@ -65,6 +67,7 @@ pub(crate) fn get_ext_partition_index(sk: &str) -> Option<usize> {
     sk[digits_start..].parse::<usize>().ok()
 }
 
+/// (Not ext-partition aware.)
 pub(crate) fn generate_pk_sk<T: DynamoObject>(
     data: &T::Data,
     parent_pk: &str,
@@ -88,8 +91,8 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     }
     // Build pk / sk:
     let new_obj_id = match T::id_logic() {
-        IdLogic::Uuid => format!("{}#{}", T::id_label(), _uuid_16_chars()),
-        IdLogic::Timestamp => format!("{}#{}", T::id_label(), _epoch_timestamp_16_chars()),
+        IdLogic::Uuid => format!("{}#{}", T::id_label(), uuid_16_chars()),
+        IdLogic::Timestamp => format!("{}#{}", T::id_label(), epoch_timestamp_16_chars()),
         IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
         IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
             format!("@{}[{}]", T::id_label(), key(data))
@@ -115,11 +118,11 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
 }
 
 pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
-    strip_ext_partition_suffix(sk).contains('@')
+    strip_ext_suffix(sk).contains('@')
 }
 
 pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, ServerError> {
-    let sk = strip_ext_partition_suffix(sk);
+    let sk = strip_ext_suffix(sk);
     if let Some(pos) = sk.find('@') {
         // '@' indicates object is a singleton. In this case, the only label
         // that matters is the @LABEL, which can by extracted by getting the
@@ -188,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_base62_encode_16_chars() {
-        let encoded = _base62_encode(1234567890, 16);
+        let encoded = base62_encode(1234567890, 16);
         assert_eq!(encoded.len(), 16);
         // As the length is fixed, padding may occur; ensure the encoded string meets this condition.
         assert!(encoded.chars().all(|c| ALPHABET.contains(&(c as u8))));
@@ -196,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_base62_encode_20_chars() {
-        let encoded = _base62_encode(1234567890, 20);
+        let encoded = base62_encode(1234567890, 20);
         assert_eq!(encoded.len(), 20);
         // As the length is fixed, padding may occur; ensure the encoded string meets this condition.
         assert!(encoded.chars().all(|c| ALPHABET.contains(&(c as u8))));
@@ -204,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_generate_uuid() {
-        let uuid = _uuid_16_chars();
+        let uuid = uuid_16_chars();
         assert_eq!(uuid.len(), 16);
         // Ensure the UUID is base62 encoded.
         assert!(uuid.chars().all(|c| ALPHABET.contains(&(c as u8))));
@@ -212,9 +215,9 @@ mod tests {
 
     #[test]
     fn test_generate_timestamp() {
-        let timestamp_1 = _epoch_timestamp_16_chars();
+        let timestamp_1 = epoch_timestamp_16_chars();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        let timestamp_2 = _epoch_timestamp_16_chars();
+        let timestamp_2 = epoch_timestamp_16_chars();
         assert_eq!(timestamp_1.len(), 16);
         assert_eq!(timestamp_2.len(), 16);
         assert!(timestamp_2 > timestamp_1);
@@ -261,30 +264,24 @@ mod tests {
             "POST"
         );
         assert_eq!(get_object_type("ROOT", "@SINGLTN+0").unwrap(), "SINGLTN");
-        assert_eq!(
-            get_object_type("ROOT", "@PREF[key]+12").unwrap(),
-            "PREF"
-        );
+        assert_eq!(get_object_type("ROOT", "@PREF[key]+12").unwrap(), "PREF");
     }
 
     #[test]
     fn test_strip_ext_partition_suffix() {
-        assert_eq!(strip_ext_partition_suffix("@SINGLTN"), "@SINGLTN");
-        assert_eq!(strip_ext_partition_suffix("@SINGLTN+0"), "@SINGLTN");
+        assert_eq!(strip_ext_suffix("@SINGLTN"), "@SINGLTN");
+        assert_eq!(strip_ext_suffix("@SINGLTN+0"), "@SINGLTN");
         assert_eq!(
-            strip_ext_partition_suffix("PARENT#1#@FAMILY[key]+12"),
+            strip_ext_suffix("PARENT#1#@FAMILY[key]+12"),
             "PARENT#1#@FAMILY[key]"
         );
     }
 
     #[test]
     fn test_get_ext_partition_index() {
-        assert_eq!(get_ext_partition_index("@SINGLTN"), None);
-        assert_eq!(get_ext_partition_index("@SINGLTN+0"), Some(0));
-        assert_eq!(
-            get_ext_partition_index("PARENT#1#@FAMILY[key]+12"),
-            Some(12)
-        );
+        assert_eq!(get_ext_index("@SINGLTN"), None);
+        assert_eq!(get_ext_index("@SINGLTN+0"), Some(0));
+        assert_eq!(get_ext_index("PARENT#1#@FAMILY[key]+12"), Some(12));
     }
 
     #[test]
@@ -600,9 +597,9 @@ mod tests {
         TestObjectIndexedSingletonExt,
         TestObjectIndexedSingletonExtData,
         "FAMILYEXT",
-        IdLogic::IndexedSingletonExt(Box::new(
-            |obj: &TestObjectIndexedSingletonExtData| { Cow::Borrowed(&obj.key_field) }
-        )),
+        IdLogic::IndexedSingletonExt(Box::new(|obj: &TestObjectIndexedSingletonExtData| {
+            Cow::Borrowed(&obj.key_field)
+        })),
         NestingLogic::Root
     );
 
@@ -615,8 +612,8 @@ mod tests {
                 key_field: "key123".to_string(),
             },
         };
-        let result = generate_pk_sk::<TestObjectIndexedSingletonExt>(&obj.data, "any_pk", "any_sk")
-            .unwrap();
+        let result =
+            generate_pk_sk::<TestObjectIndexedSingletonExt>(&obj.data, "any_pk", "any_sk").unwrap();
         assert_eq!(result.0, "ROOT");
         assert_eq!(result.1, "@FAMILYEXT[key123]");
     }

@@ -1,4 +1,5 @@
-// Internal ID calculations. Clients should use PkSk instead.
+//! Crate-private ID calculations. Any external-facing ID calculations should be
+//! built into PkSk instead.
 
 use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_server_error::{CriticalError, ServerError};
@@ -10,62 +11,8 @@ use crate::{
 
 use super::{DynamoObject, IdLogic, NestingLogic};
 
-const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-
-fn base62_encode(mut n: u128, num_chars: usize) -> String {
-    let mut result = vec![' '; num_chars];
-
-    for i in 0..num_chars {
-        result[num_chars - 1 - i] = ALPHABET[(n % 62) as usize] as char;
-        n /= 62;
-    }
-
-    result.into_iter().collect()
-}
-
-fn uuid_16_chars() -> String {
-    let uuid = uuid::Uuid::new_v4();
-    base62_encode(uuid.as_u128(), 16)
-}
-
-fn epoch_timestamp_16_chars() -> String {
-    let timestamp = chrono::Utc::now().timestamp_millis();
-    format!("{:016}", timestamp)
-}
-
-/// Strip '...+N' ext-partition suffix.
-pub(crate) fn strip_ext_suffix(sk: &str) -> &str {
-    let digits_start = sk
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_ascii_digit())
-        .last()
-        .map(|(idx, _)| idx);
-    let Some(digits_start) = digits_start else {
-        return sk;
-    };
-    if digits_start == 0 {
-        return sk;
-    }
-    match sk.as_bytes().get(digits_start - 1) {
-        Some(b'+') => &sk[..digits_start - 1],
-        _ => sk,
-    }
-}
-
-/// Get '...+N' ext-partition suffix index.
-pub(crate) fn get_ext_index(sk: &str) -> Option<usize> {
-    let digits_start = sk
-        .char_indices()
-        .rev()
-        .take_while(|(_, c)| c.is_ascii_digit())
-        .last()
-        .map(|(idx, _)| idx)?;
-    if digits_start == 0 || !matches!(sk.as_bytes().get(digits_start - 1), Some(b'+')) {
-        return None;
-    }
-    sk[digits_start..].parse::<usize>().ok()
-}
+// Primary ID functions.
+// ----------------------------------------------------------------------------
 
 /// (Not ext-partition aware.)
 pub(crate) fn generate_pk_sk<T: DynamoObject>(
@@ -117,10 +64,6 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     }
 }
 
-pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
-    strip_ext_suffix(sk).contains('@')
-}
-
 pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, ServerError> {
     let sk = strip_ext_suffix(sk);
     if let Some(pos) = sk.find('@') {
@@ -145,6 +88,79 @@ pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, 
         }
     }
 }
+
+// ID construction algorithms.
+// ----------------------------------------------------------------------------
+
+const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+fn base62_encode(mut n: u128, num_chars: usize) -> String {
+    let mut result = vec![' '; num_chars];
+
+    for i in 0..num_chars {
+        result[num_chars - 1 - i] = ALPHABET[(n % 62) as usize] as char;
+        n /= 62;
+    }
+
+    result.into_iter().collect()
+}
+
+fn uuid_16_chars() -> String {
+    let uuid = uuid::Uuid::new_v4();
+    base62_encode(uuid.as_u128(), 16)
+}
+
+fn epoch_timestamp_16_chars() -> String {
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    format!("{:016}", timestamp)
+}
+
+// Predicates.
+// ----------------------------------------------------------------------------
+
+pub(crate) fn is_singleton(_pk: &str, sk: &str) -> bool {
+    strip_ext_suffix(sk).contains('@')
+}
+
+// Ext-partition logic.
+// ----------------------------------------------------------------------------
+
+/// Strip '...+N' ext-partition suffix.
+pub(crate) fn strip_ext_suffix(sk: &str) -> &str {
+    let digits_start = sk
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(idx, _)| idx);
+    let Some(digits_start) = digits_start else {
+        return sk;
+    };
+    if digits_start == 0 {
+        return sk;
+    }
+    match sk.as_bytes().get(digits_start - 1) {
+        Some(b'+') => &sk[..digits_start - 1],
+        _ => sk,
+    }
+}
+
+/// Get '...+N' ext-partition suffix index.
+pub(crate) fn get_ext_index(sk: &str) -> Option<usize> {
+    let digits_start = sk
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_digit())
+        .last()
+        .map(|(idx, _)| idx)?;
+    if digits_start == 0 || !matches!(sk.as_bytes().get(digits_start - 1), Some(b'+')) {
+        return None;
+    }
+    sk[digits_start..].parse::<usize>().ok()
+}
+
+// Parsing helpers.
+// ----------------------------------------------------------------------------
 
 // Helper function to grab the pk/sk from a "pk|sk" string.
 pub(crate) fn get_pk_sk_from_string(id: &str) -> Result<(&str, &str), ServerError> {
@@ -173,6 +189,9 @@ pub(crate) fn set_pk_sk_in_map(map: &mut DynamoMap, pk: String, sk: String) {
     map.insert("pk".to_string(), AttributeValue::S(pk));
     map.insert("sk".to_string(), AttributeValue::S(sk));
 }
+
+// Tests.
+// ----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

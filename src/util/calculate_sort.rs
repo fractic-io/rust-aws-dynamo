@@ -25,7 +25,7 @@ impl Ord for OrderedItem<'_> {
 }
 
 // Strip final UUID or timestamp from a DynamoDB ID.
-fn _sk_strip_uuid<T: DynamoObject>(
+fn sk_strip_uuid<T: DynamoObject>(
     id_logic: IdLogic<T::Data>,
     sk: String,
 ) -> Result<String, ServerError> {
@@ -66,7 +66,7 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
     let (example_pk, example_sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
     let search_id = PkSk {
         pk: example_pk,
-        sk: _sk_strip_uuid::<T>(T::id_logic(), example_sk)?,
+        sk: sk_strip_uuid::<T>(T::id_logic(), example_sk)?,
     };
     let query = util
         .query::<T>(None, search_id, DynamoQueryMatchType::BeginsWith)
@@ -413,7 +413,7 @@ mod tests {
         // function doesn't use it and we just want to test the function logic
         // here.
         assert_eq!(
-            _sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_uuid::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::Uuid,
                 "GROUP#123#TEST#123".to_string()
             )
@@ -421,7 +421,7 @@ mod tests {
             "GROUP#123#TEST"
         );
         assert_eq!(
-            _sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_uuid::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::Timestamp,
                 "GROUP#123#TEST2#0005416".to_string()
             )
@@ -429,7 +429,7 @@ mod tests {
             "GROUP#123#TEST2"
         );
         assert_eq!(
-            _sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_uuid::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::Singleton,
                 "@SINGLETON".to_string()
             )
@@ -437,7 +437,7 @@ mod tests {
             "@SINGLETON"
         );
         assert_eq!(
-            _sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_uuid::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::SingletonExt,
                 "@SINGLETONEXT".to_string()
             )
@@ -445,7 +445,7 @@ mod tests {
             "@SINGLETONEXT"
         );
         assert_eq!(
-            _sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_uuid::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::IndexedSingleton(Box::new(|_| Cow::Borrowed(
                     "samplekey"
                 ))),
@@ -455,10 +455,10 @@ mod tests {
             "@SINGLETONFAM"
         );
         assert_eq!(
-            _sk_strip_uuid::<TestDynamoObject>(
-                IdLogic::<TestDynamoObjectData>::IndexedSingletonExt(Box::new(
-                    |_| Cow::Borrowed("samplekey")
-                )),
+            sk_strip_uuid::<TestDynamoObject>(
+                IdLogic::<TestDynamoObjectData>::IndexedSingletonExt(Box::new(|_| Cow::Borrowed(
+                    "samplekey"
+                ))),
                 "@SINGLETONFAM[samplekey]".to_string()
             )
             .unwrap(),

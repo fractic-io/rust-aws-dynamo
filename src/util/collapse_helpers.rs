@@ -95,7 +95,12 @@ async fn fetch_num_partitions_batch(
     util: &DynamoUtil,
     base_ids: &[PkSk],
 ) -> Result<HashMap<PkSk, usize>, ServerError> {
-    let items = util.raw_batch_get_ids(base_ids.to_vec(), None).await?;
+    let items = util
+        .raw_batch_get_ids(
+            base_ids.to_vec(),
+            Some(format!("pk, sk, {}", PARTITION_COUNT_KEY)),
+        )
+        .await?;
     let mut counts = HashMap::new();
     for item in items {
         let id = PkSk::from_map(&item)?;

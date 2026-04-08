@@ -1057,7 +1057,7 @@ mod tests {
             .unwrap_err();
         assert!(err
             .to_string()
-            .contains("Update-style operations are not supported"));
+            .contains("Property-level operations"));
     }
 
     #[tokio::test]
@@ -1329,7 +1329,7 @@ mod tests {
                     "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }]),
-                eq(None),
+                eq(Some("pk, sk, #!".to_string())),
             )
             .returning(|_, _, _| {
                 Ok(BatchGetItemOutput::builder()
@@ -1385,7 +1385,7 @@ mod tests {
                         "sk".to_string() => AttributeValue::S("@PARTINDEX[b]".to_string()),
                     },
                 ]),
-                eq(None),
+                eq(Some("pk, sk, #!".to_string())),
             )
             .returning(|_, _, _| {
                 Ok(BatchGetItemOutput::builder()

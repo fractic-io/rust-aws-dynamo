@@ -8,7 +8,7 @@ use crate::{
     errors::{DynamoCalloutError, DynamoInvalidOperation},
     schema::{
         id_calculations::{get_ext_index, strip_ext_suffix},
-        parsing::{build_dynamo_map_internal, parse_json_object_to_dynamo_map},
+        parsing::{build_dynamo_map_internal, deserialize_dynamo_map_partitions},
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
     util::{
@@ -221,7 +221,7 @@ pub(crate) fn collapse_partitioned_items(
                     )));
                 }
 
-                let serialized = partitions
+                let serialized_partitions = partitions
                     .iter()
                     .map(|item| {
                         item.get(COLLAPSE_RESERVED_KEY)
@@ -233,10 +233,9 @@ pub(crate) fn collapse_partitioned_items(
                                 )
                             })
                     })
-                    .collect::<Result<Vec<_>, ServerError>>()?
-                    .join("");
-                let mut logical_item =
-                    parse_json_object_to_dynamo_map(&serialized)?.with_metadata_from(&placeholder);
+                    .collect::<Result<Vec<_>, ServerError>>()?;
+                let mut logical_item = deserialize_dynamo_map_partitions(serialized_partitions)?
+                    .with_metadata_from(&placeholder);
                 base_id.write_to_map(&mut logical_item);
                 collapsed.push(logical_item);
             }

@@ -92,9 +92,9 @@ mod tests {
         PartitionedIndexedSingleton,
         PartitionedIndexedSingletonData,
         "PARTINDEX",
-        IdLogic::IndexedSingletonExt(Box::new(
-            |data: &PartitionedIndexedSingletonData| Cow::Borrowed(&data.key)
-        )),
+        IdLogic::IndexedSingletonExt(Box::new(|data: &PartitionedIndexedSingletonData| {
+            Cow::Borrowed(&data.key)
+        })),
         NestingLogic::Root
     );
 
@@ -178,7 +178,11 @@ mod tests {
         )
     }
 
-    fn build_partitioned_placeholder(pk: &str, sk: &str, total: usize) -> HashMap<String, AttributeValue> {
+    fn build_partitioned_placeholder(
+        pk: &str,
+        sk: &str,
+        total: usize,
+    ) -> HashMap<String, AttributeValue> {
         collection! {
             "pk".to_string() => AttributeValue::S(pk.to_string()),
             "sk".to_string() => AttributeValue::S(sk.to_string()),
@@ -186,7 +190,11 @@ mod tests {
         }
     }
 
-    fn build_partitioned_item(pk: &str, sk: &str, partition: &str) -> HashMap<String, AttributeValue> {
+    fn build_partitioned_item(
+        pk: &str,
+        sk: &str,
+        partition: &str,
+    ) -> HashMap<String, AttributeValue> {
         collection! {
             "pk".to_string() => AttributeValue::S(pk.to_string()),
             "sk".to_string() => AttributeValue::S(sk.to_string()),
@@ -805,9 +813,15 @@ mod tests {
             .withf(|table, items| {
                 table == "my_table"
                     && items.len() == 3
-                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE")
-                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE+0")
-                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE+1")
+                    && items
+                        .iter()
+                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE")
+                    && items
+                        .iter()
+                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE+0")
+                    && items
+                        .iter()
+                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTSINGLE+1")
             })
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
@@ -897,10 +911,18 @@ mod tests {
             .withf(|table, items| {
                 table == "my_table"
                     && items.len() == 4
-                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[a]")
-                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[a]+0")
-                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[b]")
-                    && items.iter().any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[b]+0")
+                    && items
+                        .iter()
+                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[a]")
+                    && items
+                        .iter()
+                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[a]+0")
+                    && items
+                        .iter()
+                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[b]")
+                    && items
+                        .iter()
+                        .any(|i| i.get("sk").unwrap().as_s().unwrap() == "@PARTINDEX[b]+0")
             })
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
@@ -1033,7 +1055,9 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("Update-style operations are not supported"));
+        assert!(err
+            .to_string()
+            .contains("Update-style operations are not supported"));
     }
 
     #[tokio::test]

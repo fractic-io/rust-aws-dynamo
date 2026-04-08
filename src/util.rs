@@ -58,12 +58,13 @@ pub const AUTO_FIELDS_TTL: &str = "ttl";
 /// In case of batch items, the '..' key is used to store the batch items array,
 /// which should be expanded before returning to the caller.
 pub const EXPAND_RESERVED_KEY: &str = ".."; // WARNING: Also hardcoded
-                                            // in batch_replace_all_ordered.
+                                            // in `expand_helpers.rs`.
 
 /// In case of partition items, the '##' key is used to store the object
 /// partition string, which should be collapsed with other partitions before
 /// returning to the caller.
-pub const COLLAPSE_RESERVED_KEY: &str = "##";
+pub const COLLAPSE_RESERVED_KEY: &str = "##"; // WARNING: Also hardcoded
+                                              // in `collapse_helpers.rs`.
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -351,9 +352,9 @@ impl DynamoUtil {
 
         let mut items = expand_query_items(
             response
-            .into_iter()
-            .flat_map(|page| page.items.unwrap_or_default().into_iter())
-            .collect(),
+                .into_iter()
+                .flat_map(|page| page.items.unwrap_or_default().into_iter())
+                .collect(),
         );
         items = collapse_partitioned_items(items)?;
 

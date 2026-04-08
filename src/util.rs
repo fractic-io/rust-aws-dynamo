@@ -60,15 +60,15 @@ pub const AUTO_FIELDS_TTL: &str = "ttl";
 /// which should be expanded before returning to the caller.
 ///
 /// WARNING: Also hardcoded in `expand_helpers.rs`.
-pub const EXPAND_RESERVED_KEY: &str = "..";
+pub const EXPAND_DATA_RESERVED_KEY: &str = "..";
 
 /// In case of partition items, the '##' key is used to store the object
 /// partition string, which should be collapsed with other partitions before
 /// returning to the caller.
 ///
 /// WARNING: Also hardcoded in `collapse_helpers.rs`.
-pub const COLLAPSE_RESERVED_KEY: &str = "##";
-pub const COLLAPSE_COUNT_RESERVED_KEY: &str = "#!";
+pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
+pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {

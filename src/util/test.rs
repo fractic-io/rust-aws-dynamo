@@ -4,8 +4,8 @@ mod tests {
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL,
-        COLLAPSE_COUNT_RESERVED_KEY, COLLAPSE_RESERVED_KEY, EXPAND_RESERVED_KEY,
+        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, COLLAPSE_DATA_RESERVED_KEY,
+        COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
@@ -186,7 +186,7 @@ mod tests {
         collection! {
             "pk".to_string() => AttributeValue::S(pk.to_string()),
             "sk".to_string() => AttributeValue::S(sk.to_string()),
-            COLLAPSE_COUNT_RESERVED_KEY.to_string() => AttributeValue::N(total.to_string()),
+            COLLAPSE_PLACEHOLDER_RESERVED_KEY.to_string() => AttributeValue::N(total.to_string()),
         }
     }
 
@@ -198,7 +198,7 @@ mod tests {
         collection! {
             "pk".to_string() => AttributeValue::S(pk.to_string()),
             "sk".to_string() => AttributeValue::S(sk.to_string()),
-            COLLAPSE_RESERVED_KEY.to_string() => AttributeValue::S(partition.to_string()),
+            COLLAPSE_DATA_RESERVED_KEY.to_string() => AttributeValue::S(partition.to_string()),
         }
     }
 
@@ -365,7 +365,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S(bid1.pk.clone()),
                             "sk".to_string() => AttributeValue::S(bid1.sk.clone()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_DATA_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
                             ]),
@@ -381,7 +381,7 @@ mod tests {
                             "sk".to_string() => AttributeValue::S(bid2.sk.clone()),
                             AUTO_FIELDS_CREATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
                             AUTO_FIELDS_UPDATED_AT.to_string() => AttributeValue::S(tm_str.clone()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_DATA_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1),
                                 AttributeValue::M(build_item_low_sort().1),
                             ]),
@@ -788,13 +788,13 @@ mod tests {
                     "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }),
-                eq(Some(format!("pk, {}", COLLAPSE_COUNT_RESERVED_KEY))),
+                eq(Some(format!("pk, {}", COLLAPSE_PLACEHOLDER_RESERVED_KEY))),
             )
             .returning(|_, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
                         "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        COLLAPSE_COUNT_RESERVED_KEY.to_string() => AttributeValue::N("3".to_string()),
+                        COLLAPSE_PLACEHOLDER_RESERVED_KEY.to_string() => AttributeValue::N("3".to_string()),
                     }))
                     .build())
             });
@@ -1055,9 +1055,7 @@ mod tests {
             })
             .await
             .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("Property-level operations"));
+        assert!(err.to_string().contains("Property-level operations"));
     }
 
     #[tokio::test]
@@ -1329,7 +1327,7 @@ mod tests {
                     "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }]),
-                eq(Some(format!("pk, sk, {}", COLLAPSE_COUNT_RESERVED_KEY))),
+                eq(Some(format!("pk, sk, {}", COLLAPSE_PLACEHOLDER_RESERVED_KEY))),
             )
             .returning(|_, _, _| {
                 Ok(BatchGetItemOutput::builder()
@@ -1385,7 +1383,10 @@ mod tests {
                         "sk".to_string() => AttributeValue::S("@PARTINDEX[b]".to_string()),
                     },
                 ]),
-                eq(Some(format!("pk, sk, {}", COLLAPSE_COUNT_RESERVED_KEY))),
+                eq(Some(format!(
+                    "pk, sk, {}",
+                    COLLAPSE_PLACEHOLDER_RESERVED_KEY
+                ))),
             )
             .returning(|_, _, _| {
                 Ok(BatchGetItemOutput::builder()
@@ -1589,7 +1590,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                             "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_DATA_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(collection! {
                                     "val".to_string() => AttributeValue::S("old_a".to_string()),
                                 }),
@@ -1601,7 +1602,7 @@ mod tests {
                         collection! {
                             "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                             "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#1".to_string()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_DATA_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(collection! {
                                     "val".to_string() => AttributeValue::S("old_c".to_string()),
                                 }),
@@ -1777,7 +1778,7 @@ mod tests {
                     .set_items(Some(vec![collection! {
                         "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
                         "sk".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#0".to_string()),
-                        EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                        EXPAND_DATA_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                             AttributeValue::M(collection! {
                                 "val".to_string() => AttributeValue::S("old_a".to_string()),
                             }),
@@ -1872,7 +1873,7 @@ mod tests {
                         .set_items(Some(vec![collection! {
                             "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                             "sk".to_string() => AttributeValue::S("GROUP#000#BATCH".to_string()),
-                            EXPAND_RESERVED_KEY.to_string() => AttributeValue::L(vec![
+                            EXPAND_DATA_RESERVED_KEY.to_string() => AttributeValue::L(vec![
                                 AttributeValue::M(build_item_high_sort().1.clone()),
                                 AttributeValue::M(build_item_low_sort().1.clone()),
                             ]),
@@ -1890,9 +1891,9 @@ mod tests {
         assert_eq!(result[0], build_item_no_data().1);
         // Second item should still contain the EXPAND_RESERVED_KEY as a list.
         let second = &result[1];
-        assert!(second.get(EXPAND_RESERVED_KEY).is_some());
+        assert!(second.get(EXPAND_DATA_RESERVED_KEY).is_some());
         assert!(matches!(
-            second.get(EXPAND_RESERVED_KEY).unwrap(),
+            second.get(EXPAND_DATA_RESERVED_KEY).unwrap(),
             AttributeValue::L(_)
         ));
     }

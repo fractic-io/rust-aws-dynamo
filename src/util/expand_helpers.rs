@@ -5,7 +5,7 @@ use crate::{
     schema::{parsing::build_dynamo_map_internal, DynamoObject, NestingLogic, PkSk, Timestamp},
     util::{
         metadata_helpers::WithMetadataFrom as _, DynamoMap, AUTO_FIELDS_CREATED_AT,
-        AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, EXPAND_RESERVED_KEY,
+        AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, EXPAND_DATA_RESERVED_KEY,
     },
 };
 
@@ -26,7 +26,7 @@ struct ExpandableBatch<T: DynamoObject> {
 pub(crate) fn expand_batched_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
     items
         .into_iter()
-        .flat_map(|mut item| match item.remove(EXPAND_RESERVED_KEY) {
+        .flat_map(|mut item| match item.remove(EXPAND_DATA_RESERVED_KEY) {
             Some(aws_sdk_dynamodb::types::AttributeValue::L(children)) => children
                 .into_iter()
                 .filter_map(|child| {

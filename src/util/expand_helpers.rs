@@ -23,7 +23,7 @@ struct ExpandableBatch<T: DynamoObject> {
 // Read logic.
 // ----------------------------------------------------------------------------
 
-pub(crate) fn expand_query_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
+pub(crate) fn expand_batched_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
     items
         .into_iter()
         .flat_map(|mut item| match item.remove(EXPAND_RESERVED_KEY) {
@@ -45,7 +45,7 @@ pub(crate) fn expand_query_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
 // Write logic.
 // ----------------------------------------------------------------------------
 
-pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
+pub(crate) fn build_expandable_batch_items<T: DynamoObject>(
     parent_id: &PkSk,
     data: Vec<T::Data>,
     batch_size: usize,

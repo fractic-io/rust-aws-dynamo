@@ -34,7 +34,7 @@ use crate::{
             build_partition_write_plan, collapse_partitioned_items, expand_partition_delete_ids,
             ext_base_id, is_partitioned_id_logic,
         },
-        expand_helpers::{build_expandable_batch_maps, expand_query_items},
+        expand_helpers::{build_expandable_batch_items, expand_batched_items},
         id_relations::{child_search_prefix, validate_id, validate_parent_id},
         update_helpers::CmpOp,
     },
@@ -354,7 +354,7 @@ impl DynamoUtil {
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
 
-        let mut items = expand_query_items(
+        let mut items = expand_batched_items(
             response
                 .into_iter()
                 .flat_map(|page| page.items.unwrap_or_default().into_iter())
@@ -392,28 +392,29 @@ impl DynamoUtil {
             let items = self
                 .query::<T>(None, ext_base_id(&id), DynamoQueryMatchType::BeginsWith)
                 .await?;
-            return match items.len() {
+            match items.len() {
                 0 => Ok(None),
                 1 => Ok(items.into_iter().next()),
                 n => Err(DynamoUnexpectedItemCount::new(&format!(
                     "expected at most one logical item for '{}', got {}",
                     id, n
                 ))),
+            }
+        } else {
+            let key = collection! {
+                "pk".to_string() => AttributeValue::S(id.pk),
+                "sk".to_string() => AttributeValue::S(id.sk),
             };
+            let response = self
+                .backend
+                .get_item(self.table.clone(), key, None)
+                .await
+                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+            response
+                .item
+                .map(|item| parse_dynamo_map::<T>(&item))
+                .transpose()
         }
-        let key = collection! {
-            "pk".to_string() => AttributeValue::S(id.pk),
-            "sk".to_string() => AttributeValue::S(id.sk),
-        };
-        let response = self
-            .backend
-            .get_item(self.table.clone(), key, None)
-            .await
-            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-        response
-            .item
-            .map(|item| parse_dynamo_map::<T>(&item))
-            .transpose()
     }
 
     /// Efficiently checks if an item exists, without fetching item data.
@@ -471,25 +472,26 @@ impl DynamoUtil {
             let plan = build_partition_write_plan::<T>(self, &logical_id, &data, sort, ttl).await?;
             self.raw_batch_delete_ids(plan.stale_delete_ids).await?;
             self.raw_batch_put_item(plan.put_items).await?;
-            return Ok(T::new(logical_id, data));
+            Ok(T::new(logical_id, data))
+        } else {
+            let now = Timestamp::now();
+            let map = build_dynamo_map_for_new_obj::<T>(
+                &data,
+                pk.clone(),
+                sk.clone(),
+                Some(vec![
+                    (AUTO_FIELDS_CREATED_AT, Box::new(now.clone())),
+                    (AUTO_FIELDS_UPDATED_AT, Box::new(now)),
+                    (AUTO_FIELDS_SORT, Box::new(sort)),
+                    (AUTO_FIELDS_TTL, Box::new(ttl)),
+                ]),
+            )?;
+            self.backend
+                .put_item(self.table.clone(), map)
+                .await
+                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+            Ok(T::new(PkSk { pk, sk }, data))
         }
-        let now = Timestamp::now();
-        let map = build_dynamo_map_for_new_obj::<T>(
-            &data,
-            pk.clone(),
-            sk.clone(),
-            Some(vec![
-                (AUTO_FIELDS_CREATED_AT, Box::new(now.clone())),
-                (AUTO_FIELDS_UPDATED_AT, Box::new(now)),
-                (AUTO_FIELDS_SORT, Box::new(sort)),
-                (AUTO_FIELDS_TTL, Box::new(ttl)),
-            ]),
-        )?;
-        self.backend
-            .put_item(self.table.clone(), map)
-            .await
-            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-        Ok(T::new(PkSk { pk, sk }, data))
     }
 
     pub async fn batch_create_item<T: DynamoObject>(
@@ -547,48 +549,50 @@ impl DynamoUtil {
             }
             self.raw_batch_delete_ids(stale_delete_ids).await?;
             self.raw_batch_put_item(items).await?;
-            return Ok(created);
+            Ok(created)
+        } else {
+            let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_options
+                .iter()
+                .map(|(data, options)| {
+                    let PkSk { pk, sk } = options.token.as_ref().map_or_else(
+                        || Ok(self.create_token::<T>(parent_id, data)?.id),
+                        |t| Ok(t.id.clone()),
+                    )?;
+                    let sort: Option<f64> = options.custom_sort;
+                    let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
+                    let now = Timestamp::now();
+                    Ok((
+                        build_dynamo_map_for_new_obj::<T>(
+                            data,
+                            pk.clone(),
+                            sk.clone(),
+                            Some(vec![
+                                (AUTO_FIELDS_CREATED_AT, Box::new(now.clone())),
+                                (AUTO_FIELDS_UPDATED_AT, Box::new(now)),
+                                (AUTO_FIELDS_SORT, Box::new(sort)),
+                                (AUTO_FIELDS_TTL, Box::new(ttl)),
+                            ]),
+                        )?,
+                        PkSk { pk, sk },
+                    ))
+                })
+                .collect::<Result<Vec<(DynamoMap, PkSk)>, ServerError>>()?
+                .into_iter()
+                .unzip();
+
+            // Split into 25-item batches (max supported by DynamoDB).
+            for batch in items.chunks(25) {
+                self.backend
+                    .batch_put_item(self.table.clone(), batch.to_vec())
+                    .await
+                    .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+            }
+            Ok(ids
+                .into_iter()
+                .zip(data_and_options.into_iter())
+                .map(|(id, (data, _))| T::new(id, data))
+                .collect())
         }
-        let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_options
-            .iter()
-            .map(|(data, options)| {
-                let PkSk { pk, sk } = options.token.as_ref().map_or_else(
-                    || Ok(self.create_token::<T>(parent_id, data)?.id),
-                    |t| Ok(t.id.clone()),
-                )?;
-                let sort: Option<f64> = options.custom_sort;
-                let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
-                let now = Timestamp::now();
-                Ok((
-                    build_dynamo_map_for_new_obj::<T>(
-                        data,
-                        pk.clone(),
-                        sk.clone(),
-                        Some(vec![
-                            (AUTO_FIELDS_CREATED_AT, Box::new(now.clone())),
-                            (AUTO_FIELDS_UPDATED_AT, Box::new(now)),
-                            (AUTO_FIELDS_SORT, Box::new(sort)),
-                            (AUTO_FIELDS_TTL, Box::new(ttl)),
-                        ]),
-                    )?,
-                    PkSk { pk, sk },
-                ))
-            })
-            .collect::<Result<Vec<(DynamoMap, PkSk)>, ServerError>>()?
-            .into_iter()
-            .unzip();
-        // Split into 25-item batches (max supported by DynamoDB).
-        for batch in items.chunks(25) {
-            self.backend
-                .batch_put_item(self.table.clone(), batch.to_vec())
-                .await
-                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-        }
-        Ok(ids
-            .into_iter()
-            .zip(data_and_options.into_iter())
-            .map(|(id, (data, _))| T::new(id, data))
-            .collect())
     }
 
     /// Use when complex ordering is required (for simple ordering, consider
@@ -963,20 +967,21 @@ impl DynamoUtil {
         validate_id::<T>(&id)?;
         if is_partitioned_id_logic::<T>() {
             let ids = expand_partition_delete_ids::<T>(self, vec![id]).await?;
-            return self.raw_batch_delete_ids(ids).await;
+            self.raw_batch_delete_ids(ids).await
+        } else {
+            let key = collection! {
+                "pk".to_string() => AttributeValue::S(id.pk),
+                "sk".to_string() => AttributeValue::S(id.sk),
+            };
+            self.backend
+                .delete_item(self.table.clone(), key)
+                .await
+                .map_err(|e| match e.into_service_error() {
+                    DeleteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
+                    other => DynamoCalloutError::with_debug(&other),
+                })?;
+            Ok(())
         }
-        let key = collection! {
-            "pk".to_string() => AttributeValue::S(id.pk),
-            "sk".to_string() => AttributeValue::S(id.sk),
-        };
-        self.backend
-            .delete_item(self.table.clone(), key)
-            .await
-            .map_err(|e| match e.into_service_error() {
-                DeleteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
-                other => DynamoCalloutError::with_debug(&other),
-            })?;
-        Ok(())
     }
 
     pub async fn batch_delete_item<T: DynamoObject>(
@@ -1048,7 +1053,7 @@ impl DynamoUtil {
         // For batch-optimized ID logic, group the data into expandable batches.
         // -------------------------------------------------------------------
         req_not_none!(batch_size, CriticalError);
-        let maps = build_expandable_batch_maps::<T>(parent_id, data, batch_size)?;
+        let maps = build_expandable_batch_items::<T>(parent_id, data, batch_size)?;
 
         self.raw_batch_put_item(maps).await
     }

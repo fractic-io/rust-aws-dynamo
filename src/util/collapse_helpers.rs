@@ -61,28 +61,6 @@ pub(crate) fn ext_base_id(id: &PkSk) -> PkSk {
     }
 }
 
-fn build_partition_ids(base_id: &PkSk, total_partitions: usize) -> Vec<PkSk> {
-    (0..total_partitions)
-        .map(|idx| partition_id(base_id, idx, total_partitions))
-        .collect()
-}
-
-fn partition_id(base_id: &PkSk, idx: usize, total_partitions: usize) -> PkSk {
-    let digits = partition_digits(total_partitions);
-    PkSk {
-        pk: base_id.pk.clone(),
-        sk: format!("{}+{:0digits$}", base_id.sk, idx),
-    }
-}
-
-fn partition_digits(total_partitions: usize) -> usize {
-    match total_partitions {
-        0 => 1,
-        1 => 1,
-        n => (n - 1).ilog10() as usize + 1,
-    }
-}
-
 /// Read logic.
 /// ---------------------------------------------------------------------------
 
@@ -125,9 +103,9 @@ pub(crate) fn collapse_partitioned_items(
     let mut seen_partition_groups = HashSet::new();
 
     for item in items {
-        let has_partition = item.contains_key(COLLAPSE_RESERVED_KEY);
-        let has_placeholder = item.contains_key(PARTITION_COUNT_KEY);
-        if !has_partition && !has_placeholder {
+        let is_partition = item.contains_key(COLLAPSE_RESERVED_KEY);
+        let is_placeholder = item.contains_key(PARTITION_COUNT_KEY);
+        if !is_partition && !is_placeholder {
             ordered_entries.push(OrderedEntry::Item(item));
             continue;
         }
@@ -137,7 +115,7 @@ pub(crate) fn collapse_partitioned_items(
         if seen_partition_groups.insert(base_id.clone()) {
             ordered_entries.push(OrderedEntry::Partitioned(base_id.clone()));
         }
-        if has_partition {
+        if is_partition {
             partition_groups.entry(base_id).or_default().push(item);
         } else {
             placeholder_groups.insert(base_id, item);
@@ -258,6 +236,28 @@ fn common_overrides(
         (AUTO_FIELDS_SORT, Box::new(sort)),
         (AUTO_FIELDS_TTL, Box::new(ttl)),
     ]
+}
+
+fn build_partition_ids(base_id: &PkSk, total_partitions: usize) -> Vec<PkSk> {
+    fn partition_digits(total_partitions: usize) -> usize {
+        match total_partitions {
+            0 => 1,
+            1 => 1,
+            n => (n - 1).ilog10() as usize + 1,
+        }
+    }
+
+    fn partition_id(base_id: &PkSk, idx: usize, total_partitions: usize) -> PkSk {
+        let digits = partition_digits(total_partitions);
+        PkSk {
+            pk: base_id.pk.clone(),
+            sk: format!("{}+{:0digits$}", base_id.sk, idx),
+        }
+    }
+
+    (0..total_partitions)
+        .map(|idx| partition_id(base_id, idx, total_partitions))
+        .collect()
 }
 
 pub(crate) async fn build_partition_write_plan<T: DynamoObject>(

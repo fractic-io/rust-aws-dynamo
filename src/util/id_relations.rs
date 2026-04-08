@@ -2,7 +2,7 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoInvalidOperation,
-    schema::{DynamoObject, IdLogic, NestingLogic, PkSk},
+    schema::{id_calculations::append_child_sk, DynamoObject, IdLogic, NestingLogic, PkSk},
 };
 
 #[track_caller]
@@ -68,7 +68,7 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
         },
         NestingLogic::InlineChildOfAny | NestingLogic::InlineChildOf(_) => PkSk {
             pk: parent_id.pk.clone(),
-            sk: format!("{}#{}", parent_id.sk, sk_search_prefix),
+            sk: append_child_sk(&parent_id.sk, &sk_search_prefix),
         },
     }
 }
@@ -177,9 +177,9 @@ mod tests {
         InlineIndexedSingletonExt,
         InlineIndexedSingletonExtData,
         "INLFAMEXT",
-        IdLogic::IndexedSingletonExt(Box::new(
-            |data: &InlineIndexedSingletonExtData| Cow::Borrowed(&data.key)
-        )),
+        IdLogic::IndexedSingletonExt(Box::new(|data: &InlineIndexedSingletonExtData| {
+            Cow::Borrowed(&data.key)
+        })),
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
@@ -279,7 +279,7 @@ mod tests {
             child_search_prefix::<InlineSingleton>(&inline_singleton_search),
             PkSk {
                 pk: "P".into(),
-                sk: "S#@INLSINGLE".into()
+                sk: "S@INLSINGLE".into()
             }
         );
 
@@ -292,7 +292,7 @@ mod tests {
             child_search_prefix::<InlineIndexedSingleton>(&inline_indexed_singleton_search),
             PkSk {
                 pk: "P".into(),
-                sk: "S#@INLFAM".into()
+                sk: "S@INLFAM".into()
             }
         );
 
@@ -301,7 +301,7 @@ mod tests {
             child_search_prefix::<InlineSingletonExt>(&inline_singleton_search),
             PkSk {
                 pk: "P".into(),
-                sk: "S#@INLSINGLEEXT".into()
+                sk: "S@INLSINGLEEXT".into()
             }
         );
 
@@ -310,7 +310,7 @@ mod tests {
             child_search_prefix::<InlineIndexedSingletonExt>(&inline_indexed_singleton_search),
             PkSk {
                 pk: "P".into(),
-                sk: "S#@INLFAMEXT".into()
+                sk: "S@INLFAMEXT".into()
             }
         );
 

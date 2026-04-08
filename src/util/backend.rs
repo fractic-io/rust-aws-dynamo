@@ -5,6 +5,7 @@ use aws_config::{BehaviorVersion, Region};
 use aws_sdk_dynamodb::{
     error::SdkError,
     operation::{
+        batch_get_item::{BatchGetItemError, BatchGetItemOutput},
         batch_write_item::{BatchWriteItemError, BatchWriteItemOutput},
         delete_item::{DeleteItemError, DeleteItemOutput},
         get_item::{GetItemError, GetItemOutput},
@@ -13,7 +14,7 @@ use aws_sdk_dynamodb::{
         scan::{ScanError, ScanOutput},
         update_item::{UpdateItemError, UpdateItemOutput},
     },
-    types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
+    types::{AttributeValue, DeleteRequest, KeysAndAttributes, PutRequest, WriteRequest},
 };
 use fractic_context::register_ctx_singleton;
 use fractic_core::collection;
@@ -45,6 +46,13 @@ pub trait DynamoBackend: Send + Sync {
         key: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
     ) -> Result<GetItemOutput, SdkError<GetItemError>>;
+
+    async fn batch_get_item(
+        &self,
+        table_name: String,
+        keys: Vec<HashMap<String, AttributeValue>>,
+        projection_expression: Option<String>,
+    ) -> Result<BatchGetItemOutput, SdkError<BatchGetItemError>>;
 
     async fn put_item(
         &self,
@@ -124,6 +132,26 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .set_table_name(Some(table_name))
             .set_key(Some(key))
             .set_projection_expression(projection_expression)
+            .send()
+            .await
+    }
+
+    async fn batch_get_item(
+        &self,
+        table_name: String,
+        keys: Vec<HashMap<String, AttributeValue>>,
+        projection_expression: Option<String>,
+    ) -> Result<BatchGetItemOutput, SdkError<BatchGetItemError>> {
+        let mut request = KeysAndAttributes::builder().set_keys(Some(keys));
+        if let Some(projection_expression) = projection_expression {
+            request = request.projection_expression(projection_expression);
+        }
+        self.batch_get_item()
+            .set_request_items(Some(collection!(
+                table_name => request
+                    .build()
+                    .expect("Invalid KeysAndAttributes")
+            )))
             .send()
             .await
     }

@@ -18,9 +18,9 @@ mod tests {
 
     use aws_sdk_dynamodb::{
         operation::{
-            batch_write_item::BatchWriteItemOutput, delete_item::DeleteItemOutput,
-            get_item::GetItemOutput, put_item::PutItemOutput, query::QueryOutput, scan::ScanOutput,
-            update_item::UpdateItemOutput,
+            batch_get_item::BatchGetItemOutput, batch_write_item::BatchWriteItemOutput,
+            delete_item::DeleteItemOutput, get_item::GetItemOutput, put_item::PutItemOutput,
+            query::QueryOutput, scan::ScanOutput, update_item::UpdateItemOutput,
         },
         types::AttributeValue,
     };
@@ -186,7 +186,7 @@ mod tests {
         collection! {
             "pk".to_string() => AttributeValue::S(pk.to_string()),
             "sk".to_string() => AttributeValue::S(sk.to_string()),
-            "ext_total_partitions".to_string() => AttributeValue::N(total.to_string()),
+            "#!".to_string() => AttributeValue::N(total.to_string()),
         }
     }
 
@@ -788,13 +788,13 @@ mod tests {
                     "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }),
-                eq(Some("pk, ext_total_partitions".to_string())),
+                eq(Some("pk, #!".to_string())),
             )
             .returning(|_, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
                         "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "ext_total_partitions".to_string() => AttributeValue::N("3".to_string()),
+                        "#!".to_string() => AttributeValue::N("3".to_string()),
                     }))
                     .build())
             });
@@ -1322,20 +1322,19 @@ mod tests {
     async fn test_delete_item_partitioned_singleton_deletes_placeholder_and_partitions() {
         let mut backend = MockDynamoBackend::new();
         backend
-            .expect_get_item()
+            .expect_batch_get_item()
             .with(
                 eq("my_table".to_string()),
-                eq::<HashMap<String, AttributeValue>>(collection! {
+                eq(vec![collection! {
                     "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
-                }),
-                eq(Some("pk, ext_total_partitions".to_string())),
+                }]),
+                eq(None),
             )
             .returning(|_, _, _| {
-                Ok(GetItemOutput::builder()
-                    .set_item(Some(collection! {
-                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
-                        "ext_total_partitions".to_string() => AttributeValue::N("2".to_string()),
+                Ok(BatchGetItemOutput::builder()
+                    .set_responses(Some(collection! {
+                        "my_table".to_string() => vec![build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2)],
                     }))
                     .build())
             });
@@ -1365,6 +1364,83 @@ mod tests {
             pk: "ROOT".to_string(),
             sk: "@PARTSINGLE".to_string(),
         })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_batch_delete_item_partitioned_uses_batch_get_and_dedups_ids() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_batch_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq(vec![
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]".to_string()),
+                    },
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[b]".to_string()),
+                    },
+                ]),
+                eq(None),
+            )
+            .returning(|_, _, _| {
+                Ok(BatchGetItemOutput::builder()
+                    .set_responses(Some(collection! {
+                        "my_table".to_string() => vec![
+                            build_partitioned_placeholder("ROOT", "@PARTINDEX[a]", 2),
+                            build_partitioned_placeholder("ROOT", "@PARTINDEX[b]", 1),
+                        ],
+                    }))
+                    .build())
+            });
+        backend
+            .expect_batch_delete_item()
+            .with(
+                eq("my_table".to_string()),
+                eq(vec![
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]".to_string()),
+                    },
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]+0".to_string()),
+                    },
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[a]+1".to_string()),
+                    },
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[b]".to_string()),
+                    },
+                    collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                        "sk".to_string() => AttributeValue::S("@PARTINDEX[b]+0".to_string()),
+                    },
+                ]),
+            )
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        util.batch_delete_item::<PartitionedIndexedSingleton>(vec![
+            PkSk {
+                pk: "ROOT".to_string(),
+                sk: "@PARTINDEX[a]".to_string(),
+            },
+            PkSk {
+                pk: "ROOT".to_string(),
+                sk: "@PARTINDEX[b]".to_string(),
+            },
+            PkSk {
+                pk: "ROOT".to_string(),
+                sk: "@PARTINDEX[a]".to_string(),
+            },
+        ])
         .await
         .unwrap();
     }

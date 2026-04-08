@@ -1066,6 +1066,54 @@ impl DynamoUtil {
             .collect())
     }
 
+    /// Performs no checks and directly fetches the given IDs from the database.
+    pub async fn raw_batch_get_ids(
+        &self,
+        keys: Vec<PkSk>,
+        projection_expression: Option<String>,
+    ) -> Result<Vec<DynamoMap>, ServerError> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut items = Vec::new();
+
+        // Split into 100-item batches (max supported by DynamoDB for reads).
+        for batch in keys.chunks(100) {
+            let mut pending_keys = batch
+                .iter()
+                .map(|id| {
+                    collection! {
+                        "pk".to_string() => AttributeValue::S(id.pk.clone()),
+                        "sk".to_string() => AttributeValue::S(id.sk.clone()),
+                    }
+                })
+                .collect::<Vec<_>>();
+            while !pending_keys.is_empty() {
+                let response = self
+                    .backend
+                    .batch_get_item(
+                        self.table.clone(),
+                        pending_keys,
+                        projection_expression.clone(),
+                    )
+                    .await
+                    .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+                if let Some(found) = response
+                    .responses()
+                    .and_then(|responses| responses.get(&self.table))
+                {
+                    items.extend(found.iter().cloned());
+                }
+                pending_keys = response
+                    .unprocessed_keys()
+                    .and_then(|keys| keys.get(&self.table))
+                    .map(|keys| keys.keys().to_vec())
+                    .unwrap_or_default();
+            }
+        }
+        Ok(items)
+    }
+
     /// Performs no checks and directly deletes the given IDs from the database.
     pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), ServerError> {
         if keys.is_empty() {
@@ -1080,6 +1128,7 @@ impl DynamoUtil {
                 }
             })
             .collect::<Vec<_>>();
+
         // Split into 25-item batches (max supported by DynamoDB).
         for batch in items.chunks(25) {
             self.backend
@@ -1105,6 +1154,7 @@ impl DynamoUtil {
         if items.is_empty() {
             return Ok(());
         }
+
         // Split into 25-item batches (max supported by DynamoDB).
         for batch in items.chunks(25) {
             self.backend

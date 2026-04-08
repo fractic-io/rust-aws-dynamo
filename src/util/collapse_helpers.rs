@@ -90,6 +90,27 @@ async fn fetch_num_partitions(
     }))
 }
 
+/// Batch version of `fetch_num_partitions`.
+async fn fetch_num_partitions_batch(
+    util: &DynamoUtil,
+    base_ids: &[PkSk],
+) -> Result<HashMap<PkSk, usize>, ServerError> {
+    let items = util.raw_batch_get_ids(base_ids.to_vec(), None).await?;
+    let mut counts = HashMap::new();
+    for item in items {
+        let id = PkSk::from_map(&item)?;
+        let Some(count) = item
+            .get(PARTITION_COUNT_KEY)
+            .and_then(|v| v.as_n().ok())
+            .and_then(|v| v.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        counts.insert(id, count);
+    }
+    Ok(counts)
+}
+
 /// Collapses queried placeholder and partition rows back into their logical
 /// items while preserving the original query order.
 ///
@@ -339,6 +360,8 @@ pub(crate) async fn build_partition_write_plan<T: DynamoObject>(
 // Delete logic.
 // ----------------------------------------------------------------------------
 
+/// Expands each logical ID into the placeholder row plus any partition rows so
+/// deleting a partitioned item removes the entire stored representation.
 pub(crate) async fn expand_partition_delete_ids<T: DynamoObject>(
     util: &DynamoUtil,
     ids: Vec<PkSk>,
@@ -347,16 +370,21 @@ pub(crate) async fn expand_partition_delete_ids<T: DynamoObject>(
         return Ok(ids);
     }
 
-    let mut out = Vec::new();
+    let mut base_ids = Vec::new();
     let mut seen = HashSet::new();
     for id in ids {
         let base_id = ext_base_id(&id);
         if !seen.insert(base_id.clone()) {
             continue;
         }
-        let count = fetch_num_partitions(util, &base_id).await?;
+        base_ids.push(base_id);
+    }
+
+    let partition_counts = fetch_num_partitions_batch(util, &base_ids).await?;
+    let mut out = Vec::new();
+    for base_id in base_ids {
         out.push(base_id.clone());
-        if let Some(count) = count {
+        if let Some(count) = partition_counts.get(&base_id).copied() {
             out.extend(build_partition_ids(&base_id, count));
         }
     }

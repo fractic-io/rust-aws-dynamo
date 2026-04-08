@@ -35,7 +35,7 @@ use crate::{
             ext_base_id, is_partitioned_id_logic,
         },
         expand_helpers::{build_expandable_batch_maps, expand_query_items},
-        id_helpers::{child_search_prefix, validate_id, validate_parent_id},
+        id_relations::{child_search_prefix, validate_id, validate_parent_id},
         update_helpers::CmpOp,
     },
     DynamoCtxView,
@@ -45,7 +45,7 @@ pub mod backend;
 mod calculate_sort;
 mod collapse_helpers;
 mod expand_helpers;
-mod id_helpers;
+mod id_relations;
 mod metadata_helpers;
 mod test;
 mod update_helpers;

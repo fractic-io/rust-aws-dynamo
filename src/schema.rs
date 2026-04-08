@@ -58,7 +58,8 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// It is safe to switch an existing `Singleton` to `SingletonExt`, but not
     /// in reverse.
     ///
-    /// <new-obj-id>: @LABEL+N
+    /// <placeholder>: @LABEL
+    /// <partition-ids>: @LABEL+N
     SingletonExt,
 
     /// Acts as a kind of map, where the key (determined by a given field in the
@@ -83,7 +84,8 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// It is safe to switch an existing `IndexedSingleton` to
     /// `IndexedSingletonExt`, but not in reverse.
     ///
-    /// <new-obj-id>: @LABEL[<key>]+N
+    /// <placeholder>: @LABEL[<key>]
+    /// <partition-ids>: @LABEL[<key>]+N
     IndexedSingletonExt(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
 
     /// Efficient batch-only access.

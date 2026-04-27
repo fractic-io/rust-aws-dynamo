@@ -217,6 +217,11 @@ pub trait DynamoObjectData:
 {
 }
 
+impl<T> DynamoObjectData for T where
+    T: Serialize + DeserializeOwned + std::fmt::Debug + Default + Clone + Send + Sync + 'static
+{
+}
+
 #[macro_export]
 macro_rules! dynamo_object {
     ($type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {
@@ -231,8 +236,6 @@ macro_rules! dynamo_object {
             #[serde(flatten)]
             pub auto_fields: $crate::schema::AutoFields,
         }
-
-        impl $crate::schema::DynamoObjectData for $datatype {}
 
         impl $crate::schema::DynamoObject for $type {
             type Data = $datatype;

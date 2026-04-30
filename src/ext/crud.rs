@@ -197,11 +197,8 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     // Item operations:
     // -----------------------------------------------------------------------
 
-    pub async fn get(&self) -> Result<O, ServerError> {
-        self.dynamo_util
-            .get_item::<O>(self.id_for())
-            .await?
-            .ok_or_else(|| DynamoNotFound::new())
+    pub async fn get(&self) -> Result<Option<O>, ServerError> {
+        self.dynamo_util.get_item::<O>(self.id_for()).await
     }
 
     pub async fn set(&self, data: O::Data) -> Result<O, ServerError> {
@@ -245,11 +242,8 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     // Item operations:
     // -----------------------------------------------------------------------
 
-    pub async fn get(&self, key: &str) -> Result<O, ServerError> {
-        self.dynamo_util
-            .get_item::<O>(self.id_for(key))
-            .await?
-            .ok_or_else(|| DynamoNotFound::new())
+    pub async fn get(&self, key: &str) -> Result<Option<O>, ServerError> {
+        self.dynamo_util.get_item::<O>(self.id_for(key)).await
     }
 
     pub async fn set(&self, data: O::Data) -> Result<O, ServerError> {
@@ -749,14 +743,11 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
     // Item operations:
     // -----------------------------------------------------------------------
 
-    pub async fn get<P>(&self, parent: &P) -> Result<O, ServerError>
+    pub async fn get<P>(&self, parent: &P) -> Result<Option<O>, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util
-            .get_item::<O>(self.id_for(parent))
-            .await?
-            .ok_or_else(|| DynamoNotFound::new())
+        self.dynamo_util.get_item::<O>(self.id_for(parent)).await
     }
 
     pub async fn set<P>(&self, parent: &P, data: O::Data) -> Result<O, ServerError>
@@ -817,14 +808,13 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
     // Item operations:
     // -----------------------------------------------------------------------
 
-    pub async fn get<P>(&self, parent: &P, key: &str) -> Result<O, ServerError>
+    pub async fn get<P>(&self, parent: &P, key: &str) -> Result<Option<O>, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
             .get_item::<O>(self.id_for(parent, key))
-            .await?
-            .ok_or_else(|| DynamoNotFound::new())
+            .await
     }
 
     pub async fn set<P>(&self, parent: &P, data: O::Data) -> Result<O, ServerError>

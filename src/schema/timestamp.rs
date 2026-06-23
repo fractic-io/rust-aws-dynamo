@@ -32,6 +32,17 @@ impl Timestamp {
             .to_utc_datetime()?
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
     }
+    /// Convert this timestamp to the system-local timezone.
+    pub fn to_localized_datetime(&self) -> Result<chrono::DateTime<chrono::Local>, ServerError> {
+        Ok(self.to_utc_datetime()?.with_timezone(&chrono::Local))
+    }
+    /// Print as "YYYY-MM-DD HH:MM:SS TZ" in the system-local timezone.
+    pub fn to_localized_string(&self) -> Result<String, ServerError> {
+        Ok(self
+            .to_localized_datetime()?
+            .format("%Y-%m-%d %H:%M:%S %Z")
+            .to_string())
+    }
 }
 
 // ---------- Display ----------

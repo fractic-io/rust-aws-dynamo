@@ -15,6 +15,10 @@ use crate::{
 #[async_trait]
 pub trait DynamoCrudAlgorithms: Send + Sync {
     async fn recursive_delete(&self, id: PkSk) -> Result<(), ServerError>;
+
+    async fn recursive_delete_archived(&self, id: PkSk) -> Result<(), ServerError> {
+        self.recursive_delete(id).await
+    }
 }
 
 /// Marker trait used to validate whether a given type is a valid parent of `O`.
@@ -144,6 +148,13 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
     pub async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError> {
         self.crud_algorithms
             .recursive_delete(item.id().clone())
+            .await?;
+        Ok(item.into_data())
+    }
+
+    pub async fn delete_recursive_archived(&self, item: O) -> Result<O::Data, ServerError> {
+        self.crud_algorithms
+            .recursive_delete_archived(item.id().clone())
             .await?;
         Ok(item.into_data())
     }
@@ -466,6 +477,13 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
         Ok(item.into_data())
     }
 
+    pub async fn delete_recursive_archived(&self, item: O) -> Result<O::Data, ServerError> {
+        self.crud_algorithms
+            .recursive_delete_archived(item.id().clone())
+            .await?;
+        Ok(item.into_data())
+    }
+
     pub async fn delete_non_recursive(&self, item: O) -> Result<O::Data, ServerError> {
         self.dynamo_util.delete_item::<O>(item.id().clone()).await?;
         Ok(item.into_data())
@@ -633,6 +651,13 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
     pub async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError> {
         self.crud_algorithms
             .recursive_delete(item.id().clone())
+            .await?;
+        Ok(item.into_data())
+    }
+
+    pub async fn delete_recursive_archived(&self, item: O) -> Result<O::Data, ServerError> {
+        self.crud_algorithms
+            .recursive_delete_archived(item.id().clone())
             .await?;
         Ok(item.into_data())
     }

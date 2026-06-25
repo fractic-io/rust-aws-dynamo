@@ -17,6 +17,7 @@ pub trait DynamoCrudAlgorithms: Send + Sync {
     async fn recursive_delete(&self, id: PkSk) -> Result<(), ServerError>;
 
     async fn recursive_delete_archived(&self, id: PkSk) -> Result<(), ServerError> {
+        // Default implementation: redirect to standard recursive delete.
         self.recursive_delete(id).await
     }
 }

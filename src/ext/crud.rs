@@ -46,6 +46,7 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
@@ -106,6 +107,7 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
 pub struct ManageRootUnorderedWithChildren<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    archived: bool,
     _phantom: PhantomData<O>,
 }
 
@@ -113,10 +115,12 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
             crud_algorithms,
+            archived,
             _phantom: PhantomData::<O>,
         }
     }
@@ -146,16 +150,15 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
     }
 
     pub async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError> {
-        self.crud_algorithms
-            .recursive_delete(item.id().clone())
-            .await?;
-        Ok(item.into_data())
-    }
-
-    pub async fn delete_recursive_archived(&self, item: O) -> Result<O::Data, ServerError> {
-        self.crud_algorithms
-            .recursive_delete_archived(item.id().clone())
-            .await?;
+        if self.archived {
+            self.crud_algorithms
+                .recursive_delete_archived(item.id().clone())
+                .await?;
+        } else {
+            self.crud_algorithms
+                .recursive_delete(item.id().clone())
+                .await?;
+        }
         Ok(item.into_data())
     }
 
@@ -197,6 +200,7 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
@@ -242,6 +246,7 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
@@ -312,6 +317,7 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
@@ -405,6 +411,7 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
 pub struct ManageChildOrderedWithChildren<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    archived: bool,
     _phantom: PhantomData<O>,
 }
 
@@ -412,10 +419,12 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
-            crud_algorithms: crud_algorithms,
+            crud_algorithms,
+            archived,
             _phantom: PhantomData::<O>,
         }
     }
@@ -471,16 +480,15 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
     }
 
     pub async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError> {
-        self.crud_algorithms
-            .recursive_delete(item.id().clone())
-            .await?;
-        Ok(item.into_data())
-    }
-
-    pub async fn delete_recursive_archived(&self, item: O) -> Result<O::Data, ServerError> {
-        self.crud_algorithms
-            .recursive_delete_archived(item.id().clone())
-            .await?;
+        if self.archived {
+            self.crud_algorithms
+                .recursive_delete_archived(item.id().clone())
+                .await?;
+        } else {
+            self.crud_algorithms
+                .recursive_delete(item.id().clone())
+                .await?;
+        }
         Ok(item.into_data())
     }
 
@@ -530,6 +538,7 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
@@ -603,6 +612,7 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
 pub struct ManageChildUnorderedWithChildren<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
     crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    archived: bool,
     _phantom: PhantomData<O>,
 }
 
@@ -610,10 +620,12 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
-            crud_algorithms: crud_algorithms,
+            crud_algorithms,
+            archived,
             _phantom: PhantomData::<O>,
         }
     }
@@ -649,16 +661,15 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
     }
 
     pub async fn delete_recursive(&self, item: O) -> Result<O::Data, ServerError> {
-        self.crud_algorithms
-            .recursive_delete(item.id().clone())
-            .await?;
-        Ok(item.into_data())
-    }
-
-    pub async fn delete_recursive_archived(&self, item: O) -> Result<O::Data, ServerError> {
-        self.crud_algorithms
-            .recursive_delete_archived(item.id().clone())
-            .await?;
+        if self.archived {
+            self.crud_algorithms
+                .recursive_delete_archived(item.id().clone())
+                .await?;
+        } else {
+            self.crud_algorithms
+                .recursive_delete(item.id().clone())
+                .await?;
+        }
         Ok(item.into_data())
     }
 
@@ -707,6 +718,7 @@ impl<O: DynamoObject> ManageChildBatch<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
@@ -757,6 +769,7 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _archived: bool,
     ) -> Self {
         Self {
             dynamo_util,
@@ -822,6 +835,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
         crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _archived: bool,
     ) -> Self {
         Self {
             dynamo_util,

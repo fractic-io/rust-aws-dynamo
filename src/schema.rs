@@ -12,14 +12,6 @@ pub mod pk_sk;
 pub mod timestamp;
 
 pub enum IdLogic<T: DynamoObjectData> {
-    /// A non-persisted placement handle that can act as a typed parent for
-    /// other objects.
-    ///
-    /// Phantom objects cannot be created, updated, or deleted through
-    /// DynamoUtil. They are only useful as caller-constructed IDs that place
-    /// real child objects.
-    Phantom,
-
     /// New IDs are generated based on UUID v4. This option should be used in
     /// almost all cases.
     ///
@@ -126,6 +118,16 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// <placeholder>: @LABEL[<key>]
     /// <partition-ids>: @LABEL[<key>]+N
     IndexedSingletonExt(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
+
+    /// A *non-persisted* placement handle that can act as a typed parent for
+    /// other objects.
+    ///
+    /// Phantom objects are not to be actually written to the database, and the
+    /// DynamoUtil will reject any create, update or delete requests on Phantom
+    /// objects themselves.
+    ///
+    /// <new-obj-id>: None
+    Phantom,
 }
 
 #[derive(Debug, PartialEq)]

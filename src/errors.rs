@@ -18,6 +18,10 @@ define_client_error!(
     { details: &str }
 );
 define_client_error!(
+    DynamoInvalidPhantomObjectUsage,
+    "Phantom objects are placement handles and cannot be persisted or mutated."
+);
+define_client_error!(
     DynamoInvalidBatchOptimizedIdUsage,
     "Item-level operations are not supported for items with IdLogic::BatchOptimized. Use \
      batch_replace_all_ordered instead."

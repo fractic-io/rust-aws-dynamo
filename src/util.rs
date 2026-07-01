@@ -19,7 +19,8 @@ use fractic_server_error::{CriticalError, ServerError};
 use crate::{
     errors::{
         DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidExtIdUsage,
-        DynamoInvalidOperation, DynamoNotFound, DynamoUnexpectedItemCount,
+        DynamoInvalidOperation, DynamoInvalidPhantomObjectUsage, DynamoNotFound,
+        DynamoUnexpectedItemCount,
     },
     schema::{
         id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
@@ -121,11 +122,16 @@ impl<T: DynamoObject> CreateToken<T> {
     }
 }
 
-fn reject_phantom_mutation<T: DynamoObject>() -> Result<(), ServerError> {
+fn reject_phantom_objects<T: DynamoObject>() -> Result<(), ServerError> {
     if matches!(T::id_logic(), IdLogic::Phantom) {
-        return Err(DynamoInvalidOperation::new(
-            "phantom objects are placement handles and cannot be persisted or mutated",
-        ));
+        return Err(DynamoInvalidPhantomObjectUsage::new());
+    }
+    Ok(())
+}
+
+fn reject_batch_optimized_ids<T: DynamoObject>() -> Result<(), ServerError> {
+    if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+        return Err(DynamoInvalidBatchOptimizedIdUsage::new());
     }
     Ok(())
 }
@@ -399,9 +405,7 @@ impl DynamoUtil {
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_batch_optimized_ids::<T>()?;
         validate_id::<T>(&id)?;
         if is_partitioned_id_logic::<T>() {
             let items = self
@@ -473,10 +477,8 @@ impl DynamoUtil {
         data: T::Data,
         options: CreateOptions<T>,
     ) -> Result<T, ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         let PkSk { pk, sk } = options
             .token
             .map_or_else(|| self.create_token(parent_id, &data), |t| Ok(t))?
@@ -536,10 +538,8 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data_and_options: Vec<(T::Data, CreateOptions<T>)>,
     ) -> Result<Vec<T>, ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         if matches!(T::id_logic(), IdLogic::Timestamp) {
             return Err(DynamoInvalidOperation::new(
                 "batch_create_item is not allowed with timestamp-based IDs, since all items would \
@@ -662,10 +662,8 @@ impl DynamoUtil {
         data: T::Data,
         insert_position: DynamoInsertPosition,
     ) -> Result<T, ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         let sort_val = calculate_sort_values::<T>(self, parent_id, &data, insert_position, 1)
             .await?
             .pop()
@@ -689,10 +687,8 @@ impl DynamoUtil {
         data: Vec<T::Data>,
         insert_position: DynamoInsertPosition,
     ) -> Result<Vec<T>, ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         if data.is_empty() {
             return Ok(Vec::new());
         }
@@ -727,10 +723,8 @@ impl DynamoUtil {
     /// item does not exist, an error is returned. Fields with null values are
     /// removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         if is_partitioned_id_logic::<T>() {
             return Err(DynamoInvalidExtIdUsage::new());
         }
@@ -758,10 +752,8 @@ impl DynamoUtil {
         id: PkSk,
         op: impl FnOnce(Option<T::Data>) -> Result<T::Data, ServerError>,
     ) -> Result<T, ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         if is_partitioned_id_logic::<T>() {
             return Err(DynamoInvalidExtIdUsage::new());
         }
@@ -801,10 +793,8 @@ impl DynamoUtil {
         object: &T,
         conditions: Vec<UpdateCondition<T>>,
     ) -> Result<(), ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         if is_partitioned_id_logic::<T>() {
             return Err(DynamoInvalidExtIdUsage::new());
         }
@@ -1010,10 +1000,8 @@ impl DynamoUtil {
     }
 
     pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         validate_id::<T>(&id)?;
         if is_partitioned_id_logic::<T>() {
             let ids = expand_partition_delete_ids::<T>(self, vec![id]).await?;
@@ -1038,10 +1026,8 @@ impl DynamoUtil {
         &self,
         keys: Vec<PkSk>,
     ) -> Result<(), ServerError> {
-        reject_phantom_mutation::<T>()?;
-        if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-            return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-        }
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         for key in &keys {
             validate_id::<T>(key)?;
         }
@@ -1054,7 +1040,7 @@ impl DynamoUtil {
         &self,
         parent_id: &PkSk,
     ) -> Result<(), ServerError> {
-        reject_phantom_mutation::<T>()?;
+        reject_phantom_objects::<T>()?;
         validate_parent_id::<T>(parent_id)?;
         let search_prefix = child_search_prefix::<T>(parent_id);
         let response = self
@@ -1095,7 +1081,7 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: Vec<T::Data>,
     ) -> Result<(), ServerError> {
-        reject_phantom_mutation::<T>()?;
+        reject_phantom_objects::<T>()?;
         // Validations.
         validate_parent_id::<T>(parent_id)?;
         let batch_size = match T::id_logic() {

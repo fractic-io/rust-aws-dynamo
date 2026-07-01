@@ -486,7 +486,7 @@ mod tests {
     );
     phantom_object!(TestLookup, "LOOKUP", |space: &str, key: &str| PkSk {
         pk: "ROOT".to_string(),
-        sk: format!("LOOKUP#{space}#{key}"),
+        sk: format!("LOOKUP#{space}-{key}"),
     });
 
     #[test]
@@ -597,7 +597,7 @@ mod tests {
         let obj = TestLookup::of("image", "abc");
 
         assert_eq!(obj.id().pk, "ROOT");
-        assert_eq!(obj.id().sk, "LOOKUP#image#abc");
+        assert_eq!(obj.id().sk, "LOOKUP#image-abc");
         assert_eq!(TestLookup::id_label(), "LOOKUP");
         assert!(matches!(TestLookup::id_logic(), IdLogic::Phantom));
         assert!(matches!(TestLookup::nesting_logic(), NestingLogic::Root));

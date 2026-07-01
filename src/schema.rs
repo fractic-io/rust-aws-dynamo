@@ -123,7 +123,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// other objects.
     ///
     /// Phantom objects are not to be actually written to the database, and the
-    /// DynamoUtil will reject any create, update or delete requests on Phantom
+    /// DynamoUtil will reject any create, update or delete requests on phantom
     /// objects themselves.
     ///
     /// <new-obj-id>: None

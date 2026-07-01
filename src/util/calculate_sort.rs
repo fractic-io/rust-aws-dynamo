@@ -30,6 +30,11 @@ fn sk_strip_uuid<T: DynamoObject>(
     sk: String,
 ) -> Result<String, ServerError> {
     Ok(match id_logic {
+        IdLogic::Phantom => {
+            return Err(DynamoInvalidOperation::new(
+                "phantom objects do not support ordered item calculations",
+            ))
+        }
         // For Singleton, no ID to strip.
         IdLogic::Singleton | IdLogic::SingletonExt => sk,
         // For IndexedSingleton, strip the key.

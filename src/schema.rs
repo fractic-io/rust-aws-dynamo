@@ -12,6 +12,14 @@ pub mod pk_sk;
 pub mod timestamp;
 
 pub enum IdLogic<T: DynamoObjectData> {
+    /// A non-persisted placement handle that can act as a typed parent for
+    /// other objects.
+    ///
+    /// Phantom objects cannot be created, updated, or deleted through
+    /// DynamoUtil. They are only useful as caller-constructed IDs that place
+    /// real child objects.
+    Phantom,
+
     /// New IDs are generated based on UUID v4. This option should be used in
     /// almost all cases.
     ///
@@ -277,6 +285,70 @@ macro_rules! dynamo_object {
     };
 }
 
+#[macro_export]
+macro_rules! phantom_object {
+    ($type:ident, $id_label:expr, |$($arg:ident : $arg_ty:ty),* $(,)?| $id:expr) => {
+        #[derive(Debug, Serialize, Deserialize, Clone)]
+        pub struct $type {
+            pub id: $crate::schema::PkSk,
+
+            #[serde(flatten)]
+            pub data: $crate::schema::PhantomObjectData,
+
+            // Must be last to capture unknown fields.
+            #[serde(flatten)]
+            pub auto_fields: $crate::schema::AutoFields,
+        }
+
+        impl $type {
+            pub fn of($($arg: $arg_ty),*) -> Self {
+                <$type as $crate::schema::DynamoObject>::new(
+                    $id,
+                    $crate::schema::PhantomObjectData::default(),
+                )
+            }
+        }
+
+        impl $crate::schema::DynamoObject for $type {
+            type Data = $crate::schema::PhantomObjectData;
+
+            fn new(id: $crate::schema::PkSk, data: Self::Data) -> Self {
+                Self {
+                    id,
+                    data,
+                    auto_fields: $crate::schema::AutoFields::default(),
+                }
+            }
+
+            fn id(&self) -> &$crate::schema::PkSk {
+                &self.id
+            }
+            fn data(&self) -> &Self::Data {
+                &self.data
+            }
+            fn data_mut(&mut self) -> &mut Self::Data {
+                &mut self.data
+            }
+            fn into_data(self) -> Self::Data {
+                self.data
+            }
+            fn auto_fields(&self) -> &$crate::schema::AutoFields {
+                &self.auto_fields
+            }
+
+            fn id_label() -> &'static str {
+                $id_label
+            }
+            fn id_logic() -> $crate::schema::IdLogic<Self::Data> {
+                $crate::schema::IdLogic::Phantom
+            }
+            fn nesting_logic() -> $crate::schema::NestingLogic {
+                $crate::schema::NestingLogic::Root
+            }
+        }
+    };
+}
+
 // Dynamic trait to hold either committed (with ID) or uncommitted (only data)
 // versions of a DynamoObject. See 'with_maybe_committed_scaffolding!' add-on.
 pub trait MaybeCommittedDynamoObject<T: DynamoObject> {
@@ -304,6 +376,10 @@ pub struct PkSk {
 /// prefixes. This can be particularly useful for indexed singleton keys or GSIs.
 #[derive(Debug, PartialEq, Clone, Hash, Eq)]
 pub struct ForeignRef<'a>(Cow<'a, str>);
+
+/// Empty data payload used by phantom objects.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct PhantomObjectData {}
 
 /// Fields automatically populated by DynamoUtil. This struct is automatically
 /// included in all DynamoObjects as a flattened field:
@@ -408,6 +484,10 @@ mod tests {
         IdLogic::IndexedSingleton(Box::new(|obj: &Test4Data| Cow::Borrowed(&obj.key))),
         NestingLogic::InlineChildOf("TEST3")
     );
+    phantom_object!(TestLookup, "LOOKUP", |space: &str, key: &str| PkSk {
+        pk: "ROOT".to_string(),
+        sk: format!("LOOKUP#{space}#{key}"),
+    });
 
     #[test]
     fn test_auto_fields_default() {
@@ -510,5 +590,16 @@ mod tests {
             panic!("Expected IndexedSingleton.");
         };
         assert_eq!(key_fn(&obj.data), "KEY");
+    }
+
+    #[test]
+    fn test_phantom_object_macro() {
+        let obj = TestLookup::of("image", "abc");
+
+        assert_eq!(obj.id().pk, "ROOT");
+        assert_eq!(obj.id().sk, "LOOKUP#image#abc");
+        assert_eq!(TestLookup::id_label(), "LOOKUP");
+        assert!(matches!(TestLookup::id_logic(), IdLogic::Phantom));
+        assert!(matches!(TestLookup::nesting_logic(), NestingLogic::Root));
     }
 }

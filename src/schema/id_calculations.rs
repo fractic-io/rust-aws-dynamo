@@ -37,21 +37,26 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         _ => {}
     }
     // Build pk / sk:
-    let new_obj_id = match T::id_logic() {
-        IdLogic::Uuid => format!("{}#{}", T::id_label(), uuid_16_chars()),
-        IdLogic::Timestamp => format!("{}#{}", T::id_label(), epoch_timestamp_16_chars()),
-        IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
-        IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
-            format!("@{}[{}]", T::id_label(), key(data))
-        }
-        IdLogic::BatchOptimized { .. } => {
-            return Err(CriticalError::new(
-                "IDs for IdLogic::BatchOptimized should be generated manually in \
+    let new_obj_id =
+        match T::id_logic() {
+            IdLogic::Phantom => return Err(CriticalError::new(
+                "IDs for IdLogic::Phantom should be constructed manually; phantom objects cannot \
+                 be persisted",
+            )),
+            IdLogic::Uuid => format!("{}#{}", T::id_label(), uuid_16_chars()),
+            IdLogic::Timestamp => format!("{}#{}", T::id_label(), epoch_timestamp_16_chars()),
+            IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
+            IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
+                format!("@{}[{}]", T::id_label(), key(data))
+            }
+            IdLogic::BatchOptimized { .. } => {
+                return Err(CriticalError::new(
+                    "IDs for IdLogic::BatchOptimized should be generated manually in \
                  DynamoUtil::batch_replace_all_ordered(...), but generate_pk_sk(...) was \
                  unexpectedly called",
-            ))
-        }
-    };
+                ))
+            }
+        };
     match T::nesting_logic() {
         NestingLogic::Root => Ok(("ROOT".to_string(), new_obj_id)),
         NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {

@@ -121,6 +121,15 @@ impl<T: DynamoObject> CreateToken<T> {
     }
 }
 
+fn reject_phantom_mutation<T: DynamoObject>() -> Result<(), ServerError> {
+    if matches!(T::id_logic(), IdLogic::Phantom) {
+        return Err(DynamoInvalidOperation::new(
+            "phantom objects are placement handles and cannot be persisted or mutated",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct CreateOptions<T: DynamoObject> {
     pub custom_sort: Option<f64>,
@@ -464,6 +473,7 @@ impl DynamoUtil {
         data: T::Data,
         options: CreateOptions<T>,
     ) -> Result<T, ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -526,6 +536,7 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data_and_options: Vec<(T::Data, CreateOptions<T>)>,
     ) -> Result<Vec<T>, ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -651,6 +662,7 @@ impl DynamoUtil {
         data: T::Data,
         insert_position: DynamoInsertPosition,
     ) -> Result<T, ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -677,6 +689,7 @@ impl DynamoUtil {
         data: Vec<T::Data>,
         insert_position: DynamoInsertPosition,
     ) -> Result<Vec<T>, ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -714,6 +727,7 @@ impl DynamoUtil {
     /// item does not exist, an error is returned. Fields with null values are
     /// removed from the item.
     pub async fn update_item<T: DynamoObject>(&self, object: &T) -> Result<(), ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -744,6 +758,7 @@ impl DynamoUtil {
         id: PkSk,
         op: impl FnOnce(Option<T::Data>) -> Result<T::Data, ServerError>,
     ) -> Result<T, ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -786,6 +801,7 @@ impl DynamoUtil {
         object: &T,
         conditions: Vec<UpdateCondition<T>>,
     ) -> Result<(), ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -994,6 +1010,7 @@ impl DynamoUtil {
     }
 
     pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -1021,6 +1038,7 @@ impl DynamoUtil {
         &self,
         keys: Vec<PkSk>,
     ) -> Result<(), ServerError> {
+        reject_phantom_mutation::<T>()?;
         if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
             return Err(DynamoInvalidBatchOptimizedIdUsage::new());
         }
@@ -1036,6 +1054,7 @@ impl DynamoUtil {
         &self,
         parent_id: &PkSk,
     ) -> Result<(), ServerError> {
+        reject_phantom_mutation::<T>()?;
         validate_parent_id::<T>(parent_id)?;
         let search_prefix = child_search_prefix::<T>(parent_id);
         let response = self
@@ -1076,6 +1095,7 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: Vec<T::Data>,
     ) -> Result<(), ServerError> {
+        reject_phantom_mutation::<T>()?;
         // Validations.
         validate_parent_id::<T>(parent_id)?;
         let batch_size = match T::id_logic() {

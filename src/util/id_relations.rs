@@ -67,6 +67,7 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
         | IdLogic::IndexedSingletonExt(_) => {
             format!("@{}", T::id_label())
         }
+        IdLogic::Phantom => format!("{}#", T::id_label()),
         _ => format!("{}#", T::id_label()),
     };
 

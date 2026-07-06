@@ -918,11 +918,12 @@ impl DynamoUtil {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
         };
-        let (map, null_keys) = build_dynamo_map_for_existing_obj::<T>(
+        let (map, mut null_keys) = build_dynamo_map_for_existing_obj::<T>(
             &object,
             IdKeys::None,
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
         )?;
+        add_renamed_field_removals::<T>(&map, &mut null_keys);
 
         // Build update expression.
         let set_expression = match map.is_empty() {
@@ -1231,5 +1232,25 @@ impl DynamoUtil {
                 .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         }
         Ok(())
+    }
+}
+
+fn add_renamed_field_removals<T: DynamoObject>(
+    map: &HashMap<String, AttributeValue>,
+    null_keys: &mut Vec<String>,
+) {
+    let mut remove_keys = null_keys.iter().cloned().collect::<HashSet<_>>();
+    for renamed in T::renamed_fields() {
+        if renamed.from.is_empty() || renamed.to.is_empty() || renamed.from == renamed.to {
+            continue;
+        }
+
+        let canonical_is_updated = map.contains_key(renamed.to) || remove_keys.contains(renamed.to);
+        if canonical_is_updated
+            && !map.contains_key(renamed.from)
+            && remove_keys.insert(renamed.from.to_string())
+        {
+            null_keys.push(renamed.from.to_string());
+        }
     }
 }

@@ -47,6 +47,19 @@ mod tests {
     );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct RenamedUpdateObjectData {
+        name: Option<String>,
+    }
+    dynamo_object!(
+        RenamedUpdateObject,
+        RenamedUpdateObjectData,
+        "RENAMEDUPDATE",
+        IdLogic::Uuid,
+        NestingLogic::InlineChildOfAny,
+        renamed = ["old_name" -> "name"]
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
     pub struct BatchOptTopLevelDynamoObjectData {
         val: String,
     }
@@ -1065,6 +1078,84 @@ mod tests {
                 val_non_null: "new_data".into(),
                 val_nullable: Some("non_null".into()),
             },
+        };
+
+        let result = util.update_item(&update_item).await.unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_removes_renamed_field_when_setting_canonical_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, _, keys, condition| {
+                let name_placeholder = keys
+                    .iter()
+                    .find_map(|(placeholder, key)| (key == "name").then_some(placeholder));
+                let old_name_placeholder = keys
+                    .iter()
+                    .find_map(|(placeholder, key)| (key == "old_name").then_some(placeholder));
+
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && matches!(name_placeholder, Some(p) if p.starts_with("#k") && update_expr.contains(&format!("{p} = ")))
+                    && matches!(old_name_placeholder, Some(p) if p.starts_with("#rmk") && update_expr.contains(&format!("REMOVE {p}")))
+                    && matches!(condition, Some(c) if c == "attribute_exists(pk)")
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedUpdateObjectData {
+                name: Some("new_data".into()),
+            },
+        };
+
+        let result = util.update_item(&update_item).await.unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_removes_renamed_field_when_removing_canonical_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, _, keys, condition| {
+                let name_placeholder = keys
+                    .iter()
+                    .find_map(|(placeholder, key)| (key == "name").then_some(placeholder));
+                let old_name_placeholder = keys
+                    .iter()
+                    .find_map(|(placeholder, key)| (key == "old_name").then_some(placeholder));
+
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && matches!(name_placeholder, Some(p) if p.starts_with("#rmk") && update_expr.contains(p.as_str()))
+                    && matches!(old_name_placeholder, Some(p) if p.starts_with("#rmk") && update_expr.contains(p.as_str()))
+                    && matches!(condition, Some(c) if c == "attribute_exists(pk)")
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedUpdateObjectData { name: None },
         };
 
         let result = util.update_item(&update_item).await.unwrap();

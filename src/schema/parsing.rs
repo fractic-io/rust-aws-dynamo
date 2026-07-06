@@ -308,7 +308,6 @@ mod tests {
 
     #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
     pub struct TestRenamedObjectData {
-        #[serde(alias = "old_name")]
         name: Option<String>,
     }
 

@@ -333,10 +333,7 @@ pub(crate) fn build_partition_write_plan<T: DynamoObject>(
     );
 
     // Build partition items.
-    for (partition_id, partition) in new_partition_ids
-        .into_iter()
-        .zip(partition_strings.into_iter())
-    {
+    for (partition_id, partition) in new_partition_ids.into_iter().zip(partition_strings) {
         put_items.push(
             build_dynamo_map_internal(
                 &CollapsablePartition { partition },

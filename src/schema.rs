@@ -11,6 +11,8 @@ pub mod parsing;
 pub mod pk_sk;
 pub mod timestamp;
 
+type IdKeyFn<T> = dyn for<'a> Fn(&'a T) -> Cow<'a, str>;
+
 pub enum IdLogic<T: DynamoObjectData> {
     /// New IDs are generated based on UUID v4. This option should be used in
     /// almost all cases.
@@ -26,10 +28,10 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// - Object creation date is leaked to users by object ID.
     /// - IDs are "guessable", which could be a security concern.
     /// - If multiple children for the same parent are written in the same
-    /// millisecond, they will have the same ID, and the second write will
-    /// overwrite the first.
+    ///   millisecond, they will have the same ID, and the second write will
+    ///   overwrite the first.
     /// - Changing ID logic later can be very risky / complex, so should
-    /// consider all future use-cases from the beginning.
+    ///   consider all future use-cases from the beginning.
     ///
     /// An alternative strategy would be to use a UUID-based ID with ordered
     /// insertion (flexible but inneficient) or a GSI based on a separate
@@ -50,7 +52,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// object.
     ///
     /// <new-obj-id>: @LABEL[<key>]
-    IndexedSingleton(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
+    IndexedSingleton(Box<IdKeyFn<T>>),
 
     /// Efficient batch-only access.
     ///
@@ -117,7 +119,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     ///
     /// <placeholder>: @LABEL[<key>]
     /// <partition-ids>: @LABEL[<key>]+N
-    IndexedSingletonExt(Box<dyn for<'a> Fn(&'a T) -> Cow<'a, str>>),
+    IndexedSingletonExt(Box<IdKeyFn<T>>),
 
     /// A *non-persisted* placement handle that can act as a typed parent for
     /// other objects.

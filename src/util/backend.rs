@@ -27,6 +27,7 @@ use crate::DynamoCtxView;
 //
 // Should be kept as minimal and close as possible to the real
 // aws_sdk_dynamodb::Client, to minimize untestable code.
+#[allow(clippy::result_large_err)]
 #[automock]
 #[async_trait]
 pub trait DynamoBackend: Send + Sync {

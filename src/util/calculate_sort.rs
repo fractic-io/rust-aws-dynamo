@@ -15,7 +15,7 @@ struct OrderedItem<'a> {
 }
 impl PartialOrd for OrderedItem<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.sort.partial_cmp(&other.sort)
+        Some(self.cmp(other))
     }
 }
 impl Ord for OrderedItem<'_> {
@@ -150,6 +150,8 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::result_large_err)]
+
     use std::borrow::Cow;
     use std::{collections::HashMap, sync::Arc};
 

@@ -64,7 +64,7 @@ pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
             let new_obj_id = if index_digits == 0 {
                 format!("{}#-", T::id_label())
             } else {
-                format!("{}#{}", T::id_label(), format!("{:0index_digits$}", i))
+                format!("{}#{i:0index_digits$}", T::id_label())
             };
             let (pk, sk) = match T::nesting_logic() {
                 NestingLogic::Root => ("ROOT".to_string(), new_obj_id),

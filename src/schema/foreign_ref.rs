@@ -116,10 +116,8 @@ fn normalize_ref(raw: &str) -> &str {
                     open = Some(i);
                 }
             }
-            b']' => {
-                if open.is_some() && close.is_none() {
-                    close = Some(i);
-                }
+            b']' if open.is_some() && close.is_none() => {
+                close = Some(i);
             }
             _ => {}
         }
@@ -170,10 +168,8 @@ fn extract_ref_from_sk(sk: &str) -> &str {
                     open = Some(i);
                 }
             }
-            b']' => {
-                if open.is_some() && close.is_none() {
-                    close = Some(i);
-                }
+            b']' if open.is_some() && close.is_none() => {
+                close = Some(i);
             }
             _ => {}
         }

@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn test_validate_parent_id() {
         // Root OK / error --------------------------------------------------------
-        assert!(validate_parent_id::<RootGroup>(&PkSk::root()).is_ok());
+        assert!(validate_parent_id::<RootGroup>(PkSk::root()).is_ok());
         assert!(validate_parent_id::<RootGroup>(&PkSk {
             pk: "X".into(),
             sk: "Y".into()

@@ -218,15 +218,6 @@ pub trait DynamoObject:
     }
 }
 
-/// A persisted top-level field rename accepted during Dynamo deserialization.
-///
-/// `from` is the legacy attribute name and `to` is the current canonical name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DynamoFieldRename {
-    pub from: &'static str,
-    pub to: &'static str,
-}
-
 /// The reason we require Default is to be maximally tolerant during
 /// deserialization. This way, for example, if we are querying a GSI which only
 /// projects some of the keys, we are still guaranteed to successfully
@@ -242,6 +233,15 @@ pub trait DynamoObjectData:
 impl<T> DynamoObjectData for T where
     T: Serialize + DeserializeOwned + std::fmt::Debug + Default + Clone + Send + Sync + 'static
 {
+}
+
+/// A persisted top-level field rename accepted during Dynamo deserialization.
+///
+/// `from` is the legacy attribute name and `to` is the current canonical name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DynamoFieldRename {
+    pub from: &'static str,
+    pub to: &'static str,
 }
 
 #[macro_export]

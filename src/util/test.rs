@@ -1163,6 +1163,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_item_transaction_matches_legacy_renamed_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
+                    "sk".to_string() => AttributeValue::S("RENAMEDUPDATE#321".to_string())
+                }),
+                eq(None),
+            )
+            .returning(|_, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(collection! {
+                        "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
+                        "sk".to_string() => AttributeValue::S("RENAMEDUPDATE#321".to_string()),
+                        "old_name".to_string() => AttributeValue::S("old_data".to_string()),
+                    }))
+                    .build())
+            });
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && keys.get("#c1").unwrap() == "name"
+                    && keys.get("#c1r").unwrap() == "old_name"
+                    && values.get(":cv1").unwrap().as_s().unwrap() == "old_data"
+                    && values.get(":cn1").unwrap().as_s().unwrap() == "NULL"
+                    && matches!(condition, Some(c)
+                        if c.contains("attribute_exists(pk)")
+                            && c.contains("(attribute_exists(#c1) AND NOT attribute_type(#c1, :cn1))")
+                            && c.contains("(attribute_not_exists(#c1) OR attribute_type(#c1, :cn1))")
+                            && c.contains("#c1 = :cv1")
+                            && c.contains("#c1r = :cv1")
+                    )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let result = util
+            .update_item_transaction::<RenamedUpdateObject>(
+                PkSk {
+                    pk: "ABC#123".to_string(),
+                    sk: "RENAMEDUPDATE#321".to_string(),
+                },
+                |item| {
+                    let Some(mut item) = item else {
+                        return Err(DynamoNotFound::new());
+                    };
+                    assert_eq!(item.name, Some("old_data".to_string()));
+                    item.name = Some("new_data".to_string());
+                    Ok(item)
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.data.name, Some("new_data".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_item_field_is_some_checks_legacy_renamed_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && keys.get("#u1p1").unwrap() == "name"
+                    && keys.get("#u1rp1").unwrap() == "old_name"
+                    && values.get(":u1n").unwrap().as_s().unwrap() == "NULL"
+                    && matches!(condition, Some(c)
+                        if c.contains("attribute_exists(pk)")
+                            && c.contains("(attribute_exists(#u1p1) AND NOT attribute_type(#u1p1, :u1n))")
+                            && c.contains("(attribute_not_exists(#u1p1) OR attribute_type(#u1p1, :u1n))")
+                            && c.contains("(attribute_exists(#u1rp1) AND NOT attribute_type(#u1rp1, :u1n))")
+                    )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedUpdateObjectData {
+                name: Some("new_data".into()),
+            },
+        };
+
+        let result = util
+            .update_item_with_conditions(
+                &update_item,
+                vec![UpdateCondition::FieldIsSome("name".into())],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
     async fn test_update_item_partitioned_singleton_rejected() {
         let backend = MockDynamoBackend::new();
         let util = build_util(backend).await;

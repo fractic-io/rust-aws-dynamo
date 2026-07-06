@@ -845,51 +845,49 @@ impl DynamoUtil {
                     );
                 }
                 UpdateCondition::FieldIsNone(field) => {
-                    let path = field
-                        .split('.')
-                        .enumerate()
-                        .map(|(j, field_part)| {
-                            let placeholder = format!("#u{}p{}", idx + 1, j + 1);
-                            expression_attribute_names
-                                .insert(placeholder.clone(), field_part.to_string());
-                            placeholder
-                        })
-                        .collect::<Vec<_>>()
-                        .join(".");
                     let null_type_placeholder = format!(":u{}n", idx + 1);
                     expression_attribute_values.insert(
                         null_type_placeholder.clone(),
                         AttributeValue::S("NULL".to_string()),
                     );
-                    let condition = format!(
-                        "(attribute_not_exists({p}) OR attribute_type({p}, {t}))",
-                        p = path,
-                        t = null_type_placeholder,
-                    );
+                    let condition = renamed_field_presence_condition::<T>(
+                        &field,
+                        idx,
+                        false,
+                        &null_type_placeholder,
+                        &mut expression_attribute_names,
+                    )
+                    .unwrap_or_else(|| {
+                        let path = expression_attribute_path(
+                            &field,
+                            &format!("u{}p", idx + 1),
+                            &mut expression_attribute_names,
+                        );
+                        field_is_none_condition(&path, &null_type_placeholder)
+                    });
                     custom_conditions.push(condition);
                 }
                 UpdateCondition::FieldIsSome(field) => {
-                    let path = field
-                        .split('.')
-                        .enumerate()
-                        .map(|(j, field_part)| {
-                            let placeholder = format!("#u{}p{}", idx + 1, j + 1);
-                            expression_attribute_names
-                                .insert(placeholder.clone(), field_part.to_string());
-                            placeholder
-                        })
-                        .collect::<Vec<_>>()
-                        .join(".");
                     let null_type_placeholder = format!(":u{}n", idx + 1);
                     expression_attribute_values.insert(
                         null_type_placeholder.clone(),
                         AttributeValue::S("NULL".to_string()),
                     );
-                    let condition = format!(
-                        "(attribute_exists({p}) AND NOT attribute_type({p}, {t}))",
-                        p = path,
-                        t = null_type_placeholder,
-                    );
+                    let condition = renamed_field_presence_condition::<T>(
+                        &field,
+                        idx,
+                        true,
+                        &null_type_placeholder,
+                        &mut expression_attribute_names,
+                    )
+                    .unwrap_or_else(|| {
+                        let path = expression_attribute_path(
+                            &field,
+                            &format!("u{}p", idx + 1),
+                            &mut expression_attribute_names,
+                        );
+                        field_is_some_condition(&path, &null_type_placeholder)
+                    });
                     custom_conditions.push(condition);
                 }
             }
@@ -972,12 +970,14 @@ impl DynamoUtil {
                     .into_iter()
                     .enumerate()
                     .map(|(idx, (key, (value, op)))| {
-                        let key_placeholder = format!("#c{}", idx + 1);
-                        let value_placeholder = format!(":cv{}", idx + 1);
-                        let condition = format!("{} {} {}", key_placeholder, op, value_placeholder);
-                        expression_attribute_names.insert(key_placeholder, key);
-                        expression_attribute_values.insert(value_placeholder, value);
-                        condition
+                        renamed_field_attribute_condition::<T>(
+                            idx,
+                            key,
+                            value,
+                            op,
+                            &mut expression_attribute_names,
+                            &mut expression_attribute_values,
+                        )
                     }),
             )
             .collect::<Vec<String>>()
@@ -1253,4 +1253,105 @@ fn add_renamed_field_removals<T: DynamoObject>(
             null_keys.push(renamed.from.to_string());
         }
     }
+}
+
+fn renamed_field_for_canonical<T: DynamoObject>(
+    canonical_key: &str,
+) -> Option<(&'static str, &'static str)> {
+    T::renamed_fields()
+        .iter()
+        .find(|renamed| {
+            !renamed.from.is_empty()
+                && !renamed.to.is_empty()
+                && renamed.from != renamed.to
+                && renamed.to == canonical_key
+        })
+        .map(|renamed| (renamed.from, renamed.to))
+}
+
+fn renamed_field_attribute_condition<T: DynamoObject>(
+    idx: usize,
+    key: String,
+    value: AttributeValue,
+    op: CmpOp,
+    expression_attribute_names: &mut HashMap<String, String>,
+    expression_attribute_values: &mut HashMap<String, AttributeValue>,
+) -> String {
+    let key_placeholder = format!("#c{}", idx + 1);
+    let value_placeholder = format!(":cv{}", idx + 1);
+    expression_attribute_names.insert(key_placeholder.clone(), key.clone());
+    expression_attribute_values.insert(value_placeholder.clone(), value);
+
+    let Some((legacy_key, _)) = renamed_field_for_canonical::<T>(&key) else {
+        return format!("{} {} {}", key_placeholder, op, value_placeholder);
+    };
+
+    let legacy_key_placeholder = format!("#c{}r", idx + 1);
+    let null_type_placeholder = format!(":cn{}", idx + 1);
+    expression_attribute_names.insert(legacy_key_placeholder.clone(), legacy_key.to_string());
+    expression_attribute_values.insert(
+        null_type_placeholder.clone(),
+        AttributeValue::S("NULL".to_string()),
+    );
+
+    let canonical_some = field_is_some_condition(&key_placeholder, &null_type_placeholder);
+    let canonical_none = field_is_none_condition(&key_placeholder, &null_type_placeholder);
+    format!(
+        "(({canonical_some} AND {key_placeholder} {op} {value_placeholder}) OR \
+         ({canonical_none} AND {legacy_key_placeholder} {op} {value_placeholder}))",
+    )
+}
+
+fn renamed_field_presence_condition<T: DynamoObject>(
+    field: &str,
+    idx: usize,
+    expect_some: bool,
+    null_type_placeholder: &str,
+    expression_attribute_names: &mut HashMap<String, String>,
+) -> Option<String> {
+    let (legacy_key, canonical_key) = renamed_field_for_canonical::<T>(field)?;
+    let canonical_path = expression_attribute_path(
+        canonical_key,
+        &format!("u{}p", idx + 1),
+        expression_attribute_names,
+    );
+    let legacy_path = expression_attribute_path(
+        legacy_key,
+        &format!("u{}rp", idx + 1),
+        expression_attribute_names,
+    );
+    let canonical_some = field_is_some_condition(&canonical_path, null_type_placeholder);
+    let canonical_none = field_is_none_condition(&canonical_path, null_type_placeholder);
+    let legacy_some = field_is_some_condition(&legacy_path, null_type_placeholder);
+    let legacy_none = field_is_none_condition(&legacy_path, null_type_placeholder);
+
+    Some(match expect_some {
+        true => format!("({canonical_some} OR ({canonical_none} AND {legacy_some}))"),
+        false => format!("({canonical_none} AND {legacy_none})"),
+    })
+}
+
+fn expression_attribute_path(
+    field: &str,
+    placeholder_prefix: &str,
+    expression_attribute_names: &mut HashMap<String, String>,
+) -> String {
+    field
+        .split('.')
+        .enumerate()
+        .map(|(j, field_part)| {
+            let placeholder = format!("#{placeholder_prefix}{}", j + 1);
+            expression_attribute_names.insert(placeholder.clone(), field_part.to_string());
+            placeholder
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn field_is_none_condition(path: &str, null_type_placeholder: &str) -> String {
+    format!("(attribute_not_exists({path}) OR attribute_type({path}, {null_type_placeholder}))")
+}
+
+fn field_is_some_condition(path: &str, null_type_placeholder: &str) -> String {
+    format!("(attribute_exists({path}) AND NOT attribute_type({path}, {null_type_placeholder}))")
 }

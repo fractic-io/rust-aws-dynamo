@@ -256,70 +256,16 @@ fn attribute_value_to_serde_value(
 
 fn normalize_renamed_fields(map: &mut Map<String, Value>, renamed_fields: &[DynamoFieldRename]) {
     for renamed in renamed_fields {
-        let from_path = field_path(renamed.from);
-        let to_path = field_path(renamed.to);
-
-        if from_path.is_empty() || to_path.is_empty() || from_path == to_path {
+        if renamed.from.is_empty() || renamed.to.is_empty() || renamed.from == renamed.to {
             continue;
         }
 
-        if contains_path(map, &to_path) {
-            remove_path(map, &from_path);
-        } else if let Some(value) = remove_path(map, &from_path) {
-            insert_path(map, &to_path, value);
+        if map.contains_key(renamed.to) {
+            map.remove(renamed.from);
+        } else if let Some(value) = map.remove(renamed.from) {
+            map.insert(renamed.to.to_string(), value);
         }
     }
-}
-
-fn field_path(field: &str) -> Vec<&str> {
-    field.split('.').filter(|part| !part.is_empty()).collect()
-}
-
-fn contains_path(map: &Map<String, Value>, path: &[&str]) -> bool {
-    let Some((last, parents)) = path.split_last() else {
-        return false;
-    };
-
-    let mut current = map;
-    for part in parents {
-        let Some(Value::Object(next)) = current.get(*part) else {
-            return false;
-        };
-        current = next;
-    }
-    current.contains_key(*last)
-}
-
-fn remove_path(map: &mut Map<String, Value>, path: &[&str]) -> Option<Value> {
-    let (last, parents) = path.split_last()?;
-
-    let mut current = map;
-    for part in parents {
-        let Some(Value::Object(next)) = current.get_mut(*part) else {
-            return None;
-        };
-        current = next;
-    }
-    current.remove(*last)
-}
-
-fn insert_path(map: &mut Map<String, Value>, path: &[&str], value: Value) -> bool {
-    let Some((last, parents)) = path.split_last() else {
-        return false;
-    };
-
-    let mut current = map;
-    for part in parents {
-        let entry = current
-            .entry((*part).to_string())
-            .or_insert_with(|| Value::Object(Map::new()));
-        let Value::Object(next) = entry else {
-            return false;
-        };
-        current = next;
-    }
-    current.insert((*last).to_string(), value);
-    true
 }
 
 // Tests.
@@ -364,13 +310,6 @@ mod tests {
     pub struct TestRenamedObjectData {
         #[serde(alias = "old_name")]
         name: Option<String>,
-        nested: TestRenamedNestedData,
-    }
-
-    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
-    pub struct TestRenamedNestedData {
-        #[serde(alias = "old_value")]
-        value: Option<String>,
     }
 
     dynamo_object!(
@@ -379,7 +318,7 @@ mod tests {
         "TESTRENAMED",
         IdLogic::Uuid,
         NestingLogic::Root,
-        renamed = [("old_name", "name"), ("nested.old_value", "nested.value"),]
+        renamed = [("old_name", "name")]
     );
 
     #[test]
@@ -839,15 +778,11 @@ mod tests {
             "pk".to_string() => AttributeValue::S("123".to_string()),
             "sk".to_string() => AttributeValue::S("456".to_string()),
             "old_name".to_string() => AttributeValue::S("old".to_string()),
-            "nested".to_string() => AttributeValue::M(collection!(
-                "old_value".to_string() => AttributeValue::S("nested_old".to_string())
-            )),
         );
 
         let output: TestRenamedObject = parse_dynamo_map(&input).unwrap();
 
         assert_eq!(output.data.name, Some("old".to_string()));
-        assert_eq!(output.data.nested.value, Some("nested_old".to_string()));
     }
 
     #[test]
@@ -857,16 +792,11 @@ mod tests {
             "sk".to_string() => AttributeValue::S("456".to_string()),
             "old_name".to_string() => AttributeValue::S("old".to_string()),
             "name".to_string() => AttributeValue::S("new".to_string()),
-            "nested".to_string() => AttributeValue::M(collection!(
-                "old_value".to_string() => AttributeValue::S("nested_old".to_string()),
-                "value".to_string() => AttributeValue::S("nested_new".to_string())
-            )),
         );
 
         let output: TestRenamedObject = parse_dynamo_map(&input).unwrap();
 
         assert_eq!(output.data.name, Some("new".to_string()));
-        assert_eq!(output.data.nested.value, Some("nested_new".to_string()));
         assert!(output.auto_fields.unknown_fields.is_empty());
     }
 

@@ -218,9 +218,9 @@ pub trait DynamoObject:
     }
 }
 
-/// A persisted field rename accepted during Dynamo deserialization.
+/// A persisted top-level field rename accepted during Dynamo deserialization.
 ///
-/// `from` is the legacy attribute path and `to` is the current canonical path.
+/// `from` is the legacy attribute name and `to` is the current canonical name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DynamoFieldRename {
     pub from: &'static str,

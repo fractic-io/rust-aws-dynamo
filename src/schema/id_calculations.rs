@@ -85,7 +85,7 @@ pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, 
         // text between '@' and '[' (in case of IndexedSingleton) or EOL
         // (regular Singleton).
         let after_excl = &sk[pos + 1..];
-        let end_pos = after_excl.find(|c| c == '[').unwrap_or(after_excl.len());
+        let end_pos = after_excl.find('[').unwrap_or(after_excl.len());
         Ok(&after_excl[..end_pos])
     } else {
         // Otherwise, object type is decided by the last label in the
@@ -148,7 +148,7 @@ pub(crate) fn strip_ext_suffix(sk: &str) -> &str {
         .map(|(idx, _)| idx);
     match trailing_digits_search {
         None => sk,
-        Some(start) if start == 0 => sk,
+        Some(0) => sk,
         Some(start) => match sk.as_bytes().get(start - 1) {
             Some(b'+') => &sk[..start - 1],
             _ => sk,
@@ -189,11 +189,11 @@ pub(crate) fn get_pk_sk_from_map(map: &DynamoMap) -> Result<(&str, &str), Server
     let gen_err = || CriticalError::new("DynamoMap did not contain pk/sk fields!");
     Ok((
         map.get("pk")
-            .ok_or_else(|| gen_err())?
+            .ok_or_else(&gen_err)?
             .as_s()
             .map_err(|_| gen_err())?,
         map.get("sk")
-            .ok_or_else(|| gen_err())?
+            .ok_or_else(&gen_err)?
             .as_s()
             .map_err(|_| gen_err())?,
     ))

@@ -90,7 +90,7 @@ impl<'de> Deserialize<'de> for PkSk {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let (pk, sk) = get_pk_sk_from_string(&s).map_err(|e| de::Error::custom(e))?;
+        let (pk, sk) = get_pk_sk_from_string(&s).map_err(de::Error::custom)?;
         Ok(PkSk {
             pk: pk.to_string(),
             sk: sk.to_string(),

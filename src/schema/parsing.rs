@@ -336,7 +336,7 @@ mod tests {
                 name_nullable: Some("TestNonNull".to_string()),
                 null: None,
                 num: 42,
-                float: 3.14,
+                float: 2.72,
                 nested_map: [("key".to_string(), "value".to_string())]
                     .iter()
                     .cloned()
@@ -364,7 +364,7 @@ mod tests {
             "name".to_string() => AttributeValue::S("Test".to_string()),
             "name_nullable".to_string() => AttributeValue::S("TestNonNull".to_string()),
             "num".to_string() => AttributeValue::N("42".to_string()),
-            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "float".to_string() => AttributeValue::N("2.72".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!(
                 "key".to_string() => AttributeValue::S("value".to_string())
             )),
@@ -394,7 +394,7 @@ mod tests {
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
                 num: 42,
-                float: 3.14,
+                float: 2.72,
                 ..Default::default()
             },
         };
@@ -407,7 +407,7 @@ mod tests {
             "sk".to_string() => AttributeValue::S("456".to_string()),
             "name".to_string() => AttributeValue::S("Test".to_string()),
             "num".to_string() => AttributeValue::N("42".to_string()),
-            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "float".to_string() => AttributeValue::N("2.72".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!()),
             "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
@@ -432,7 +432,7 @@ mod tests {
                 name_nullable: Some("TestNonNull".to_string()),
                 null: None,
                 num: 42,
-                float: 3.14,
+                float: 2.72,
                 nested_map: [("key".to_string(), "value".to_string())]
                     .iter()
                     .cloned()
@@ -459,7 +459,7 @@ mod tests {
             "name".to_string() => AttributeValue::S("Test".to_string()),
             "name_nullable".to_string() => AttributeValue::S("TestNonNull".to_string()),
             "num".to_string() => AttributeValue::N("42".to_string()),
-            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "float".to_string() => AttributeValue::N("2.72".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!(
                 "key".to_string() => AttributeValue::S("value".to_string())
             )),
@@ -493,7 +493,7 @@ mod tests {
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
                 num: 42,
-                float: 3.14,
+                float: 2.72,
                 ..Default::default()
             },
         };
@@ -505,7 +505,7 @@ mod tests {
             // No id fields.
             "name".to_string() => AttributeValue::S("Test".to_string()),
             "num".to_string() => AttributeValue::N("42".to_string()),
-            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "float".to_string() => AttributeValue::N("2.72".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!()),
             "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
@@ -541,7 +541,7 @@ mod tests {
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
                 num: 42,
-                float: 3.14,
+                float: 2.72,
                 ..Default::default()
             },
         };
@@ -554,7 +554,7 @@ mod tests {
             // - No auto fields.
             "name".to_string() => AttributeValue::S("Test".to_string()),
             "num".to_string() => AttributeValue::N("42".to_string()),
-            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "float".to_string() => AttributeValue::N("2.72".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!()),
             "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
@@ -580,7 +580,7 @@ mod tests {
             data: TestDynamoObjectData {
                 name: "Test".to_string(),
                 num: 42,
-                float: 3.14,
+                float: 2.72,
                 ..Default::default()
             },
         };
@@ -599,7 +599,7 @@ mod tests {
         let expected_output = collection!(
             "name".to_string() => AttributeValue::S("Test".to_string()),
             "num".to_string() => AttributeValue::N("42".to_string()),
-            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "float".to_string() => AttributeValue::N("2.72".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!()),
             "nested_map_with_null".to_string() => AttributeValue::M(collection!()),
             "nested_vec".to_string() => AttributeValue::L(vec![]),
@@ -630,7 +630,7 @@ mod tests {
             "sk".to_string() => AttributeValue::S("456".to_string()),
             "name".to_string() => AttributeValue::S("Test".to_string()),
             "num".to_string() => AttributeValue::N("42".to_string()),
-            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "float".to_string() => AttributeValue::N("2.72".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!(
                 "key".to_string() => AttributeValue::S("value".to_string())
             )),
@@ -681,7 +681,7 @@ mod tests {
                 name_nullable: None,
                 null: None,
                 num: 42,
-                float: 3.14,
+                float: 2.72,
                 nested_map: collection!("key".to_string() => "value".to_string()),
                 nested_map_with_null: collection!(
                     "non-null".to_string() => Some("value".to_string()),
@@ -709,7 +709,7 @@ mod tests {
             "name_nullable".to_string() => AttributeValue::Null(true),
             "null".to_string() => AttributeValue::Null(true),
             "num".to_string() => AttributeValue::N("42".to_string()),
-            "float".to_string() => AttributeValue::N("3.14".to_string()),
+            "float".to_string() => AttributeValue::N("2.72".to_string()),
             "nested_map".to_string() => AttributeValue::M(collection!(
                 "key".to_string() => AttributeValue::S("value".to_string())
             )),
@@ -760,7 +760,7 @@ mod tests {
                 name_nullable: None,
                 null: None,
                 num: 42,
-                float: 3.14,
+                float: 2.72,
                 nested_map: collection!("key".to_string() => "value".to_string()),
                 nested_map_with_null: collection!(
                     "non-null".to_string() => Some("value".to_string()),

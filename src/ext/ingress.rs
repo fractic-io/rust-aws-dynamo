@@ -55,12 +55,12 @@ where
         let v = JsonValue::deserialize(deserializer)?;
 
         // 1) Try as PkSk.
-        if let Some(Ok(id)) = v.as_str().map(|s| PkSk::from_string(&s)) {
+        if let Some(Ok(id)) = v.as_str().map(PkSk::from_string) {
             return Ok(PassOrFetch::Fetch(id));
         }
 
         // 2) Otherwise, try as full object O.
-        let obj = serde_json::from_value::<O>(v).map_err(|e| de::Error::custom(e))?;
+        let obj = serde_json::from_value::<O>(v).map_err(de::Error::custom)?;
         Ok(PassOrFetch::Pass(obj))
     }
 }
@@ -218,7 +218,7 @@ where
         let v = JsonValue::deserialize(deserializer)?;
 
         // 1) Try as PkSk.
-        if let Some(Ok(id)) = v.as_str().map(|s| PkSk::from_string(&s)) {
+        if let Some(Ok(id)) = v.as_str().map(PkSk::from_string) {
             return Ok(PassFetchOrCreate::<O, C>::Fetch(id));
         }
 
@@ -228,7 +228,7 @@ where
         }
 
         // 3) Otherwise, try as create arguments C.
-        let create_args = serde_json::from_value::<C>(v).map_err(|e| de::Error::custom(e))?;
+        let create_args = serde_json::from_value::<C>(v).map_err(de::Error::custom)?;
         Ok(PassFetchOrCreate::<O, C>::Create(create_args))
     }
 }
@@ -399,12 +399,12 @@ where
         let v = JsonValue::deserialize(deserializer)?;
 
         // 1) Try as PkSk.
-        if let Some(Ok(id)) = v.as_str().map(|s| PkSk::from_string(&s)) {
+        if let Some(Ok(id)) = v.as_str().map(PkSk::from_string) {
             return Ok(RefOrFetch::Fetch { id, cached: None });
         }
 
         // 2) Otherwise, deserialize the full object and store it owned.
-        let obj = serde_json::from_value::<O>(v).map_err(|e| de::Error::custom(e))?;
+        let obj = serde_json::from_value::<O>(v).map_err(de::Error::custom)?;
         Ok(RefOrFetch::Owned(obj))
     }
 }
@@ -520,7 +520,7 @@ where
         let v = JsonValue::deserialize(deserializer)?;
 
         // 1) Try as PkSk.
-        if let Some(Ok(id)) = v.as_str().map(|s| PkSk::from_string(&s)) {
+        if let Some(Ok(id)) = v.as_str().map(PkSk::from_string) {
             return Ok(RefFetchOrCreate::Fetch { id, cached: None });
         }
 
@@ -530,7 +530,7 @@ where
         }
 
         // 3) Otherwise, try as create arguments C.
-        let create_args = serde_json::from_value::<C>(v).map_err(|e| de::Error::custom(e))?;
+        let create_args = serde_json::from_value::<C>(v).map_err(de::Error::custom)?;
         Ok(RefFetchOrCreate::Create {
             args: Some(create_args),
             cached: None,

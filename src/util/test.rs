@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::result_large_err)]
+
     use crate::context::test_ctx::TestCtx;
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
@@ -1135,8 +1137,7 @@ mod tests {
             },
         };
 
-        let result = util.update_item(&update_item).await.unwrap();
-        assert_eq!(result, ());
+        util.update_item(&update_item).await.unwrap();
     }
 
     #[tokio::test]
@@ -1173,8 +1174,7 @@ mod tests {
             data: RenamedUpdateObjectData { name: None },
         };
 
-        let result = util.update_item(&update_item).await.unwrap();
-        assert_eq!(result, ());
+        util.update_item(&update_item).await.unwrap();
     }
 
     #[tokio::test]
@@ -1449,14 +1449,12 @@ mod tests {
             },
         };
 
-        let result = util
-            .update_item_with_conditions(
-                &update_item,
-                vec![UpdateCondition::FieldIsNone("val_nullable".into())],
-            )
-            .await
-            .unwrap();
-        assert_eq!(result, ());
+        util.update_item_with_conditions(
+            &update_item,
+            vec![UpdateCondition::FieldIsNone("val_nullable".into())],
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1619,15 +1617,12 @@ mod tests {
 
         let util = build_util(backend).await;
 
-        let result = util
-            .delete_item::<TestDynamoObject>(PkSk {
-                pk: "GROUP#123".to_string(),
-                sk: "LIST#123#TEST#456".to_string(),
-            })
-            .await
-            .unwrap();
-
-        assert_eq!(result, ());
+        util.delete_item::<TestDynamoObject>(PkSk {
+            pk: "GROUP#123".to_string(),
+            sk: "LIST#123#TEST#456".to_string(),
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1816,11 +1811,9 @@ mod tests {
             },
         ];
 
-        let result = util
-            .batch_delete_item::<TestDynamoObject>(keys)
+        util.batch_delete_item::<TestDynamoObject>(keys)
             .await
             .unwrap();
-        assert_eq!(result, ());
     }
 
     #[tokio::test]
@@ -1901,14 +1894,12 @@ mod tests {
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
         let util = build_util(backend).await;
-        let result = util
-            .batch_delete_all::<TestDynamoObject>(&PkSk {
-                pk: "ROOT".to_string(),
-                sk: "GROUP#123".to_string(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(result, ());
+        util.batch_delete_all::<TestDynamoObject>(&PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123".to_string(),
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

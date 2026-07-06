@@ -348,8 +348,7 @@ impl DynamoUtil {
             DynamoQueryMatchType::SuffixLessThanOrEquals(delim) => {
                 attribute_values.insert(
                     ":sk_min".to_string(),
-                    AttributeValue::S(format!(
-                        "{}",
+                    AttributeValue::S(
                         id.sk
                             .rsplit_once(delim)
                             .ok_or_else(|| {
@@ -360,7 +359,8 @@ impl DynamoUtil {
                                 )
                             })?
                             .0
-                    )),
+                            .to_string(),
+                    ),
                 );
             }
             _ => {}
@@ -486,7 +486,7 @@ impl DynamoUtil {
         reject_batch_optimized_ids::<T>()?;
         let PkSk { pk, sk } = options
             .token
-            .map_or_else(|| self.create_token(parent_id, &data), |t| Ok(t))?
+            .map_or_else(|| self.create_token(parent_id, &data), Ok)?
             .id;
         let sort: Option<f64> = options.custom_sort;
         let ttl: Option<i64> = options.ttl.map(|ttl| ttl.compute_timestamp());
@@ -560,7 +560,7 @@ impl DynamoUtil {
                 .map(|(data, options)| {
                     let PkSk { pk, sk } = options
                         .token
-                        .map_or_else(|| self.create_token::<T>(parent_id, &data), |t| Ok(t))?
+                        .map_or_else(|| self.create_token::<T>(parent_id, &data), Ok)?
                         .id;
                     Ok((
                         ext_base_id(&PkSk { pk, sk }),
@@ -638,7 +638,7 @@ impl DynamoUtil {
             }
             Ok(ids
                 .into_iter()
-                .zip(data_and_options.into_iter())
+                .zip(data_and_options)
                 .map(|(id, (data, _))| T::new(id, data))
                 .collect())
         }
@@ -708,7 +708,7 @@ impl DynamoUtil {
         self.batch_create_item_opt::<T>(
             parent_id,
             data.into_iter()
-                .zip(new_ids.into_iter())
+                .zip(new_ids)
                 .map(|(d, sort_val)| {
                     (
                         d,

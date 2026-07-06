@@ -42,7 +42,7 @@ use crate::{
             renamed_field_presence_condition,
         },
         update_helpers::{
-            expression_attribute_path, field_is_none_condition, field_is_some_condition, CmpOp,
+            add_condition_attribute, field_is_none_condition, field_is_some_condition, CmpOp,
         },
     },
     DynamoCtxView,
@@ -865,7 +865,7 @@ impl DynamoUtil {
                         &mut expression_attribute_names,
                     )
                     .unwrap_or_else(|| {
-                        let path = expression_attribute_path(
+                        let path = add_condition_attribute(
                             &field,
                             &format!("u{}p", idx + 1),
                             &mut expression_attribute_names,
@@ -888,7 +888,7 @@ impl DynamoUtil {
                         &mut expression_attribute_names,
                     )
                     .unwrap_or_else(|| {
-                        let path = expression_attribute_path(
+                        let path = add_condition_attribute(
                             &field,
                             &format!("u{}p", idx + 1),
                             &mut expression_attribute_names,

@@ -35,7 +35,7 @@ impl fmt::Display for CmpOp {
     }
 }
 
-pub fn expression_attribute_path(
+pub fn add_condition_attribute(
     field: &str,
     placeholder_prefix: &str,
     expression_attribute_names: &mut HashMap<String, String>,

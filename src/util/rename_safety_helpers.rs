@@ -5,7 +5,7 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use crate::{
     schema::DynamoObject,
     util::{
-        expression_attribute_path, field_is_none_condition, field_is_some_condition,
+        add_condition_attribute, field_is_none_condition, field_is_some_condition,
         update_helpers::CmpOp,
     },
 };
@@ -71,12 +71,12 @@ pub fn renamed_field_presence_condition<T: DynamoObject>(
     expression_attribute_names: &mut HashMap<String, String>,
 ) -> Option<String> {
     let (legacy_key, canonical_key) = renamed_field_for_canonical::<T>(field)?;
-    let canonical_path = expression_attribute_path(
+    let canonical_path = add_condition_attribute(
         canonical_key,
         &format!("u{}p", idx + 1),
         expression_attribute_names,
     );
-    let legacy_path = expression_attribute_path(
+    let legacy_path = add_condition_attribute(
         legacy_key,
         &format!("u{}rp", idx + 1),
         expression_attribute_names,

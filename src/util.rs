@@ -38,11 +38,11 @@ use crate::{
         expand_helpers::{build_expandable_batch_maps, expand_batched_items},
         id_relations::{child_search_prefix, validate_id, validate_parent_id},
         rename_safety_helpers::{
-            add_renamed_field_removals, renamed_field_attribute_condition,
-            renamed_field_presence_condition,
+            add_legacy_field_removals, rename_aware_comparison_condition,
+            rename_aware_presence_condition,
         },
         update_helpers::{
-            add_condition_attribute, field_is_none_condition, field_is_some_condition, CmpOp,
+            add_condition_attribute_path, field_is_none_condition, field_is_some_condition, CmpOp,
         },
     },
     DynamoCtxView,
@@ -857,7 +857,7 @@ impl DynamoUtil {
                         null_type_placeholder.clone(),
                         AttributeValue::S("NULL".to_string()),
                     );
-                    let condition = renamed_field_presence_condition::<T>(
+                    let condition = rename_aware_presence_condition::<T>(
                         &field,
                         idx,
                         false,
@@ -865,7 +865,7 @@ impl DynamoUtil {
                         &mut expression_attribute_names,
                     )
                     .unwrap_or_else(|| {
-                        let path = add_condition_attribute(
+                        let path = add_condition_attribute_path(
                             &field,
                             &format!("u{}p", idx + 1),
                             &mut expression_attribute_names,
@@ -880,7 +880,7 @@ impl DynamoUtil {
                         null_type_placeholder.clone(),
                         AttributeValue::S("NULL".to_string()),
                     );
-                    let condition = renamed_field_presence_condition::<T>(
+                    let condition = rename_aware_presence_condition::<T>(
                         &field,
                         idx,
                         true,
@@ -888,7 +888,7 @@ impl DynamoUtil {
                         &mut expression_attribute_names,
                     )
                     .unwrap_or_else(|| {
-                        let path = add_condition_attribute(
+                        let path = add_condition_attribute_path(
                             &field,
                             &format!("u{}p", idx + 1),
                             &mut expression_attribute_names,
@@ -928,7 +928,7 @@ impl DynamoUtil {
             IdKeys::None,
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
         )?;
-        add_renamed_field_removals::<T>(&map, &mut null_keys);
+        add_legacy_field_removals::<T>(&map, &mut null_keys);
 
         // Build update expression.
         let set_expression = match map.is_empty() {
@@ -977,7 +977,7 @@ impl DynamoUtil {
                     .into_iter()
                     .enumerate()
                     .map(|(idx, (key, (value, op)))| {
-                        renamed_field_attribute_condition::<T>(
+                        rename_aware_comparison_condition::<T>(
                             idx,
                             key,
                             value,

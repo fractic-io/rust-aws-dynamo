@@ -42,7 +42,7 @@ impl fmt::Display for CmpOp {
 /// This helper turns a dotted field path such as `details.address.city` into a
 /// placeholder path like `#u1p1.#u1p2.#u1p3` and fills
 /// `expression_attribute_names` with the segment mappings.
-pub fn add_condition_attribute(
+pub fn add_condition_attribute_path(
     field: &str,
     placeholder_prefix: &str,
     expression_attribute_names: &mut HashMap<String, String>,

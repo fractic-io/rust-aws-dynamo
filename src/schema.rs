@@ -2,8 +2,6 @@ use std::{borrow::Cow, collections::HashMap};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-type IdKeyFn<T> = dyn for<'a> Fn(&'a T) -> Cow<'a, str>;
-
 pub mod add_ons;
 pub mod coordinate;
 pub mod display;
@@ -12,6 +10,8 @@ pub(crate) mod id_calculations;
 pub mod parsing;
 pub mod pk_sk;
 pub mod timestamp;
+
+type IdKeyFn<T> = dyn for<'a> Fn(&'a T) -> Cow<'a, str>;
 
 pub enum IdLogic<T: DynamoObjectData> {
     /// New IDs are generated based on UUID v4. This option should be used in

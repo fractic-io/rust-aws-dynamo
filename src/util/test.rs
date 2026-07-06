@@ -60,6 +60,23 @@ mod tests {
     );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct RenamedNestedUpdateObjectData {
+        profile: Option<RenamedNestedProfile>,
+    }
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct RenamedNestedProfile {
+        name: Option<String>,
+    }
+    dynamo_object!(
+        RenamedNestedUpdateObject,
+        RenamedNestedUpdateObjectData,
+        "RENAMEDNESTEDUPDATE",
+        IdLogic::Uuid,
+        NestingLogic::InlineChildOfAny,
+        renamed = ["old_profile" -> "profile"]
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
     pub struct BatchOptTopLevelDynamoObjectData {
         val: String,
     }
@@ -1267,6 +1284,101 @@ mod tests {
             .update_item_with_conditions(
                 &update_item,
                 vec![UpdateCondition::FieldIsSome("name".into())],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_field_is_some_checks_nested_legacy_renamed_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDNESTEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && keys.get("#u1p1").unwrap() == "profile"
+                    && keys.get("#u1p2").unwrap() == "name"
+                    && keys.get("#u1rp1").unwrap() == "old_profile"
+                    && keys.get("#u1rp2").unwrap() == "name"
+                    && values.get(":u1n").unwrap().as_s().unwrap() == "NULL"
+                    && matches!(condition, Some(c)
+                        if c.contains("attribute_exists(pk)")
+                            && c.contains("(attribute_exists(#u1p1.#u1p2) AND NOT attribute_type(#u1p1.#u1p2, :u1n))")
+                            && c.contains("(attribute_not_exists(#u1p1.#u1p2) OR attribute_type(#u1p1.#u1p2, :u1n))")
+                            && c.contains("(attribute_exists(#u1rp1.#u1rp2) AND NOT attribute_type(#u1rp1.#u1rp2, :u1n))")
+                    )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedNestedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDNESTEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedNestedUpdateObjectData {
+                profile: Some(RenamedNestedProfile {
+                    name: Some("new_data".into()),
+                }),
+            },
+        };
+
+        let result = util
+            .update_item_with_conditions(
+                &update_item,
+                vec![UpdateCondition::FieldIsSome("profile.name".into())],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_field_is_none_checks_nested_legacy_renamed_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDNESTEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && keys.get("#u1p1").unwrap() == "profile"
+                    && keys.get("#u1p2").unwrap() == "name"
+                    && keys.get("#u1rp1").unwrap() == "old_profile"
+                    && keys.get("#u1rp2").unwrap() == "name"
+                    && values.get(":u1n").unwrap().as_s().unwrap() == "NULL"
+                    && matches!(condition, Some(c)
+                        if c.contains("attribute_exists(pk)")
+                            && c.contains("(attribute_not_exists(#u1p1.#u1p2) OR attribute_type(#u1p1.#u1p2, :u1n))")
+                            && c.contains("(attribute_not_exists(#u1rp1.#u1rp2) OR attribute_type(#u1rp1.#u1rp2, :u1n))")
+                    )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedNestedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDNESTEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedNestedUpdateObjectData {
+                profile: Some(RenamedNestedProfile { name: None }),
+            },
+        };
+
+        let result = util
+            .update_item_with_conditions(
+                &update_item,
+                vec![UpdateCondition::FieldIsNone("profile.name".into())],
             )
             .await
             .unwrap();

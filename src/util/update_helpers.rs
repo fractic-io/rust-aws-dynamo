@@ -35,6 +35,13 @@ impl fmt::Display for CmpOp {
     }
 }
 
+/// Registers expression attribute-name placeholders for a condition path.
+///
+/// DynamoDB condition expressions need attribute names to be represented as
+/// placeholders when names are reserved words or contain special characters.
+/// This helper turns a dotted field path such as `details.address.city` into a
+/// placeholder path like `#u1p1.#u1p2.#u1p3` and fills
+/// `expression_attribute_names` with the segment mappings.
 pub fn add_condition_attribute(
     field: &str,
     placeholder_prefix: &str,
@@ -52,10 +59,14 @@ pub fn add_condition_attribute(
         .join(".")
 }
 
+/// Builds a condition that treats a missing attribute or DynamoDB `NULL` value
+/// as none.
 pub fn field_is_none_condition(path: &str, null_type_placeholder: &str) -> String {
     format!("(attribute_not_exists({path}) OR attribute_type({path}, {null_type_placeholder}))")
 }
 
+/// Builds a condition that requires an attribute to exist and not be DynamoDB
+/// `NULL`.
 pub fn field_is_some_condition(path: &str, null_type_placeholder: &str) -> String {
     format!("(attribute_exists({path}) AND NOT attribute_type({path}, {null_type_placeholder}))")
 }

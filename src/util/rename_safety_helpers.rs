@@ -10,6 +10,11 @@ use crate::{
     },
 };
 
+/// Adds legacy renamed attributes to the remove list when their canonical
+/// attribute is being written or removed.
+///
+/// This lets an update both write the new attribute name and clean up the old
+/// persisted name in the same DynamoDB update expression.
 pub fn add_renamed_field_removals<T: DynamoObject>(
     map: &HashMap<String, AttributeValue>,
     null_keys: &mut Vec<String>,
@@ -30,6 +35,12 @@ pub fn add_renamed_field_removals<T: DynamoObject>(
     }
 }
 
+/// Builds a comparison condition for an update-time attribute check.
+///
+/// For regular fields this returns a direct comparison against the canonical
+/// attribute. For renamed fields, the generated expression checks the canonical
+/// attribute when present and falls back to the legacy attribute only when the
+/// canonical attribute is absent or explicitly null.
 pub fn renamed_field_attribute_condition<T: DynamoObject>(
     idx: usize,
     key: String,
@@ -63,6 +74,12 @@ pub fn renamed_field_attribute_condition<T: DynamoObject>(
     )
 }
 
+/// Builds a presence condition for a canonical field that may have a legacy
+/// persisted name.
+///
+/// The field may be a top-level attribute or a dotted nested path. Renames are
+/// applied only to the top-level path segment because `DynamoFieldRename`
+/// represents persisted top-level attribute renames.
 pub fn renamed_field_presence_condition<T: DynamoObject>(
     field: &str,
     idx: usize,
@@ -70,14 +87,14 @@ pub fn renamed_field_presence_condition<T: DynamoObject>(
     null_type_placeholder: &str,
     expression_attribute_names: &mut HashMap<String, String>,
 ) -> Option<String> {
-    let (legacy_key, canonical_key) = renamed_field_for_canonical::<T>(field)?;
+    let (legacy_key, canonical_key) = renamed_field_path_for_canonical::<T>(field)?;
     let canonical_path = add_condition_attribute(
-        canonical_key,
+        &canonical_key,
         &format!("u{}p", idx + 1),
         expression_attribute_names,
     );
     let legacy_path = add_condition_attribute(
-        legacy_key,
+        &legacy_key,
         &format!("u{}rp", idx + 1),
         expression_attribute_names,
     );
@@ -104,4 +121,23 @@ fn renamed_field_for_canonical<T: DynamoObject>(
                 && renamed.to == canonical_key
         })
         .map(|renamed| (renamed.from, renamed.to))
+}
+
+fn renamed_field_path_for_canonical<T: DynamoObject>(
+    canonical_field: &str,
+) -> Option<(String, String)> {
+    let (first_segment, suffix) = canonical_field
+        .split_once('.')
+        .map_or((canonical_field, None), |(first_segment, suffix)| {
+            (first_segment, Some(suffix))
+        });
+    let (legacy_key, canonical_key) = renamed_field_for_canonical::<T>(first_segment)?;
+
+    Some(match suffix {
+        Some(suffix) => (
+            format!("{legacy_key}.{suffix}"),
+            format!("{canonical_key}.{suffix}"),
+        ),
+        None => (legacy_key.to_string(), canonical_key.to_string()),
+    })
 }

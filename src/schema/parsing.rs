@@ -254,6 +254,9 @@ fn attribute_value_to_serde_value(
     }
 }
 
+// Helpers.
+// ----------------------------------------------------------------------------
+
 fn normalize_renamed_fields(map: &mut Map<String, Value>, renamed_fields: &[DynamoFieldRename]) {
     for renamed in renamed_fields {
         if renamed.is_noop() {

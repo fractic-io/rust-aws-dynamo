@@ -187,6 +187,9 @@ pub trait DynamoObject:
     fn id_label() -> &'static str;
     fn id_logic() -> IdLogic<Self::Data>;
     fn nesting_logic() -> NestingLogic;
+    fn renamed_fields() -> &'static [DynamoFieldRename] {
+        &[]
+    }
 
     // Data:
     fn data(&self) -> &Self::Data;
@@ -215,6 +218,15 @@ pub trait DynamoObject:
     }
 }
 
+/// A persisted field rename accepted during Dynamo deserialization.
+///
+/// `from` is the legacy attribute path and `to` is the current canonical path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DynamoFieldRename {
+    pub from: &'static str,
+    pub to: &'static str,
+}
+
 /// The reason we require Default is to be maximally tolerant during
 /// deserialization. This way, for example, if we are querying a GSI which only
 /// projects some of the keys, we are still guaranteed to successfully
@@ -235,6 +247,48 @@ impl<T> DynamoObjectData for T where
 #[macro_export]
 macro_rules! dynamo_object {
     ($type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {
+        $crate::dynamo_object!(
+            @impl $type,
+            $datatype,
+            $id_label,
+            $id_logic,
+            $nesting_logic,
+            []
+        );
+    };
+    (
+        $type:ident,
+        $datatype:ident,
+        $id_label:expr,
+        $id_logic:expr,
+        $nesting_logic:expr,
+        renamed = [$(($from:literal, $to:literal)),* $(,)?]
+    ) => {
+        $crate::dynamo_object!(
+            @impl $type,
+            $datatype,
+            $id_label,
+            $id_logic,
+            $nesting_logic,
+            [
+                $(
+                    $crate::schema::DynamoFieldRename {
+                        from: $from,
+                        to: $to,
+                    }
+                ),*
+            ]
+        );
+    };
+    (
+        @impl
+        $type:ident,
+        $datatype:ident,
+        $id_label:expr,
+        $id_logic:expr,
+        $nesting_logic:expr,
+        [$($renamed_field:expr),* $(,)?]
+    ) => {
         #[derive(Debug, Serialize, Deserialize, Clone)]
         pub struct $type {
             pub id: $crate::schema::PkSk,
@@ -282,6 +336,9 @@ macro_rules! dynamo_object {
             }
             fn nesting_logic() -> $crate::schema::NestingLogic {
                 $nesting_logic
+            }
+            fn renamed_fields() -> &'static [$crate::schema::DynamoFieldRename] {
+                &[$($renamed_field),*]
             }
         }
     };

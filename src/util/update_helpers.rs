@@ -12,9 +12,9 @@ pub enum CmpOp {
     Lte,
 }
 
-impl Into<CmpOp> for NumericOp {
-    fn into(self) -> CmpOp {
-        match self {
+impl From<NumericOp> for CmpOp {
+    fn from(op: NumericOp) -> Self {
+        match op {
             NumericOp::GreaterThan => CmpOp::Gt,
             NumericOp::GreaterThanOrEquals => CmpOp::Gte,
             NumericOp::LessThan => CmpOp::Lt,

@@ -41,9 +41,7 @@ use crate::{
             add_legacy_field_removals, rename_aware_comparison_condition,
             rename_aware_presence_condition,
         },
-        update_helpers::{
-            add_condition_attribute_path, field_is_none_condition, field_is_some_condition, CmpOp,
-        },
+        update_helpers::CmpOp,
     },
     DynamoCtxView,
 };
@@ -863,15 +861,7 @@ impl DynamoUtil {
                         false,
                         &null_type_placeholder,
                         &mut expression_attribute_names,
-                    )
-                    .unwrap_or_else(|| {
-                        let path = add_condition_attribute_path(
-                            &field,
-                            &format!("u{}p", idx + 1),
-                            &mut expression_attribute_names,
-                        );
-                        field_is_none_condition(&path, &null_type_placeholder)
-                    });
+                    );
                     custom_conditions.push(condition);
                 }
                 UpdateCondition::FieldIsSome(field) => {
@@ -886,15 +876,7 @@ impl DynamoUtil {
                         true,
                         &null_type_placeholder,
                         &mut expression_attribute_names,
-                    )
-                    .unwrap_or_else(|| {
-                        let path = add_condition_attribute_path(
-                            &field,
-                            &format!("u{}p", idx + 1),
-                            &mut expression_attribute_names,
-                        );
-                        field_is_some_condition(&path, &null_type_placeholder)
-                    });
+                    );
                     custom_conditions.push(condition);
                 }
             }
@@ -924,7 +906,7 @@ impl DynamoUtil {
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
         };
         let (map, mut null_keys) = build_dynamo_map_for_existing_obj::<T>(
-            &object,
+            object,
             IdKeys::None,
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
         )?;

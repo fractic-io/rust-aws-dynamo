@@ -60,7 +60,7 @@ pub(crate) fn build_dynamo_map_internal<T: Serialize>(
     let mut skipped_null_keys: Vec<String> = Vec::new();
 
     // DynamoObject -> Serde value.
-    let json_value = serde_json::to_value(&object)
+    let json_value = serde_json::to_value(object)
         .map_err(|e| DynamoItemParsingError::with_debug("failed to serialize object", &e))?;
 
     // Serde value -> DynamoMap.
@@ -256,7 +256,7 @@ fn attribute_value_to_serde_value(
 
 fn normalize_renamed_fields(map: &mut Map<String, Value>, renamed_fields: &[DynamoFieldRename]) {
     for renamed in renamed_fields {
-        if renamed.from.is_empty() || renamed.to.is_empty() || renamed.from == renamed.to {
+        if renamed.is_noop() {
             continue;
         }
 

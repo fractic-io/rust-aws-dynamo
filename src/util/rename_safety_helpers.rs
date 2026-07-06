@@ -4,9 +4,8 @@ use aws_sdk_dynamodb::types::AttributeValue;
 
 use crate::{
     schema::DynamoObject,
-    util::{
-        add_condition_attribute_path, field_is_none_condition, field_is_some_condition,
-        update_helpers::CmpOp,
+    util::update_helpers::{
+        add_condition_attribute_path, field_is_none_condition, field_is_some_condition, CmpOp,
     },
 };
 
@@ -21,7 +20,7 @@ pub fn add_legacy_field_removals<T: DynamoObject>(
 ) {
     let mut remove_keys = null_keys.iter().cloned().collect::<HashSet<_>>();
     for renamed in T::renamed_fields() {
-        if renamed.from.is_empty() || renamed.to.is_empty() || renamed.from == renamed.to {
+        if renamed.is_noop() {
             continue;
         }
 
@@ -54,7 +53,7 @@ pub fn rename_aware_comparison_condition<T: DynamoObject>(
     expression_attribute_names.insert(key_placeholder.clone(), key.clone());
     expression_attribute_values.insert(value_placeholder.clone(), value);
 
-    let Some((legacy_key, _)) = legacy_field_for_canonical::<T>(&key) else {
+    let Some(legacy_key) = legacy_field_for_canonical::<T>(&key) else {
         return format!("{} {} {}", key_placeholder, op, value_placeholder);
     };
 
@@ -86,8 +85,20 @@ pub fn rename_aware_presence_condition<T: DynamoObject>(
     expect_some: bool,
     null_type_placeholder: &str,
     expression_attribute_names: &mut HashMap<String, String>,
-) -> Option<String> {
-    let (legacy_key, canonical_key) = legacy_and_canonical_paths_for_field::<T>(field)?;
+) -> String {
+    let Some((legacy_key, canonical_key)) = legacy_and_canonical_paths_for_field::<T>(field) else {
+        let path = add_condition_attribute_path(
+            field,
+            &format!("u{}p", idx + 1),
+            expression_attribute_names,
+        );
+        return if expect_some {
+            field_is_some_condition(&path, null_type_placeholder)
+        } else {
+            field_is_none_condition(&path, null_type_placeholder)
+        };
+    };
+
     let canonical_path = add_condition_attribute_path(
         &canonical_key,
         &format!("u{}p", idx + 1),
@@ -103,44 +114,32 @@ pub fn rename_aware_presence_condition<T: DynamoObject>(
     let legacy_some = field_is_some_condition(&legacy_path, null_type_placeholder);
     let legacy_none = field_is_none_condition(&legacy_path, null_type_placeholder);
 
-    Some(match expect_some {
-        true => format!("({canonical_some} OR ({canonical_none} AND {legacy_some}))"),
-        false => format!("({canonical_none} AND {legacy_none})"),
-    })
+    if expect_some {
+        format!("({canonical_some} OR ({canonical_none} AND {legacy_some}))")
+    } else {
+        format!("({canonical_none} AND {legacy_none})")
+    }
 }
 
 // Helpers.
 // ----------------------------------------------------------------------------
 
-fn legacy_field_for_canonical<T: DynamoObject>(
-    canonical_key: &str,
-) -> Option<(&'static str, &'static str)> {
+fn legacy_field_for_canonical<T: DynamoObject>(canonical_key: &str) -> Option<&'static str> {
     T::renamed_fields()
         .iter()
-        .find(|renamed| {
-            !renamed.from.is_empty()
-                && !renamed.to.is_empty()
-                && renamed.from != renamed.to
-                && renamed.to == canonical_key
-        })
-        .map(|renamed| (renamed.from, renamed.to))
+        .find(|renamed| !renamed.is_noop() && renamed.to == canonical_key)
+        .map(|renamed| renamed.from)
 }
 
 fn legacy_and_canonical_paths_for_field<T: DynamoObject>(
     canonical_field: &str,
 ) -> Option<(String, String)> {
-    let (first_segment, suffix) = canonical_field
+    let (canonical_key, suffix) = canonical_field
         .split_once('.')
-        .map_or((canonical_field, None), |(first_segment, suffix)| {
-            (first_segment, Some(suffix))
-        });
-    let (legacy_key, canonical_key) = legacy_field_for_canonical::<T>(first_segment)?;
+        .map_or((canonical_field, None), |(key, suffix)| (key, Some(suffix)));
+    let legacy_key = legacy_field_for_canonical::<T>(canonical_key)?;
+    let with_suffix =
+        |key: &str| suffix.map_or_else(|| key.to_string(), |suffix| format!("{key}.{suffix}"));
 
-    Some(match suffix {
-        Some(suffix) => (
-            format!("{legacy_key}.{suffix}"),
-            format!("{canonical_key}.{suffix}"),
-        ),
-        None => (legacy_key.to_string(), canonical_key.to_string()),
-    })
+    Some((with_suffix(legacy_key), with_suffix(canonical_key)))
 }

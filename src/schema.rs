@@ -244,6 +244,12 @@ pub struct DynamoFieldRename {
     pub to: &'static str,
 }
 
+impl DynamoFieldRename {
+    pub fn is_noop(&self) -> bool {
+        self.from.is_empty() || self.to.is_empty() || self.from == self.to
+    }
+}
+
 #[macro_export]
 macro_rules! dynamo_object {
     ($type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {

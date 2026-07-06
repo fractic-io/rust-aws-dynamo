@@ -1049,8 +1049,7 @@ mod tests {
             },
         };
 
-        let result = util.update_item(&update_item).await.unwrap();
-        assert_eq!(result, ());
+        util.update_item(&update_item).await.unwrap();
     }
 
     #[tokio::test]
@@ -1097,8 +1096,7 @@ mod tests {
             },
         };
 
-        let result = util.update_item(&update_item).await.unwrap();
-        assert_eq!(result, ());
+        util.update_item(&update_item).await.unwrap();
     }
 
     #[tokio::test]
@@ -1280,14 +1278,12 @@ mod tests {
             },
         };
 
-        let result = util
-            .update_item_with_conditions(
-                &update_item,
-                vec![UpdateCondition::FieldIsSome("name".into())],
-            )
-            .await
-            .unwrap();
-        assert_eq!(result, ());
+        util.update_item_with_conditions(
+            &update_item,
+            vec![UpdateCondition::FieldIsSome("name".into())],
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1329,14 +1325,12 @@ mod tests {
             },
         };
 
-        let result = util
-            .update_item_with_conditions(
-                &update_item,
-                vec![UpdateCondition::FieldIsSome("profile.name".into())],
-            )
-            .await
-            .unwrap();
-        assert_eq!(result, ());
+        util.update_item_with_conditions(
+            &update_item,
+            vec![UpdateCondition::FieldIsSome("profile.name".into())],
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1375,14 +1369,12 @@ mod tests {
             },
         };
 
-        let result = util
-            .update_item_with_conditions(
-                &update_item,
-                vec![UpdateCondition::FieldIsNone("profile.name".into())],
-            )
-            .await
-            .unwrap();
-        assert_eq!(result, ());
+        util.update_item_with_conditions(
+            &update_item,
+            vec![UpdateCondition::FieldIsNone("profile.name".into())],
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

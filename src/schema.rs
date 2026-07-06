@@ -262,7 +262,31 @@ macro_rules! dynamo_object {
         $id_label:expr,
         $id_logic:expr,
         $nesting_logic:expr,
-        renamed = [$(($from:literal, $to:literal)),* $(,)?]
+        renamed = [$($from:literal => $to:literal),* $(,)?]
+    ) => {
+        $crate::dynamo_object!(
+            @impl $type,
+            $datatype,
+            $id_label,
+            $id_logic,
+            $nesting_logic,
+            [
+                $(
+                    $crate::schema::DynamoFieldRename {
+                        from: $from,
+                        to: $to,
+                    }
+                ),*
+            ]
+        );
+    };
+    (
+        $type:ident,
+        $datatype:ident,
+        $id_label:expr,
+        $id_logic:expr,
+        $nesting_logic:expr,
+        renamed = [$($from:literal -> $to:literal),* $(,)?]
     ) => {
         $crate::dynamo_object!(
             @impl $type,

@@ -318,7 +318,7 @@ mod tests {
         "TESTRENAMED",
         IdLogic::Uuid,
         NestingLogic::Root,
-        renamed = [("old_name", "name")]
+        renamed = ["old_name" -> "name"]
     );
 
     #[test]

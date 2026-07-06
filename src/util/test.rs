@@ -47,6 +47,36 @@ mod tests {
     );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct RenamedUpdateObjectData {
+        name: Option<String>,
+    }
+    dynamo_object!(
+        RenamedUpdateObject,
+        RenamedUpdateObjectData,
+        "RENAMEDUPDATE",
+        IdLogic::Uuid,
+        NestingLogic::InlineChildOfAny,
+        renamed = ["old_name" -> "name"]
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct RenamedNestedUpdateObjectData {
+        profile: Option<RenamedNestedProfile>,
+    }
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct RenamedNestedProfile {
+        name: Option<String>,
+    }
+    dynamo_object!(
+        RenamedNestedUpdateObject,
+        RenamedNestedUpdateObjectData,
+        "RENAMEDNESTEDUPDATE",
+        IdLogic::Uuid,
+        NestingLogic::InlineChildOfAny,
+        renamed = ["old_profile" -> "profile"]
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
     pub struct BatchOptTopLevelDynamoObjectData {
         val: String,
     }
@@ -1019,8 +1049,7 @@ mod tests {
             },
         };
 
-        let result = util.update_item(&update_item).await.unwrap();
-        assert_eq!(result, ());
+        util.update_item(&update_item).await.unwrap();
     }
 
     #[tokio::test]
@@ -1067,8 +1096,285 @@ mod tests {
             },
         };
 
+        util.update_item(&update_item).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_item_removes_renamed_field_when_setting_canonical_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, _, keys, condition| {
+                let name_placeholder = keys
+                    .iter()
+                    .find_map(|(placeholder, key)| (key == "name").then_some(placeholder));
+                let old_name_placeholder = keys
+                    .iter()
+                    .find_map(|(placeholder, key)| (key == "old_name").then_some(placeholder));
+
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && matches!(name_placeholder, Some(p) if p.starts_with("#k") && update_expr.contains(&format!("{p} = ")))
+                    && matches!(old_name_placeholder, Some(p) if p.starts_with("#rmk") && update_expr.contains(&format!("REMOVE {p}")))
+                    && matches!(condition, Some(c) if c == "attribute_exists(pk)")
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedUpdateObjectData {
+                name: Some("new_data".into()),
+            },
+        };
+
         let result = util.update_item(&update_item).await.unwrap();
         assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_removes_renamed_field_when_removing_canonical_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, _, keys, condition| {
+                let name_placeholder = keys
+                    .iter()
+                    .find_map(|(placeholder, key)| (key == "name").then_some(placeholder));
+                let old_name_placeholder = keys
+                    .iter()
+                    .find_map(|(placeholder, key)| (key == "old_name").then_some(placeholder));
+
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && matches!(name_placeholder, Some(p) if p.starts_with("#rmk") && update_expr.contains(p.as_str()))
+                    && matches!(old_name_placeholder, Some(p) if p.starts_with("#rmk") && update_expr.contains(p.as_str()))
+                    && matches!(condition, Some(c) if c == "attribute_exists(pk)")
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedUpdateObjectData { name: None },
+        };
+
+        let result = util.update_item(&update_item).await.unwrap();
+        assert_eq!(result, ());
+    }
+
+    #[tokio::test]
+    async fn test_update_item_transaction_matches_legacy_renamed_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
+                    "sk".to_string() => AttributeValue::S("RENAMEDUPDATE#321".to_string())
+                }),
+                eq(None),
+            )
+            .returning(|_, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(collection! {
+                        "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
+                        "sk".to_string() => AttributeValue::S("RENAMEDUPDATE#321".to_string()),
+                        "old_name".to_string() => AttributeValue::S("old_data".to_string()),
+                    }))
+                    .build())
+            });
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && keys.get("#c1").unwrap() == "name"
+                    && keys.get("#c1r").unwrap() == "old_name"
+                    && values.get(":cv1").unwrap().as_s().unwrap() == "old_data"
+                    && values.get(":cn1").unwrap().as_s().unwrap() == "NULL"
+                    && matches!(condition, Some(c)
+                        if c.contains("attribute_exists(pk)")
+                            && c.contains("(attribute_exists(#c1) AND NOT attribute_type(#c1, :cn1))")
+                            && c.contains("(attribute_not_exists(#c1) OR attribute_type(#c1, :cn1))")
+                            && c.contains("#c1 = :cv1")
+                            && c.contains("#c1r = :cv1")
+                    )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let result = util
+            .update_item_transaction::<RenamedUpdateObject>(
+                PkSk {
+                    pk: "ABC#123".to_string(),
+                    sk: "RENAMEDUPDATE#321".to_string(),
+                },
+                |item| {
+                    let Some(mut item) = item else {
+                        return Err(DynamoNotFound::new());
+                    };
+                    assert_eq!(item.name, Some("old_data".to_string()));
+                    item.name = Some("new_data".to_string());
+                    Ok(item)
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.data.name, Some("new_data".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_item_field_is_some_checks_legacy_renamed_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && keys.get("#u1p1").unwrap() == "name"
+                    && keys.get("#u1rp1").unwrap() == "old_name"
+                    && values.get(":u1n").unwrap().as_s().unwrap() == "NULL"
+                    && matches!(condition, Some(c)
+                        if c.contains("attribute_exists(pk)")
+                            && c.contains("(attribute_exists(#u1p1) AND NOT attribute_type(#u1p1, :u1n))")
+                            && c.contains("(attribute_not_exists(#u1p1) OR attribute_type(#u1p1, :u1n))")
+                            && c.contains("(attribute_exists(#u1rp1) AND NOT attribute_type(#u1rp1, :u1n))")
+                    )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedUpdateObjectData {
+                name: Some("new_data".into()),
+            },
+        };
+
+        util.update_item_with_conditions(
+            &update_item,
+            vec![UpdateCondition::FieldIsSome("name".into())],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_item_field_is_some_checks_nested_legacy_renamed_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDNESTEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && keys.get("#u1p1").unwrap() == "profile"
+                    && keys.get("#u1p2").unwrap() == "name"
+                    && keys.get("#u1rp1").unwrap() == "old_profile"
+                    && keys.get("#u1rp2").unwrap() == "name"
+                    && values.get(":u1n").unwrap().as_s().unwrap() == "NULL"
+                    && matches!(condition, Some(c)
+                        if c.contains("attribute_exists(pk)")
+                            && c.contains("(attribute_exists(#u1p1.#u1p2) AND NOT attribute_type(#u1p1.#u1p2, :u1n))")
+                            && c.contains("(attribute_not_exists(#u1p1.#u1p2) OR attribute_type(#u1p1.#u1p2, :u1n))")
+                            && c.contains("(attribute_exists(#u1rp1.#u1rp2) AND NOT attribute_type(#u1rp1.#u1rp2, :u1n))")
+                    )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedNestedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDNESTEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedNestedUpdateObjectData {
+                profile: Some(RenamedNestedProfile {
+                    name: Some("new_data".into()),
+                }),
+            },
+        };
+
+        util.update_item_with_conditions(
+            &update_item,
+            vec![UpdateCondition::FieldIsSome("profile.name".into())],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_item_field_is_none_checks_nested_legacy_renamed_field() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "RENAMEDNESTEDUPDATE#321"
+                    && update_expr.contains("SET ")
+                    && update_expr.contains(" REMOVE ")
+                    && keys.get("#u1p1").unwrap() == "profile"
+                    && keys.get("#u1p2").unwrap() == "name"
+                    && keys.get("#u1rp1").unwrap() == "old_profile"
+                    && keys.get("#u1rp2").unwrap() == "name"
+                    && values.get(":u1n").unwrap().as_s().unwrap() == "NULL"
+                    && matches!(condition, Some(c)
+                        if c.contains("attribute_exists(pk)")
+                            && c.contains("(attribute_not_exists(#u1p1.#u1p2) OR attribute_type(#u1p1.#u1p2, :u1n))")
+                            && c.contains("(attribute_not_exists(#u1rp1.#u1rp2) OR attribute_type(#u1rp1.#u1rp2, :u1n))")
+                    )
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+
+        let update_item = RenamedNestedUpdateObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "RENAMEDNESTEDUPDATE#321".to_string(),
+            },
+            auto_fields: Default::default(),
+            data: RenamedNestedUpdateObjectData {
+                profile: Some(RenamedNestedProfile { name: None }),
+            },
+        };
+
+        util.update_item_with_conditions(
+            &update_item,
+            vec![UpdateCondition::FieldIsNone("profile.name".into())],
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

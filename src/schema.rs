@@ -187,6 +187,9 @@ pub trait DynamoObject:
     fn id_label() -> &'static str;
     fn id_logic() -> IdLogic<Self::Data>;
     fn nesting_logic() -> NestingLogic;
+    fn renamed_fields() -> &'static [DynamoFieldRename] {
+        &[]
+    }
 
     // Data:
     fn data(&self) -> &Self::Data;
@@ -232,9 +235,90 @@ impl<T> DynamoObjectData for T where
 {
 }
 
+/// A persisted top-level field rename accepted during Dynamo deserialization.
+///
+/// `from` is the legacy attribute name and `to` is the current canonical name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DynamoFieldRename {
+    pub from: &'static str,
+    pub to: &'static str,
+}
+
+impl DynamoFieldRename {
+    pub fn is_noop(&self) -> bool {
+        self.from.is_empty() || self.to.is_empty() || self.from == self.to
+    }
+}
+
 #[macro_export]
 macro_rules! dynamo_object {
     ($type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {
+        $crate::dynamo_object!(
+            @impl $type,
+            $datatype,
+            $id_label,
+            $id_logic,
+            $nesting_logic,
+            []
+        );
+    };
+    (
+        $type:ident,
+        $datatype:ident,
+        $id_label:expr,
+        $id_logic:expr,
+        $nesting_logic:expr,
+        renamed = [$($from:literal => $to:literal),* $(,)?]
+    ) => {
+        $crate::dynamo_object!(
+            @impl $type,
+            $datatype,
+            $id_label,
+            $id_logic,
+            $nesting_logic,
+            [
+                $(
+                    $crate::schema::DynamoFieldRename {
+                        from: $from,
+                        to: $to,
+                    }
+                ),*
+            ]
+        );
+    };
+    (
+        $type:ident,
+        $datatype:ident,
+        $id_label:expr,
+        $id_logic:expr,
+        $nesting_logic:expr,
+        renamed = [$($from:literal -> $to:literal),* $(,)?]
+    ) => {
+        $crate::dynamo_object!(
+            @impl $type,
+            $datatype,
+            $id_label,
+            $id_logic,
+            $nesting_logic,
+            [
+                $(
+                    $crate::schema::DynamoFieldRename {
+                        from: $from,
+                        to: $to,
+                    }
+                ),*
+            ]
+        );
+    };
+    (
+        @impl
+        $type:ident,
+        $datatype:ident,
+        $id_label:expr,
+        $id_logic:expr,
+        $nesting_logic:expr,
+        [$($renamed_field:expr),* $(,)?]
+    ) => {
         #[derive(Debug, Serialize, Deserialize, Clone)]
         pub struct $type {
             pub id: $crate::schema::PkSk,
@@ -282,6 +366,9 @@ macro_rules! dynamo_object {
             }
             fn nesting_logic() -> $crate::schema::NestingLogic {
                 $nesting_logic
+            }
+            fn renamed_fields() -> &'static [$crate::schema::DynamoFieldRename] {
+                &[$($renamed_field),*]
             }
         }
     };

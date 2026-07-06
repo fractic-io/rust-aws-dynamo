@@ -3,8 +3,13 @@ use std::collections::HashMap;
 use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_server_error::{CriticalError, ServerError};
 use serde::Serialize;
+use serde_json::{Map, Value};
 
-use crate::{errors::DynamoItemParsingError, schema::DynamoObject, util::DynamoMap};
+use crate::{
+    errors::DynamoItemParsingError,
+    schema::{DynamoFieldRename, DynamoObject},
+    util::DynamoMap,
+};
 
 // Converting between DynamoMap and DynamoObject.
 // ----------------------------------------------------------------------------
@@ -55,7 +60,7 @@ pub(crate) fn build_dynamo_map_internal<T: Serialize>(
     let mut skipped_null_keys: Vec<String> = Vec::new();
 
     // DynamoObject -> Serde value.
-    let json_value = serde_json::to_value(&object)
+    let json_value = serde_json::to_value(object)
         .map_err(|e| DynamoItemParsingError::with_debug("failed to serialize object", &e))?;
 
     // Serde value -> DynamoMap.
@@ -136,6 +141,8 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerErr
             _ => serde_json::Value::Null,
         },
     );
+
+    normalize_renamed_fields(&mut serde_map, T::renamed_fields());
 
     // Serde value -> DynamoObject.
     serde_json::from_value(serde_json::Value::Object(serde_map))
@@ -247,6 +254,23 @@ fn attribute_value_to_serde_value(
     }
 }
 
+// Helpers.
+// ----------------------------------------------------------------------------
+
+fn normalize_renamed_fields(map: &mut Map<String, Value>, renamed_fields: &[DynamoFieldRename]) {
+    for renamed in renamed_fields {
+        if renamed.is_noop() {
+            continue;
+        }
+
+        if map.contains_key(renamed.to) {
+            map.remove(renamed.from);
+        } else if let Some(value) = map.remove(renamed.from) {
+            map.insert(renamed.to.to_string(), value);
+        }
+    }
+}
+
 // Tests.
 // ----------------------------------------------------------------------------
 
@@ -283,6 +307,20 @@ mod tests {
         "TEST",
         IdLogic::Uuid,
         NestingLogic::Root
+    );
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
+    pub struct TestRenamedObjectData {
+        name: Option<String>,
+    }
+
+    dynamo_object!(
+        TestRenamedObject,
+        TestRenamedObjectData,
+        "TESTRENAMED",
+        IdLogic::Uuid,
+        NestingLogic::Root,
+        renamed = ["old_name" -> "name"]
     );
 
     #[test]
@@ -734,6 +772,34 @@ mod tests {
         assert_eq!(output.id, expected_output.id);
         assert_eq!(output.auto_fields, expected_output.auto_fields);
         assert_eq!(output.data, expected_output.data);
+    }
+
+    #[test]
+    fn test_parse_dynamo_map_with_renamed_fields() {
+        let input = collection!(
+            "pk".to_string() => AttributeValue::S("123".to_string()),
+            "sk".to_string() => AttributeValue::S("456".to_string()),
+            "old_name".to_string() => AttributeValue::S("old".to_string()),
+        );
+
+        let output: TestRenamedObject = parse_dynamo_map(&input).unwrap();
+
+        assert_eq!(output.data.name, Some("old".to_string()));
+    }
+
+    #[test]
+    fn test_parse_dynamo_map_prefers_canonical_renamed_fields() {
+        let input = collection!(
+            "pk".to_string() => AttributeValue::S("123".to_string()),
+            "sk".to_string() => AttributeValue::S("456".to_string()),
+            "old_name".to_string() => AttributeValue::S("old".to_string()),
+            "name".to_string() => AttributeValue::S("new".to_string()),
+        );
+
+        let output: TestRenamedObject = parse_dynamo_map(&input).unwrap();
+
+        assert_eq!(output.data.name, Some("new".to_string()));
+        assert!(output.auto_fields.unknown_fields.is_empty());
     }
 
     #[test]

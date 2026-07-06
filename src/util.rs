@@ -37,6 +37,10 @@ use crate::{
         },
         expand_helpers::{build_expandable_batch_maps, expand_batched_items},
         id_relations::{child_search_prefix, validate_id, validate_parent_id},
+        rename_safety_helpers::{
+            add_legacy_field_removals, rename_aware_comparison_condition,
+            rename_aware_presence_condition,
+        },
         update_helpers::CmpOp,
     },
     DynamoCtxView,
@@ -48,6 +52,7 @@ mod collapse_helpers;
 mod expand_helpers;
 mod id_relations;
 mod metadata_helpers;
+mod rename_safety_helpers;
 mod test;
 mod update_helpers;
 
@@ -845,50 +850,32 @@ impl DynamoUtil {
                     );
                 }
                 UpdateCondition::FieldIsNone(field) => {
-                    let path = field
-                        .split('.')
-                        .enumerate()
-                        .map(|(j, field_part)| {
-                            let placeholder = format!("#u{}p{}", idx + 1, j + 1);
-                            expression_attribute_names
-                                .insert(placeholder.clone(), field_part.to_string());
-                            placeholder
-                        })
-                        .collect::<Vec<_>>()
-                        .join(".");
                     let null_type_placeholder = format!(":u{}n", idx + 1);
                     expression_attribute_values.insert(
                         null_type_placeholder.clone(),
                         AttributeValue::S("NULL".to_string()),
                     );
-                    let condition = format!(
-                        "(attribute_not_exists({p}) OR attribute_type({p}, {t}))",
-                        p = path,
-                        t = null_type_placeholder,
+                    let condition = rename_aware_presence_condition::<T>(
+                        &field,
+                        idx,
+                        false,
+                        &null_type_placeholder,
+                        &mut expression_attribute_names,
                     );
                     custom_conditions.push(condition);
                 }
                 UpdateCondition::FieldIsSome(field) => {
-                    let path = field
-                        .split('.')
-                        .enumerate()
-                        .map(|(j, field_part)| {
-                            let placeholder = format!("#u{}p{}", idx + 1, j + 1);
-                            expression_attribute_names
-                                .insert(placeholder.clone(), field_part.to_string());
-                            placeholder
-                        })
-                        .collect::<Vec<_>>()
-                        .join(".");
                     let null_type_placeholder = format!(":u{}n", idx + 1);
                     expression_attribute_values.insert(
                         null_type_placeholder.clone(),
                         AttributeValue::S("NULL".to_string()),
                     );
-                    let condition = format!(
-                        "(attribute_exists({p}) AND NOT attribute_type({p}, {t}))",
-                        p = path,
-                        t = null_type_placeholder,
+                    let condition = rename_aware_presence_condition::<T>(
+                        &field,
+                        idx,
+                        true,
+                        &null_type_placeholder,
+                        &mut expression_attribute_names,
                     );
                     custom_conditions.push(condition);
                 }
@@ -918,11 +905,12 @@ impl DynamoUtil {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
         };
-        let (map, null_keys) = build_dynamo_map_for_existing_obj::<T>(
-            &object,
+        let (map, mut null_keys) = build_dynamo_map_for_existing_obj::<T>(
+            object,
             IdKeys::None,
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
         )?;
+        add_legacy_field_removals::<T>(&map, &mut null_keys);
 
         // Build update expression.
         let set_expression = match map.is_empty() {
@@ -971,12 +959,14 @@ impl DynamoUtil {
                     .into_iter()
                     .enumerate()
                     .map(|(idx, (key, (value, op)))| {
-                        let key_placeholder = format!("#c{}", idx + 1);
-                        let value_placeholder = format!(":cv{}", idx + 1);
-                        let condition = format!("{} {} {}", key_placeholder, op, value_placeholder);
-                        expression_attribute_names.insert(key_placeholder, key);
-                        expression_attribute_values.insert(value_placeholder, value);
-                        condition
+                        rename_aware_comparison_condition::<T>(
+                            idx,
+                            key,
+                            value,
+                            op,
+                            &mut expression_attribute_names,
+                            &mut expression_attribute_values,
+                        )
                     }),
             )
             .collect::<Vec<String>>()

@@ -82,6 +82,7 @@ pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
 pub enum DynamoQueryMatchType {
     BeginsWith,
     Equals,
+    Between(String),
     GreaterThan,
     GreaterThanOrEquals,
     LessThan,
@@ -289,6 +290,12 @@ impl DynamoUtil {
             DynamoQueryMatchType::Equals => {
                 format!("{} = :pk_val AND {} = :sk_val", partition_field, sort_field)
             }
+            DynamoQueryMatchType::Between(_) => {
+                format!(
+                    "{} = :pk_val AND {} BETWEEN :sk_val AND :sk_max",
+                    partition_field, sort_field
+                )
+            }
             DynamoQueryMatchType::GreaterThan => {
                 format!("{} = :pk_val AND {} > :sk_val", partition_field, sort_field)
             }
@@ -324,6 +331,9 @@ impl DynamoUtil {
         let mut attribute_values = HashMap::new();
         attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
         match match_type {
+            DynamoQueryMatchType::Between(sk_max) => {
+                attribute_values.insert(":sk_max".to_string(), AttributeValue::S(sk_max));
+            }
             DynamoQueryMatchType::SuffixGreaterThanOrEquals(delim) => {
                 // '~' is the last ASCII character, so we can use it as an upper
                 // bound to limit the query to a given prefix (similar to using

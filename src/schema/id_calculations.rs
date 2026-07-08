@@ -14,11 +14,26 @@ use super::{DynamoObject, IdLogic, NestingLogic};
 // Primary ID functions.
 // ----------------------------------------------------------------------------
 
+#[derive(Default)]
+pub(crate) struct IdGenerationOptions {
+    pub timestamp_millis: Option<i64>,
+}
+
 /// (Not ext-partition aware.)
 pub(crate) fn generate_pk_sk<T: DynamoObject>(
     data: &T::Data,
     parent_pk: &str,
     parent_sk: &str,
+) -> Result<(String, String), ServerError> {
+    generate_pk_sk_opt::<T>(data, parent_pk, parent_sk, IdGenerationOptions::default())
+}
+
+/// (Not ext-partition aware.)
+pub(crate) fn generate_pk_sk_opt<T: DynamoObject>(
+    data: &T::Data,
+    parent_pk: &str,
+    parent_sk: &str,
+    options: IdGenerationOptions,
 ) -> Result<(String, String), ServerError> {
     // Validate parent ID:
     if is_singleton(parent_pk, parent_sk) {
@@ -36,27 +51,36 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
         }
         _ => {}
     }
-    // Build pk / sk:
-    let new_obj_id =
-        match T::id_logic() {
-            IdLogic::Phantom => return Err(CriticalError::new(
+
+    let new_obj_id = match T::id_logic() {
+        IdLogic::Phantom => {
+            return Err(CriticalError::new(
                 "IDs for IdLogic::Phantom should be constructed manually; phantom objects cannot \
                  be persisted",
-            )),
-            IdLogic::Uuid => format!("{}#{}", T::id_label(), uuid_16_chars()),
-            IdLogic::Timestamp => format!("{}#{}", T::id_label(), epoch_timestamp_16_chars()),
-            IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
-            IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
-                format!("@{}[{}]", T::id_label(), key(data))
-            }
-            IdLogic::BatchOptimized { .. } => {
-                return Err(CriticalError::new(
-                    "IDs for IdLogic::BatchOptimized should be generated manually in \
+            ))
+        }
+        IdLogic::Uuid => format!("{}#{}", T::id_label(), uuid_16_chars()),
+        IdLogic::Timestamp => format!(
+            "{}#{}",
+            T::id_label(),
+            options
+                .timestamp_millis
+                .map(timestamp_16_chars)
+                .unwrap_or_else(now_timestamp_16_chars)
+        ),
+        IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
+        IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
+            format!("@{}[{}]", T::id_label(), key(data))
+        }
+        IdLogic::BatchOptimized { .. } => {
+            return Err(CriticalError::new(
+                "IDs for IdLogic::BatchOptimized should be generated manually in \
                  DynamoUtil::batch_replace_all_ordered(...), but generate_pk_sk(...) was \
                  unexpectedly called",
-                ))
-            }
-        };
+            ))
+        }
+    };
+
     match T::nesting_logic() {
         NestingLogic::Root => Ok(("ROOT".to_string(), new_obj_id)),
         NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
@@ -123,9 +147,13 @@ fn uuid_16_chars() -> String {
     base62_encode(uuid.as_u128(), 16)
 }
 
-fn epoch_timestamp_16_chars() -> String {
+fn now_timestamp_16_chars() -> String {
     let timestamp = chrono::Utc::now().timestamp_millis();
-    format!("{:016}", timestamp)
+    timestamp_16_chars(timestamp)
+}
+
+fn timestamp_16_chars(timestamp_millis: i64) -> String {
+    format!("{:016}", timestamp_millis)
 }
 
 // Predicates.
@@ -247,9 +275,9 @@ mod tests {
 
     #[test]
     fn test_generate_timestamp() {
-        let timestamp_1 = epoch_timestamp_16_chars();
+        let timestamp_1 = now_timestamp_16_chars();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        let timestamp_2 = epoch_timestamp_16_chars();
+        let timestamp_2 = now_timestamp_16_chars();
         assert_eq!(timestamp_1.len(), 16);
         assert_eq!(timestamp_2.len(), 16);
         assert!(timestamp_2 > timestamp_1);

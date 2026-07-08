@@ -23,7 +23,9 @@ use crate::{
         DynamoUnexpectedItemCount,
     },
     schema::{
-        id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
+        id_calculations::{
+            generate_pk_sk_opt, get_object_type, get_pk_sk_from_map, IdGenerationOptions,
+        },
         parsing::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
             build_dynamo_map_internal, parse_dynamo_map, IdKeys,
@@ -460,7 +462,16 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
-        let (pk, sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
+        self.create_token_opt(parent_id, data, IdGenerationOptions::default())
+    }
+
+    fn create_token_opt<T: DynamoObject>(
+        &self,
+        parent_id: &PkSk,
+        data: &T::Data,
+        options: IdGenerationOptions,
+    ) -> Result<CreateToken<T>, ServerError> {
+        let (pk, sk) = generate_pk_sk_opt::<T>(data, &parent_id.pk, &parent_id.sk, options)?;
         Ok(CreateToken {
             id: PkSk { pk, sk },
             _phantom: std::marker::PhantomData,
@@ -545,23 +556,39 @@ impl DynamoUtil {
     ) -> Result<Vec<T>, ServerError> {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
-        if matches!(T::id_logic(), IdLogic::Timestamp) {
-            return Err(DynamoInvalidOperation::new(
-                "batch_create_item is not allowed with timestamp-based IDs, since all items would \
-                 get the same ID and only one item would be written",
-            ));
-        }
         if data_and_options.is_empty() {
             return Ok(Vec::new());
         }
+        let timestamp_seed = if matches!(T::id_logic(), IdLogic::Timestamp) {
+            Some(Utc::now().timestamp_millis())
+        } else {
+            None
+        };
+        let create_batch_id = |data: &T::Data,
+                               token: Option<&CreateToken<T>>,
+                               idx: usize|
+         -> Result<PkSk, ServerError> {
+            if let Some(token) = token {
+                return Ok(token.id.clone());
+            }
+            let timestamp_millis = timestamp_seed
+                .map(|seed| {
+                    let idx = i64::try_from(idx)
+                        .map_err(|_| CriticalError::new("batch item index overflowed i64"))?;
+                    seed.checked_add(idx)
+                        .ok_or_else(|| CriticalError::new("batch timestamp ID overflowed i64"))
+                })
+                .transpose()?;
+            Ok(self
+                .create_token_opt::<T>(parent_id, data, IdGenerationOptions { timestamp_millis })?
+                .id)
+        };
         if is_partitioned_id_logic::<T>() {
             let pending_writes = data_and_options
                 .into_iter()
-                .map(|(data, options)| {
-                    let PkSk { pk, sk } = options
-                        .token
-                        .map_or_else(|| self.create_token::<T>(parent_id, &data), Ok)?
-                        .id;
+                .enumerate()
+                .map(|(idx, (data, options))| {
+                    let PkSk { pk, sk } = create_batch_id(&data, options.token.as_ref(), idx)?;
                     Ok((
                         ext_base_id(&PkSk { pk, sk }),
                         data,
@@ -602,11 +629,9 @@ impl DynamoUtil {
         } else {
             let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_options
                 .iter()
-                .map(|(data, options)| {
-                    let PkSk { pk, sk } = options.token.as_ref().map_or_else(
-                        || Ok(self.create_token::<T>(parent_id, data)?.id),
-                        |t| Ok(t.id.clone()),
-                    )?;
+                .enumerate()
+                .map(|(idx, (data, options))| {
+                    let PkSk { pk, sk } = create_batch_id(data, options.token.as_ref(), idx)?;
                     let sort: Option<f64> = options.custom_sort;
                     let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
                     let now = Timestamp::now();

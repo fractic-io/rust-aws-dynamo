@@ -29,7 +29,9 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// - IDs are "guessable", which could be a security concern.
     /// - If multiple children for the same parent are written in the same
     ///   millisecond, they will have the same ID, and the second write will
-    ///   overwrite the first.
+    ///   overwrite the first. `DynamoUtil::batch_create_item` avoids this
+    ///   within a single batch call by assigning IDs from one millisecond seed
+    ///   plus each item's batch index, but concurrent writers can still collide.
     /// - Changing ID logic later can be very risky / complex, so should
     ///   consider all future use-cases from the beginning.
     ///

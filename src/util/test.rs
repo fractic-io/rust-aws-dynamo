@@ -49,6 +49,19 @@ mod tests {
     );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+    pub struct TestTimestampDynamoObjectData {
+        val_non_null: String,
+        val_nullable: Option<String>,
+    }
+    dynamo_object!(
+        TestTimestampDynamoObject,
+        TestTimestampDynamoObjectData,
+        "TIMETEST",
+        IdLogic::Timestamp,
+        NestingLogic::InlineChildOfAny
+    );
+
+    #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
     pub struct RenamedUpdateObjectData {
         name: Option<String>,
     }
@@ -944,6 +957,67 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_batch_create_item_timestamp_ids_are_offset_from_one_seed() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_batch_put_item()
+            .withf(|_, items| {
+                if items.len() != 3 {
+                    return false;
+                }
+                let timestamps = items
+                    .iter()
+                    .map(|item| {
+                        let sk = item.get("sk")?.as_s().ok()?;
+                        let timestamp = sk.rsplit('#').next()?.parse::<i64>().ok()?;
+                        Some((sk.clone(), timestamp))
+                    })
+                    .collect::<Option<Vec<_>>>();
+                let Some(timestamps) = timestamps else {
+                    return false;
+                };
+                timestamps.iter().all(|(sk, _)| {
+                    sk.starts_with("GROUP#123#TIMETEST#")
+                        && sk.len() == "GROUP#123#TIMETEST#".len() + 16
+                }) && timestamps[1].1 == timestamps[0].1 + 1
+                    && timestamps[2].1 == timestamps[1].1 + 1
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123".to_string(),
+        };
+        let result = util
+            .batch_create_item::<TestTimestampDynamoObject>(
+                &parent_id,
+                vec![
+                    TestTimestampDynamoObjectData::default(),
+                    TestTimestampDynamoObjectData::default(),
+                    TestTimestampDynamoObjectData::default(),
+                ],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.len(), 3);
+        let timestamps = result
+            .iter()
+            .map(|item| {
+                item.sk()
+                    .rsplit('#')
+                    .next()
+                    .unwrap()
+                    .parse::<i64>()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(timestamps[1], timestamps[0] + 1);
+        assert_eq!(timestamps[2], timestamps[1] + 1);
     }
 
     #[tokio::test]

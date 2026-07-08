@@ -165,11 +165,6 @@ impl<T: DynamoObject> Default for CreateOptions<T> {
     }
 }
 
-#[derive(Default)]
-struct CreateTokenOptions {
-    timestamp_millis: Option<i64>,
-}
-
 /// Comparison operators for numeric conditions.
 #[derive(Debug, Clone, Copy)]
 pub enum NumericOp {
@@ -467,23 +462,16 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
-        self.create_token_opt(parent_id, data, CreateTokenOptions::default())
+        self.create_token_opt(parent_id, data, IdGenerationOptions::default())
     }
 
     fn create_token_opt<T: DynamoObject>(
         &self,
         parent_id: &PkSk,
         data: &T::Data,
-        options: CreateTokenOptions,
+        options: IdGenerationOptions,
     ) -> Result<CreateToken<T>, ServerError> {
-        let (pk, sk) = generate_pk_sk_opt::<T>(
-            data,
-            &parent_id.pk,
-            &parent_id.sk,
-            IdGenerationOptions {
-                timestamp_millis: options.timestamp_millis,
-            },
-        )?;
+        let (pk, sk) = generate_pk_sk_opt::<T>(data, &parent_id.pk, &parent_id.sk, options)?;
         Ok(CreateToken {
             id: PkSk { pk, sk },
             _phantom: std::marker::PhantomData,
@@ -517,7 +505,7 @@ impl DynamoUtil {
         self.create_token_opt::<T>(
             parent_id,
             data,
-            CreateTokenOptions {
+            IdGenerationOptions {
                 timestamp_millis: Self::batch_timestamp_millis(timestamp_seed, idx)?,
             },
         )

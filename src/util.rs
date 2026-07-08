@@ -23,7 +23,9 @@ use crate::{
         DynamoUnexpectedItemCount,
     },
     schema::{
-        id_calculations::{generate_pk_sk, get_object_type, get_pk_sk_from_map},
+        id_calculations::{
+            generate_pk_sk, generate_pk_sk_with_timestamp, get_object_type, get_pk_sk_from_map,
+        },
         parsing::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
             build_dynamo_map_internal, parse_dynamo_map, IdKeys,
@@ -467,6 +469,30 @@ impl DynamoUtil {
         })
     }
 
+    fn create_batch_id<T: DynamoObject>(
+        &self,
+        parent_id: &PkSk,
+        data: &T::Data,
+        token: Option<&CreateToken<T>>,
+        timestamp_seed: Option<i64>,
+        idx: usize,
+    ) -> Result<PkSk, ServerError> {
+        if let Some(token) = token {
+            return Ok(token.id.clone());
+        }
+        if let Some(seed) = timestamp_seed {
+            let idx = i64::try_from(idx)
+                .map_err(|_| CriticalError::new("batch item index overflowed i64"))?;
+            let timestamp_millis = seed
+                .checked_add(idx)
+                .ok_or_else(|| CriticalError::new("batch timestamp ID overflowed i64"))?;
+            let (pk, sk) =
+                generate_pk_sk_with_timestamp::<T>(&parent_id.pk, &parent_id.sk, timestamp_millis)?;
+            return Ok(PkSk { pk, sk });
+        }
+        Ok(self.create_token::<T>(parent_id, data)?.id)
+    }
+
     pub async fn create_item<T: DynamoObject>(
         &self,
         parent_id: &PkSk,
@@ -545,23 +571,26 @@ impl DynamoUtil {
     ) -> Result<Vec<T>, ServerError> {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
-        if matches!(T::id_logic(), IdLogic::Timestamp) {
-            return Err(DynamoInvalidOperation::new(
-                "batch_create_item is not allowed with timestamp-based IDs, since all items would \
-                 get the same ID and only one item would be written",
-            ));
-        }
         if data_and_options.is_empty() {
             return Ok(Vec::new());
         }
+        let timestamp_seed = if matches!(T::id_logic(), IdLogic::Timestamp) {
+            Some(Utc::now().timestamp_millis())
+        } else {
+            None
+        };
         if is_partitioned_id_logic::<T>() {
             let pending_writes = data_and_options
                 .into_iter()
-                .map(|(data, options)| {
-                    let PkSk { pk, sk } = options
-                        .token
-                        .map_or_else(|| self.create_token::<T>(parent_id, &data), Ok)?
-                        .id;
+                .enumerate()
+                .map(|(idx, (data, options))| {
+                    let PkSk { pk, sk } = self.create_batch_id::<T>(
+                        parent_id,
+                        &data,
+                        options.token.as_ref(),
+                        timestamp_seed,
+                        idx,
+                    )?;
                     Ok((
                         ext_base_id(&PkSk { pk, sk }),
                         data,
@@ -602,10 +631,14 @@ impl DynamoUtil {
         } else {
             let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_options
                 .iter()
-                .map(|(data, options)| {
-                    let PkSk { pk, sk } = options.token.as_ref().map_or_else(
-                        || Ok(self.create_token::<T>(parent_id, data)?.id),
-                        |t| Ok(t.id.clone()),
+                .enumerate()
+                .map(|(idx, (data, options))| {
+                    let PkSk { pk, sk } = self.create_batch_id::<T>(
+                        parent_id,
+                        data,
+                        options.token.as_ref(),
+                        timestamp_seed,
+                        idx,
                     )?;
                     let sort: Option<f64> = options.custom_sort;
                     let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());

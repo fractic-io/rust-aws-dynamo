@@ -20,23 +20,6 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     parent_pk: &str,
     parent_sk: &str,
 ) -> Result<(String, String), ServerError> {
-    // Validate parent ID:
-    if is_singleton(parent_pk, parent_sk) {
-        return Err(DynamoInvalidParent::new("singletons cannot have children"));
-    }
-    match T::nesting_logic() {
-        NestingLogic::InlineChildOf(ptype_req) | NestingLogic::TopLevelChildOf(ptype_req) => {
-            let ptype = get_object_type(parent_pk, parent_sk)?;
-            if ptype != ptype_req {
-                return Err(DynamoInvalidParent::new(&format!(
-                    "{} != {}",
-                    ptype, ptype_req
-                )));
-            }
-        }
-        _ => {}
-    }
-    // Build pk / sk:
     let new_obj_id =
         match T::id_logic() {
             IdLogic::Phantom => return Err(CriticalError::new(
@@ -57,6 +40,48 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
                 ))
             }
         };
+    generate_pk_sk_with_obj_id::<T>(parent_pk, parent_sk, new_obj_id)
+}
+
+pub(crate) fn generate_pk_sk_with_timestamp<T: DynamoObject>(
+    parent_pk: &str,
+    parent_sk: &str,
+    timestamp_millis: i64,
+) -> Result<(String, String), ServerError> {
+    if !matches!(T::id_logic(), IdLogic::Timestamp) {
+        return Err(CriticalError::new(
+            "generate_pk_sk_with_timestamp(...) should only be used with IdLogic::Timestamp",
+        ));
+    }
+    generate_pk_sk_with_obj_id::<T>(
+        parent_pk,
+        parent_sk,
+        format!("{}#{}", T::id_label(), timestamp_16_chars(timestamp_millis)),
+    )
+}
+
+fn generate_pk_sk_with_obj_id<T: DynamoObject>(
+    parent_pk: &str,
+    parent_sk: &str,
+    new_obj_id: String,
+) -> Result<(String, String), ServerError> {
+    // Validate parent ID:
+    if is_singleton(parent_pk, parent_sk) {
+        return Err(DynamoInvalidParent::new("singletons cannot have children"));
+    }
+    match T::nesting_logic() {
+        NestingLogic::InlineChildOf(ptype_req) | NestingLogic::TopLevelChildOf(ptype_req) => {
+            let ptype = get_object_type(parent_pk, parent_sk)?;
+            if ptype != ptype_req {
+                return Err(DynamoInvalidParent::new(&format!(
+                    "{} != {}",
+                    ptype, ptype_req
+                )));
+            }
+        }
+        _ => {}
+    }
+
     match T::nesting_logic() {
         NestingLogic::Root => Ok(("ROOT".to_string(), new_obj_id)),
         NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
@@ -125,7 +150,11 @@ fn uuid_16_chars() -> String {
 
 fn epoch_timestamp_16_chars() -> String {
     let timestamp = chrono::Utc::now().timestamp_millis();
-    format!("{:016}", timestamp)
+    timestamp_16_chars(timestamp)
+}
+
+fn timestamp_16_chars(timestamp_millis: i64) -> String {
+    format!("{:016}", timestamp_millis)
 }
 
 // Predicates.

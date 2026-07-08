@@ -266,6 +266,7 @@ macro_rules! dynamo_object {
             []
         );
     };
+
     (
         $type:ident,
         $datatype:ident,
@@ -290,6 +291,7 @@ macro_rules! dynamo_object {
             ]
         );
     };
+
     (
         $type:ident,
         $datatype:ident,
@@ -314,6 +316,7 @@ macro_rules! dynamo_object {
             ]
         );
     };
+
     (
         @impl
         $type:ident,

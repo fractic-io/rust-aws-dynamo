@@ -381,6 +381,19 @@ macro_rules! dynamo_object {
 #[macro_export]
 macro_rules! phantom_object {
     ($type:ident, $id_label:expr, |$($arg:ident : $arg_ty:ty),* $(,)?| $id:expr) => {
+        $crate::phantom_object!(
+            @impl $type,
+            $id_label,
+            ($($arg : $arg_ty),*),
+            $id
+        );
+    };
+
+    ($type:ident, $id_label:expr, $id:expr) => {
+        $crate::phantom_object!(@impl $type, $id_label, (), $id);
+    };
+
+    (@impl $type:ident, $id_label:expr, ($($arg:ident : $arg_ty:ty),*), $id:expr) => {
         #[derive(Debug, Serialize, Deserialize, Clone)]
         pub struct $type {
             pub id: $crate::schema::PkSk,
@@ -581,6 +594,14 @@ mod tests {
         pk: "ROOT".to_string(),
         sk: format!("LOOKUP#{space}-{key}"),
     });
+    phantom_object!(
+        TestRootLookup,
+        "ROOTLOOKUP",
+        PkSk {
+            pk: "ROOT".to_string(),
+            sk: "ROOTLOOKUP".to_string(),
+        }
+    );
 
     #[test]
     fn test_auto_fields_default() {
@@ -694,5 +715,16 @@ mod tests {
         assert_eq!(TestLookup::id_label(), "LOOKUP");
         assert!(matches!(TestLookup::id_logic(), IdLogic::Phantom));
         assert!(matches!(TestLookup::nesting_logic(), NestingLogic::Root));
+
+        let root_obj = TestRootLookup::of();
+
+        assert_eq!(root_obj.id().pk, "ROOT");
+        assert_eq!(root_obj.id().sk, "ROOTLOOKUP");
+        assert_eq!(TestRootLookup::id_label(), "ROOTLOOKUP");
+        assert!(matches!(TestRootLookup::id_logic(), IdLogic::Phantom));
+        assert!(matches!(
+            TestRootLookup::nesting_logic(),
+            NestingLogic::Root
+        ));
     }
 }

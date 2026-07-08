@@ -24,7 +24,7 @@ use crate::{
     },
     schema::{
         id_calculations::{
-            generate_pk_sk, generate_pk_sk_with_timestamp, get_object_type, get_pk_sk_from_map,
+            generate_pk_sk_opt, get_object_type, get_pk_sk_from_map, IdGenerationOptions,
         },
         parsing::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
@@ -163,6 +163,11 @@ impl<T: DynamoObject> Default for CreateOptions<T> {
             token: None,
         }
     }
+}
+
+#[derive(Default)]
+struct CreateTokenOptions {
+    timestamp_millis: Option<i64>,
 }
 
 /// Comparison operators for numeric conditions.
@@ -462,35 +467,60 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
-        let (pk, sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
+        self.create_token_opt(parent_id, data, CreateTokenOptions::default())
+    }
+
+    fn create_token_opt<T: DynamoObject>(
+        &self,
+        parent_id: &PkSk,
+        data: &T::Data,
+        options: CreateTokenOptions,
+    ) -> Result<CreateToken<T>, ServerError> {
+        let (pk, sk) = generate_pk_sk_opt::<T>(
+            data,
+            &parent_id.pk,
+            &parent_id.sk,
+            IdGenerationOptions {
+                timestamp_millis: options.timestamp_millis,
+            },
+        )?;
         Ok(CreateToken {
             id: PkSk { pk, sk },
             _phantom: std::marker::PhantomData,
         })
     }
 
-    fn create_batch_id<T: DynamoObject>(
+    fn batch_timestamp_millis(seed: Option<i64>, idx: usize) -> Result<Option<i64>, ServerError> {
+        seed.map(|seed| {
+            let idx = i64::try_from(idx)
+                .map_err(|_| CriticalError::new("batch item index overflowed i64"))?;
+            seed.checked_add(idx)
+                .ok_or_else(|| CriticalError::new("batch timestamp ID overflowed i64"))
+        })
+        .transpose()
+    }
+
+    fn create_token_for_batch_item<T: DynamoObject>(
         &self,
         parent_id: &PkSk,
         data: &T::Data,
-        token: Option<&CreateToken<T>>,
+        provided_token: Option<&CreateToken<T>>,
         timestamp_seed: Option<i64>,
         idx: usize,
-    ) -> Result<PkSk, ServerError> {
-        if let Some(token) = token {
-            return Ok(token.id.clone());
+    ) -> Result<CreateToken<T>, ServerError> {
+        if let Some(token) = provided_token {
+            return Ok(CreateToken {
+                id: token.id.clone(),
+                _phantom: std::marker::PhantomData,
+            });
         }
-        if let Some(seed) = timestamp_seed {
-            let idx = i64::try_from(idx)
-                .map_err(|_| CriticalError::new("batch item index overflowed i64"))?;
-            let timestamp_millis = seed
-                .checked_add(idx)
-                .ok_or_else(|| CriticalError::new("batch timestamp ID overflowed i64"))?;
-            let (pk, sk) =
-                generate_pk_sk_with_timestamp::<T>(&parent_id.pk, &parent_id.sk, timestamp_millis)?;
-            return Ok(PkSk { pk, sk });
-        }
-        Ok(self.create_token::<T>(parent_id, data)?.id)
+        self.create_token_opt::<T>(
+            parent_id,
+            data,
+            CreateTokenOptions {
+                timestamp_millis: Self::batch_timestamp_millis(timestamp_seed, idx)?,
+            },
+        )
     }
 
     pub async fn create_item<T: DynamoObject>(
@@ -584,13 +614,15 @@ impl DynamoUtil {
                 .into_iter()
                 .enumerate()
                 .map(|(idx, (data, options))| {
-                    let PkSk { pk, sk } = self.create_batch_id::<T>(
-                        parent_id,
-                        &data,
-                        options.token.as_ref(),
-                        timestamp_seed,
-                        idx,
-                    )?;
+                    let PkSk { pk, sk } = self
+                        .create_token_for_batch_item::<T>(
+                            parent_id,
+                            &data,
+                            options.token.as_ref(),
+                            timestamp_seed,
+                            idx,
+                        )?
+                        .id;
                     Ok((
                         ext_base_id(&PkSk { pk, sk }),
                         data,
@@ -633,13 +665,15 @@ impl DynamoUtil {
                 .iter()
                 .enumerate()
                 .map(|(idx, (data, options))| {
-                    let PkSk { pk, sk } = self.create_batch_id::<T>(
-                        parent_id,
-                        data,
-                        options.token.as_ref(),
-                        timestamp_seed,
-                        idx,
-                    )?;
+                    let PkSk { pk, sk } = self
+                        .create_token_for_batch_item::<T>(
+                            parent_id,
+                            data,
+                            options.token.as_ref(),
+                            timestamp_seed,
+                            idx,
+                        )?
+                        .id;
                     let sort: Option<f64> = options.custom_sort;
                     let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
                     let now = Timestamp::now();

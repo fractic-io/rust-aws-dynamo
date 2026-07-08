@@ -20,50 +20,19 @@ pub(crate) fn generate_pk_sk<T: DynamoObject>(
     parent_pk: &str,
     parent_sk: &str,
 ) -> Result<(String, String), ServerError> {
-    let new_obj_id =
-        match T::id_logic() {
-            IdLogic::Phantom => return Err(CriticalError::new(
-                "IDs for IdLogic::Phantom should be constructed manually; phantom objects cannot \
-                 be persisted",
-            )),
-            IdLogic::Uuid => format!("{}#{}", T::id_label(), uuid_16_chars()),
-            IdLogic::Timestamp => format!("{}#{}", T::id_label(), epoch_timestamp_16_chars()),
-            IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
-            IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
-                format!("@{}[{}]", T::id_label(), key(data))
-            }
-            IdLogic::BatchOptimized { .. } => {
-                return Err(CriticalError::new(
-                    "IDs for IdLogic::BatchOptimized should be generated manually in \
-                 DynamoUtil::batch_replace_all_ordered(...), but generate_pk_sk(...) was \
-                 unexpectedly called",
-                ))
-            }
-        };
-    generate_pk_sk_with_obj_id::<T>(parent_pk, parent_sk, new_obj_id)
+    generate_pk_sk_opt::<T>(data, parent_pk, parent_sk, IdGenerationOptions::default())
 }
 
-pub(crate) fn generate_pk_sk_with_timestamp<T: DynamoObject>(
-    parent_pk: &str,
-    parent_sk: &str,
-    timestamp_millis: i64,
-) -> Result<(String, String), ServerError> {
-    if !matches!(T::id_logic(), IdLogic::Timestamp) {
-        return Err(CriticalError::new(
-            "generate_pk_sk_with_timestamp(...) should only be used with IdLogic::Timestamp",
-        ));
-    }
-    generate_pk_sk_with_obj_id::<T>(
-        parent_pk,
-        parent_sk,
-        format!("{}#{}", T::id_label(), timestamp_16_chars(timestamp_millis)),
-    )
+#[derive(Default)]
+pub(crate) struct IdGenerationOptions {
+    pub timestamp_millis: Option<i64>,
 }
 
-fn generate_pk_sk_with_obj_id<T: DynamoObject>(
+pub(crate) fn generate_pk_sk_opt<T: DynamoObject>(
+    data: &T::Data,
     parent_pk: &str,
     parent_sk: &str,
-    new_obj_id: String,
+    options: IdGenerationOptions,
 ) -> Result<(String, String), ServerError> {
     // Validate parent ID:
     if is_singleton(parent_pk, parent_sk) {
@@ -81,6 +50,34 @@ fn generate_pk_sk_with_obj_id<T: DynamoObject>(
         }
         _ => {}
     }
+
+    let new_obj_id =
+        match T::id_logic() {
+            IdLogic::Phantom => return Err(CriticalError::new(
+                "IDs for IdLogic::Phantom should be constructed manually; phantom objects cannot \
+                 be persisted",
+            )),
+            IdLogic::Uuid => format!("{}#{}", T::id_label(), uuid_16_chars()),
+            IdLogic::Timestamp => format!(
+                "{}#{}",
+                T::id_label(),
+                options
+                    .timestamp_millis
+                    .map(timestamp_16_chars)
+                    .unwrap_or_else(epoch_timestamp_16_chars)
+            ),
+            IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
+            IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
+                format!("@{}[{}]", T::id_label(), key(data))
+            }
+            IdLogic::BatchOptimized { .. } => {
+                return Err(CriticalError::new(
+                    "IDs for IdLogic::BatchOptimized should be generated manually in \
+                 DynamoUtil::batch_replace_all_ordered(...), but generate_pk_sk(...) was \
+                 unexpectedly called",
+                ))
+            }
+        };
 
     match T::nesting_logic() {
         NestingLogic::Root => Ok(("ROOT".to_string(), new_obj_id)),

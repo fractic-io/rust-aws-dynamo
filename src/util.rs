@@ -80,15 +80,28 @@ pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
+    /// Match items whose sort key starts with the provided value.
     BeginsWith,
+    /// Match items whose sort key exactly equals the provided value.
     Equals,
-    SortKeyBetweenInclusive { end: String },
+    /// Match items whose sort key is greater than the provided value.
     GreaterThan,
+    /// Match items whose sort key is greater than or equal to the provided value.
     GreaterThanOrEquals,
+    /// Match items whose sort key is less than the provided value.
     LessThan,
+    /// Match items whose sort key is less than or equal to the provided value.
     LessThanOrEquals,
+    /// Match items with the same prefix up to `delim` and suffix greater than
+    /// or equal to the provided value.
     SuffixGreaterThanOrEquals(char),
+    /// Match items with the same prefix up to `delim` and suffix less than or
+    /// equal to the provided value.
     SuffixLessThanOrEquals(char),
+    /// Match items whose sort key falls between the provided value and this
+    /// inclusive upper bound. Use this to build custom DynamoDB `BETWEEN`
+    /// queries from a lower-bound `PkSk` plus an explicit upper-bound string.
+    UntilInclusive(String),
 }
 
 #[derive(Debug)]
@@ -290,12 +303,6 @@ impl DynamoUtil {
             DynamoQueryMatchType::Equals => {
                 format!("{} = :pk_val AND {} = :sk_val", partition_field, sort_field)
             }
-            DynamoQueryMatchType::SortKeyBetweenInclusive { .. } => {
-                format!(
-                    "{} = :pk_val AND {} BETWEEN :sk_val AND :sk_max",
-                    partition_field, sort_field
-                )
-            }
             DynamoQueryMatchType::GreaterThan => {
                 format!("{} = :pk_val AND {} > :sk_val", partition_field, sort_field)
             }
@@ -326,14 +333,17 @@ impl DynamoUtil {
                     partition_field, sort_field
                 )
             }
+            DynamoQueryMatchType::UntilInclusive(_) => {
+                format!(
+                    "{} = :pk_val AND {} BETWEEN :sk_val AND :sk_max",
+                    partition_field, sort_field
+                )
+            }
         }
         .to_string();
         let mut attribute_values = HashMap::new();
         attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
         match match_type {
-            DynamoQueryMatchType::SortKeyBetweenInclusive { end } => {
-                attribute_values.insert(":sk_max".to_string(), AttributeValue::S(end));
-            }
             DynamoQueryMatchType::SuffixGreaterThanOrEquals(delim) => {
                 // '~' is the last ASCII character, so we can use it as an upper
                 // bound to limit the query to a given prefix (similar to using
@@ -374,6 +384,9 @@ impl DynamoUtil {
                             .to_string(),
                     ),
                 );
+            }
+            DynamoQueryMatchType::UntilInclusive(sk_max) => {
+                attribute_values.insert(":sk_max".to_string(), AttributeValue::S(sk_max));
             }
             _ => {}
         }

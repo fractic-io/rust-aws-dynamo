@@ -14,8 +14,8 @@ erased-serde = "^0.4.5"
 fractic-context = { git = "https://github.com/fractic-io/rust-context.git" }
 fractic-core = { git = "https://github.com/fractic-io/rust-core.git" }
 fractic-server-error = { git = "https://github.com/fractic-io/rust-server-error.git" }
-mockall = "^0.12.1"
-ordered-float = "^4.2.1"
+mockall = "^0.15.0"
+ordered-float = "^5.3.0"
 serde = { version = "^1.0.203", features = ["derive"] }
 serde_json = "^1.0.117"
 tokio = { version = "^1", features = ["full"] }

@@ -61,6 +61,16 @@ crate::dynamo_object!(
     NestingLogic::Root
 );
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct TestBatchData {}
+crate::dynamo_object!(
+    TestBatch,
+    TestBatchData,
+    "BATCH",
+    IdLogic::BatchOptimized { batch_size: 10 },
+    NestingLogic::TopLevelChildOfAny
+);
+
 struct TestAlgorithms;
 
 #[async_trait]
@@ -1051,6 +1061,55 @@ async fn duplicate_rejects_a_conflicting_singleton_root_before_writing() {
     )
     .await
     .is_err());
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn duplicate_rejects_a_conflicting_batch_optimized_root_before_writing() {
+    let parent = PkSk {
+        pk: "ROOT".into(),
+        sk: "ROOTOBJ#parent".into(),
+    };
+    let root = id(0, "BATCH", "BATCH#0");
+    let mut root_item = bundle_item(
+        root.clone(),
+        None,
+        BundleNesting::TopLevel,
+        json!({"..": [{"value": "batched"}]}),
+    );
+    root_item.id_logic = BundleIdLogic::BatchOptimized;
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        root,
+        recursive: false,
+        exclusions: BTreeMap::new(),
+        items: vec![root_item],
+        references: vec![],
+    };
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(1)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(
+                    table,
+                    vec![row("ROOTOBJ#parent", "BATCH#0")],
+                )])))
+                .build())
+        });
+
+    let error = import_bundle::<TestBatch>(
+        &util(backend),
+        &TestAlgorithms,
+        Some(&parent),
+        bundle,
+        IfExisting::Duplicate,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("batch-optimized bundle root"));
 }
 
 #[tokio::test]

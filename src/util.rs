@@ -5,7 +5,8 @@ use std::{
 
 use aws_sdk_dynamodb::{
     operation::{
-        batch_write_item::BatchWriteItemError, delete_item::DeleteItemError,
+        batch_write_item::{BatchWriteItemError, BatchWriteItemOutput},
+        delete_item::DeleteItemError,
         update_item::UpdateItemError,
     },
     types::AttributeValue,
@@ -18,9 +19,9 @@ use fractic_server_error::{CriticalError, ServerError};
 
 use crate::{
     errors::{
-        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidExtIdUsage,
-        DynamoInvalidOperation, DynamoInvalidPhantomObjectUsage, DynamoNotFound,
-        DynamoUnexpectedItemCount,
+        DynamoBatchWriteRetriesExhausted, DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage,
+        DynamoInvalidExtIdUsage, DynamoInvalidOperation, DynamoInvalidPhantomObjectUsage,
+        DynamoNotFound, DynamoUnexpectedItemCount,
     },
     schema::{
         id_calculations::{
@@ -77,6 +78,9 @@ pub const EXPAND_DATA_RESERVED_KEY: &str = "..";
 /// WARNING: Also hardcoded in `collapse_helpers.rs`.
 pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
 pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
+
+const MAX_BATCH_WRITE_RETRIES: usize = 3;
+const BATCH_WRITE_RETRY_BASE_DELAY_MS: u64 = 25;
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -1237,13 +1241,29 @@ impl DynamoUtil {
 
         // Split into 25-item batches (max supported by DynamoDB).
         for batch in items.chunks(25) {
-            self.backend
-                .batch_delete_item(self.table.clone(), batch.to_vec())
-                .await
-                .map_err(|e| match e.into_service_error() {
-                    BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
-                    other => DynamoCalloutError::with_debug(&other),
-                })?;
+            let mut pending = batch.to_vec();
+            for attempt in 0..=MAX_BATCH_WRITE_RETRIES {
+                let response = self
+                    .backend
+                    .batch_delete_item(self.table.clone(), pending)
+                    .await
+                    .map_err(|e| match e.into_service_error() {
+                        BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
+                        other => DynamoCalloutError::with_debug(&other),
+                    })?;
+                pending = unprocessed_delete_keys(&response, &self.table)?;
+                if pending.is_empty() {
+                    break;
+                }
+                if attempt == MAX_BATCH_WRITE_RETRIES {
+                    return Err(DynamoBatchWriteRetriesExhausted::new(
+                        "delete",
+                        pending.len(),
+                        MAX_BATCH_WRITE_RETRIES,
+                    ));
+                }
+                wait_before_batch_write_retry(attempt).await;
+            }
         }
         Ok(())
     }
@@ -1263,11 +1283,79 @@ impl DynamoUtil {
 
         // Split into 25-item batches (max supported by DynamoDB).
         for batch in items.chunks(25) {
-            self.backend
-                .batch_put_item(self.table.clone(), batch.to_vec())
-                .await
-                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+            let mut pending = batch.to_vec();
+            for attempt in 0..=MAX_BATCH_WRITE_RETRIES {
+                let response = self
+                    .backend
+                    .batch_put_item(self.table.clone(), pending)
+                    .await
+                    .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+                pending = unprocessed_put_items(&response, &self.table)?;
+                if pending.is_empty() {
+                    break;
+                }
+                if attempt == MAX_BATCH_WRITE_RETRIES {
+                    return Err(DynamoBatchWriteRetriesExhausted::new(
+                        "put",
+                        pending.len(),
+                        MAX_BATCH_WRITE_RETRIES,
+                    ));
+                }
+                wait_before_batch_write_retry(attempt).await;
+            }
         }
         Ok(())
     }
+}
+
+fn unprocessed_delete_keys(
+    response: &BatchWriteItemOutput,
+    table: &str,
+) -> Result<Vec<DynamoMap>, ServerError> {
+    response
+        .unprocessed_items()
+        .and_then(|items| items.get(table))
+        .into_iter()
+        .flatten()
+        .map(|request| {
+            request
+                .delete_request()
+                .map(|delete| delete.key().clone())
+                .ok_or_else(|| {
+                    CriticalError::new(
+                        "DynamoDB returned a non-delete request for an unprocessed batch delete",
+                    )
+                })
+        })
+        .collect()
+}
+
+fn unprocessed_put_items(
+    response: &BatchWriteItemOutput,
+    table: &str,
+) -> Result<Vec<DynamoMap>, ServerError> {
+    response
+        .unprocessed_items()
+        .and_then(|items| items.get(table))
+        .into_iter()
+        .flatten()
+        .map(|request| {
+            request
+                .put_request()
+                .map(|put| put.item().clone())
+                .ok_or_else(|| {
+                    CriticalError::new(
+                        "DynamoDB returned a non-put request for an unprocessed batch put",
+                    )
+                })
+        })
+        .collect()
+}
+
+async fn wait_before_batch_write_retry(attempt: usize) {
+    let multiplier = 1_u64 << attempt;
+    tokio::time::sleep(std::time::Duration::from_millis(
+        BATCH_WRITE_RETRY_BASE_DELAY_MS * multiplier,
+    ))
+    .await;
 }

@@ -80,6 +80,11 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
             "a singleton bundle root cannot be duplicated below the same parent",
         ));
     }
+    if duplicated && root_id_logic == BundleIdLogic::BatchOptimized {
+        return Err(DynamoInvalidOperation::new(
+            "a batch-optimized bundle root cannot be duplicated below the same parent",
+        ));
+    }
     let id_map = if duplicated {
         build_id_map(&bundle, parent, true, root_id_logic)?
     } else {

@@ -3,6 +3,16 @@ use fractic_server_error::{define_client_error, define_internal_error, define_us
 define_user_error!(DynamoNotFound, "Requested item does not exist.");
 define_internal_error!(DynamoCalloutError, "Generic DynamoDB error.");
 define_internal_error!(
+    DynamoBatchWriteRetriesExhausted,
+    "DynamoDB batch {operation} still had {remaining_items} unprocessed items after {retries} \
+     retries.",
+    {
+        operation: &str,
+        remaining_items: usize,
+        retries: usize,
+    }
+);
+define_internal_error!(
     DynamoItemParsingError,
     "DynamoDB item parsing error: {details}.",
     { details: &str }

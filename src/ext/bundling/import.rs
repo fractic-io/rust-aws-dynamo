@@ -27,11 +27,11 @@ use crate::{
 };
 
 use super::{
-    export::{collect_items, export_with_policy, terminal_ref},
-    policy::{validate_import_policy, BundlePolicyCache},
+    export::{collect_items, export_with_omissions, terminal_ref},
+    policy::{configured_bundles, validate_import_policy},
     root_nesting,
     value::{set_value_at_path, value_at_path},
-    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
+    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleConfig, DynamoBundleItem,
     DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
     DynamoImportResult, DynamoImportWarning, IfExisting,
 };
@@ -67,11 +67,8 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         ));
     }
     let root_id_logic = BundleIdLogic::from_object::<O>();
-    let effective_exclusions = validate_import_policy(
-        &bundle,
-        &mut BundlePolicyCache::new(algorithms),
-        root_id_logic,
-    )?;
+    let bundles = configured_bundles(algorithms);
+    let effective_omissions = validate_import_policy(&bundle, &bundles, root_id_logic)?;
     let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
     let existing = find_existing(util, &preserved_ids).await?;
     let duplicated = !existing.conflicts.is_empty() && matches!(if_existing, IfExisting::Duplicate);
@@ -102,14 +99,14 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
 
     let old = if !existing.conflicts.is_empty() && matches!(if_existing, IfExisting::Replace) {
         Some(
-            export_with_policy(
+            export_with_omissions(
                 util,
-                algorithms,
+                &bundles,
                 root_id.clone(),
                 root_nesting::<O>(),
                 root_id_logic,
                 bundle.recursive,
-                &effective_exclusions,
+                &effective_omissions,
             )
             .await?,
         )
@@ -129,7 +126,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     util.raw_batch_put_item(merge_plan.puts).await?;
 
     let deleted_subtree_roots = match old {
-        Some(old) => replace_stale(util, algorithms, parent, &old, &id_map).await?,
+        Some(old) => replace_stale(util, &bundles, parent, &old, &id_map).await?,
         None => 0,
     };
 
@@ -178,7 +175,7 @@ async fn resolve_references(
         .iter()
         .filter_map(|reference| match &reference.target {
             DynamoBundleReferenceTarget::External { lookup_id, .. } => Some(lookup_id.clone()),
-            DynamoBundleReferenceTarget::Internal { .. } => None,
+            DynamoBundleReferenceTarget::Bundled { .. } => None,
         })
         .collect::<HashSet<_>>();
     let existing_external = util
@@ -196,7 +193,7 @@ async fn resolve_references(
     let mut missing_clears = Vec::new();
     for reference in bundle.references.clone() {
         let replacement = match &reference.target {
-            DynamoBundleReferenceTarget::Internal {
+            DynamoBundleReferenceTarget::Bundled {
                 id: target,
                 encoding,
             } => {
@@ -317,7 +314,7 @@ fn partition_payload(data: &Value) -> Result<(String, Option<f64>, Option<i64>),
 
 async fn replace_stale(
     util: &DynamoUtil,
-    algorithms: &dyn DynamoCrudAlgorithms,
+    bundles: &DynamoBundleConfig,
     parent: Option<&PkSk>,
     old: &DynamoBundle,
     new_ids: &HashMap<BundleId, PkSk>,
@@ -362,9 +359,9 @@ async fn replace_stale(
 
     let delete_groups = stream::iter(stale_roots.iter().cloned())
         .map(|(id, nesting)| async move {
-            let no_exclusions = BTreeMap::new();
+            let no_omissions = BTreeMap::new();
             let (items, _) =
-                collect_items(util, algorithms, &id, nesting, true, Some(&no_exclusions)).await?;
+                collect_items(util, bundles, &id, nesting, true, Some(&no_omissions)).await?;
             items
                 .into_iter()
                 .flat_map(|item| item.rows)
@@ -612,13 +609,12 @@ fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
         }
         if matches!(
             &reference.target,
-            DynamoBundleReferenceTarget::Internal { id: target, .. } if !ids.contains(target)
+            DynamoBundleReferenceTarget::Bundled { id: target, .. } if !ids.contains(target)
         ) {
             return Err(invalid_bundle("bundle reference target was invalid"));
         }
         if let DynamoBundleReferenceTarget::External { clear_path, .. } = &reference.target {
-            let is_containing_path = clear_path.0.len() <= reference.path.0.len()
-                && reference.path.0.starts_with(&clear_path.0);
+            let is_containing_path = clear_path.is_prefix_of(&reference.path);
             if !is_containing_path || value_at_path(&source.data, clear_path).is_none() {
                 return Err(invalid_bundle(
                     "external reference clear path was not a containing value",

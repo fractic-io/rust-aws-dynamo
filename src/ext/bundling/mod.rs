@@ -7,6 +7,7 @@ mod policy;
 mod value;
 
 pub use model::*;
+pub use policy::{DynamoBundleConfig, DynamoBundleReferenceMatch, DynamoBundleReferenceRule};
 
 use fractic_server_error::ServerError;
 
@@ -21,7 +22,7 @@ pub async fn export<O: DynamoObject>(
     algorithms: &dyn DynamoCrudAlgorithms,
     item: O,
 ) -> Result<DynamoBundle, ServerError> {
-    export::export_from_specs(
+    export::export_from_config(
         util,
         algorithms,
         item.id().clone(),
@@ -37,7 +38,7 @@ pub async fn export_recursive<O: DynamoObject>(
     algorithms: &dyn DynamoCrudAlgorithms,
     item: O,
 ) -> Result<DynamoBundle, ServerError> {
-    export::export_from_specs(
+    export::export_from_config(
         util,
         algorithms,
         item.id().clone(),

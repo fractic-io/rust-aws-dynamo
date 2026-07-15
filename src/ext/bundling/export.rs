@@ -22,10 +22,11 @@ use crate::{
 };
 
 use super::{
-    policy::BundlePolicyCache, value::value_at_path, BundleId, BundleIdLogic, BundleNesting,
-    DynamoBundle, DynamoBundleItem, DynamoBundlePolicy, DynamoBundleReference,
-    DynamoBundleReferenceEncoding, DynamoBundleReferenceMatchTarget, DynamoBundleReferenceTarget,
-    DynamoBundleSpec, DynamoBundleStorage,
+    policy::{configured_bundles, DynamoBundleObjectConfig, DynamoBundleReferenceMatchTarget},
+    value::value_at_path,
+    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleConfig, DynamoBundleItem,
+    DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
+    DynamoBundleStorage,
 };
 
 const QUERY_CONCURRENCY: usize = 16;
@@ -36,10 +37,10 @@ pub(crate) struct CollectedItem {
     pub parent: Option<PkSk>,
     pub nesting: BundleNesting,
     pub rows: Vec<DynamoMap>,
-    descendant_exclusions: BTreeSet<String>,
+    omitted_descendants: BTreeSet<String>,
 }
 
-pub(crate) async fn export_from_specs(
+pub(crate) async fn export_from_config(
     util: &DynamoUtil,
     algorithms: &dyn DynamoCrudAlgorithms,
     root: PkSk,
@@ -47,9 +48,10 @@ pub(crate) async fn export_from_specs(
     root_id_logic: BundleIdLogic,
     recursive: bool,
 ) -> Result<DynamoBundle, ServerError> {
+    let bundles = configured_bundles(algorithms);
     export_inner(
         util,
-        algorithms,
+        &bundles,
         root,
         root_nesting,
         root_id_logic,
@@ -61,23 +63,23 @@ pub(crate) async fn export_from_specs(
 }
 
 /// Exports a destination snapshot using the incoming bundle's omission policy.
-pub(crate) async fn export_with_policy(
+pub(crate) async fn export_with_omissions(
     util: &DynamoUtil,
-    algorithms: &dyn DynamoCrudAlgorithms,
+    bundles: &DynamoBundleConfig,
     root: PkSk,
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
     recursive: bool,
-    exclusions: &BTreeMap<String, BTreeSet<String>>,
+    omissions: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<DynamoBundle, ServerError> {
     export_inner(
         util,
-        algorithms,
+        bundles,
         root,
         root_nesting,
         root_id_logic,
         recursive,
-        Some(exclusions),
+        Some(omissions),
         false,
     )
     .await
@@ -85,22 +87,21 @@ pub(crate) async fn export_with_policy(
 
 async fn export_inner(
     util: &DynamoUtil,
-    algorithms: &dyn DynamoCrudAlgorithms,
+    bundles: &DynamoBundleConfig,
     root: PkSk,
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
     recursive: bool,
-    fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
+    fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
     include_references: bool,
 ) -> Result<DynamoBundle, ServerError> {
-    let mut policies = BundlePolicyCache::new(algorithms);
-    let (collected, exclusions) = collect_items_with_policies(
+    let (collected, omitted_descendants) = collect_items_with_policies(
         util,
-        &mut policies,
+        bundles,
         &root,
         root_nesting,
         recursive,
-        fixed_exclusions,
+        fixed_omissions,
     )
     .await?;
 
@@ -109,11 +110,13 @@ async fn export_inner(
     let mut items = Vec::with_capacity(collected.len());
     for (index, item) in collected.iter().enumerate() {
         let label = get_object_type(&item.id.pk, &item.id.sk)?.to_string();
-        let (storage, data) = normalize_rows(item.rows.clone())?;
+        let (storage, mut data) = normalize_rows(item.rows.clone())?;
+        let object = bundles.require(&label)?;
+        object.normalize_renamed_fields(&mut data);
         let id_logic = if item.id == root_id {
             root_id_logic
         } else {
-            policies.require_included(&label)?.id_logic()
+            object.id_logic()
         };
         let id = BundleId {
             value: index as u64,
@@ -146,49 +149,48 @@ async fn export_inner(
         version: DynamoBundle::VERSION,
         root,
         recursive,
-        exclusions,
+        omitted_descendants,
         items,
         references: Vec::new(),
     };
     if include_references {
-        bundle.references = collect_references(&mut policies, &bundle, &by_pk_sk)?;
+        bundle.references = collect_references(bundles, &bundle, &by_pk_sk)?;
     }
     Ok(bundle)
 }
 
 pub(crate) async fn collect_items(
     util: &DynamoUtil,
-    algorithms: &dyn DynamoCrudAlgorithms,
+    bundles: &DynamoBundleConfig,
     root: &PkSk,
     root_nesting: BundleNesting,
     recursive: bool,
-    fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
+    fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
-    let mut policies = BundlePolicyCache::new(algorithms);
     collect_items_with_policies(
         util,
-        &mut policies,
+        bundles,
         root,
         root_nesting,
         recursive,
-        fixed_exclusions,
+        fixed_omissions,
     )
     .await
 }
 
 async fn collect_items_with_policies(
     util: &DynamoUtil,
-    policies: &mut BundlePolicyCache<'_>,
+    bundles: &DynamoBundleConfig,
     root: &PkSk,
     root_nesting: BundleNesting,
     recursive: bool,
-    fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
+    fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
     let root = logical_base_id(root);
     let root_label = get_object_type(&root.pk, &root.sk)?;
-    let root_spec = policies.require_included(root_label)?;
-    let mut recorded = fixed_exclusions.cloned().unwrap_or_default();
-    let root_exclusions = exclusions_for(root_spec, fixed_exclusions, &mut recorded, root_label);
+    let root_config = bundles.require(root_label)?;
+    let mut recorded = fixed_omissions.cloned().unwrap_or_default();
+    let root_omissions = omissions_for(root_config, fixed_omissions, &mut recorded, root_label);
     let initial_rows = raw_query(util, &root.pk, Some(&root.sk)).await?;
     let mut initial_groups = group_logical_rows(initial_rows)?;
     let root_rows = initial_groups
@@ -199,7 +201,7 @@ async fn collect_items_with_policies(
         parent: None,
         nesting: root_nesting,
         rows: root_rows,
-        descendant_exclusions: root_exclusions.clone(),
+        omitted_descendants: root_omissions.clone(),
     }];
     if !recursive {
         return Ok((collected, recorded));
@@ -210,9 +212,9 @@ async fn collect_items_with_policies(
         &mut collected,
         &root,
         initial_groups,
-        &root_exclusions,
-        policies,
-        fixed_exclusions,
+        &root_omissions,
+        bundles,
+        fixed_omissions,
         &mut recorded,
     )?;
 
@@ -238,18 +240,18 @@ async fn collect_items_with_policies(
 
         for (owner, groups) in results {
             let before = collected.len();
-            let exclusions = collected
+            let omissions = collected
                 .iter()
                 .find(|item| item.id == owner)
-                .map(|item| item.descendant_exclusions.clone())
+                .map(|item| item.omitted_descendants.clone())
                 .unwrap_or_default();
             append_partition_groups(
                 &mut collected,
                 &owner,
                 groups,
-                &exclusions,
-                policies,
-                fixed_exclusions,
+                &omissions,
+                bundles,
+                fixed_omissions,
                 &mut recorded,
             )?;
             frontier.extend(collected[before..].iter().map(|item| item.id.clone()));
@@ -258,8 +260,8 @@ async fn collect_items_with_policies(
     Ok((collected, recorded))
 }
 
-fn exclusions_for(
-    spec: &DynamoBundleSpec,
+fn omissions_for(
+    object: &DynamoBundleObjectConfig,
     fixed: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
     label: &str,
@@ -267,68 +269,51 @@ fn exclusions_for(
     if let Some(fixed) = fixed {
         return fixed.get(label).cloned().unwrap_or_default();
     }
-    let exclusions = spec.excluded_subtrees().clone();
-    if !exclusions.is_empty() {
-        recorded.insert(label.to_string(), exclusions.clone());
+    let omissions = object.omitted_descendants().clone();
+    if !omissions.is_empty() {
+        recorded.insert(label.to_string(), omissions.clone());
     }
-    exclusions
+    omissions
 }
 
 fn append_partition_groups(
     collected: &mut Vec<CollectedItem>,
     owner: &PkSk,
     groups: HashMap<PkSk, Vec<DynamoMap>>,
-    owner_exclusions: &BTreeSet<String>,
-    policies: &mut BundlePolicyCache<'_>,
-    fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
+    owner_omissions: &BTreeSet<String>,
+    bundles: &DynamoBundleConfig,
+    fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), ServerError> {
     let mut ids = groups.keys().cloned().collect::<Vec<_>>();
     ids.sort_by(|a, b| a.sk.len().cmp(&b.sk.len()).then_with(|| a.sk.cmp(&b.sk)));
     let owner_label = get_object_type(&owner.pk, &owner.sk)?.to_string();
-    let mut accepted = vec![(owner.clone(), owner_exclusions.clone(), owner_label.clone())];
-    let mut excluded = Vec::<PkSk>::new();
+    let mut accepted = vec![(owner.clone(), owner_omissions.clone(), owner_label.clone())];
+    let mut omitted = Vec::<PkSk>::new();
     for id in ids {
         let label = get_object_type(&id.pk, &id.sk)?.to_string();
         let inline_parent = accepted
             .iter()
             .filter(|(candidate, _, _)| is_inline_descendant(&id.sk, &candidate.sk))
             .max_by_key(|(candidate, _, _)| candidate.sk.len());
-        let inherited_exclusions = inline_parent
-            .map(|(_, exclusions, _)| exclusions)
-            .unwrap_or(owner_exclusions);
-        if inherited_exclusions.contains(&label)
-            || excluded
+        let inherited_omissions = inline_parent
+            .map(|(_, omissions, _)| omissions)
+            .unwrap_or(owner_omissions);
+        if inherited_omissions.contains(&label)
+            || omitted
                 .iter()
                 .any(|ancestor| is_inline_descendant(&id.sk, &ancestor.sk))
         {
-            excluded.push(id);
+            omitted.push(id);
             continue;
         }
-        let (parent, parent_label, nesting) = match inline_parent {
-            Some((parent, _, parent_label)) => {
-                (parent.clone(), parent_label.clone(), BundleNesting::Inline)
-            }
-            None => (owner.clone(), owner_label.clone(), BundleNesting::TopLevel),
+        let (parent, nesting) = match inline_parent {
+            Some((parent, _, _)) => (parent.clone(), BundleNesting::Inline),
+            None => (owner.clone(), BundleNesting::TopLevel),
         };
-        let spec = match policies.get(&label) {
-            DynamoBundlePolicy::Include(spec) => spec,
-            DynamoBundlePolicy::ExcludeSubtree => {
-                recorded
-                    .entry(parent_label)
-                    .or_default()
-                    .insert(label.clone());
-                excluded.push(id);
-                continue;
-            }
-            DynamoBundlePolicy::Reject => {
-                return Err(DynamoInvalidOperation::new(&format!(
-                    "Dynamo object label `{label}` is not allowed in bundles"
-                )))
-            }
-        };
-        let mut descendant_exclusions = inherited_exclusions.clone();
-        descendant_exclusions.extend(exclusions_for(spec, fixed_exclusions, recorded, &label));
+        let object = bundles.require(&label)?;
+        let mut descendant_omissions = inherited_omissions.clone();
+        descendant_omissions.extend(omissions_for(object, fixed_omissions, recorded, &label));
         collected.push(CollectedItem {
             id: id.clone(),
             parent: Some(parent),
@@ -337,9 +322,9 @@ fn append_partition_groups(
                 .get(&id)
                 .cloned()
                 .ok_or_else(|| invalid_bundle("grouped rows disappeared"))?,
-            descendant_exclusions: descendant_exclusions.clone(),
+            omitted_descendants: descendant_omissions.clone(),
         });
-        accepted.push((id, descendant_exclusions, label));
+        accepted.push((id, descendant_omissions, label));
     }
     Ok(())
 }
@@ -386,38 +371,38 @@ fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
 }
 
 fn collect_references(
-    policies: &mut BundlePolicyCache<'_>,
+    bundles: &DynamoBundleConfig,
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
 ) -> Result<Vec<DynamoBundleReference>, ServerError> {
     let mut references = Vec::new();
     for item in &bundle.items {
-        let spec = policies.require_included(&item.id.label)?;
-        for rule in spec.reference_rules() {
+        let object = bundles.require(&item.id.label)?;
+        for rule in object.reference_rules() {
             for matched in (rule.selector)(item)? {
                 let original = value_at_path(&item.data, &matched.path)
                     .cloned()
                     .ok_or_else(|| invalid_bundle("reference path was missing"))?;
                 let target = match matched.target {
-                    DynamoBundleReferenceMatchTarget::Internal {
+                    DynamoBundleReferenceMatchTarget::Bundled {
                         target_label,
                         encoding,
                     } => {
-                        let id = find_internal_target(
+                        let id = find_bundled_target(
                             bundle,
                             original_ids,
                             &original,
                             encoding,
-                            target_label.as_deref(),
+                            Some(&target_label),
                         )?;
-                        DynamoBundleReferenceTarget::Internal { id, encoding }
+                        DynamoBundleReferenceTarget::Bundled { id, encoding }
                     }
                     DynamoBundleReferenceMatchTarget::External {
                         lookup_id,
                         clear_path,
                     } => DynamoBundleReferenceTarget::External {
                         lookup_id,
-                        clear_path: clear_path.unwrap_or_else(|| matched.path.clone()),
+                        clear_path,
                     },
                 };
                 references.push(DynamoBundleReference {
@@ -431,7 +416,7 @@ fn collect_references(
     Ok(references)
 }
 
-fn find_internal_target(
+fn find_bundled_target(
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
     value: &Value,
@@ -466,8 +451,8 @@ fn find_internal_target(
         .collect::<Vec<_>>();
     match matches.as_slice() {
         [target] => Ok(target.clone()),
-        [] => Err(invalid_bundle("local reference target was not bundled")),
-        _ => Err(invalid_bundle("local reference target was ambiguous")),
+        [] => Err(invalid_bundle("bundled reference target was absent")),
+        _ => Err(invalid_bundle("bundled reference target was ambiguous")),
     }
 }
 

@@ -166,7 +166,7 @@ async fn resolve_references(
         .references
         .iter()
         .filter_map(|reference| match &reference.target {
-            DynamoBundleReferenceTarget::External(id) => Some(id.clone()),
+            DynamoBundleReferenceTarget::External { lookup_id, .. } => Some(lookup_id.clone()),
             DynamoBundleReferenceTarget::Internal { .. } => None,
         })
         .collect::<HashSet<_>>();
@@ -178,6 +178,7 @@ async fn resolve_references(
         .collect::<Result<HashSet<_>, _>>()?;
 
     let mut warnings = Vec::new();
+    let mut missing_clears = Vec::new();
     for reference in bundle.references.clone() {
         let replacement = match &reference.target {
             DynamoBundleReferenceTarget::Internal {
@@ -194,10 +195,15 @@ async fn resolve_references(
                     }
                 })
             }
-            DynamoBundleReferenceTarget::External(id) if existing_external.contains(id) => continue,
-            DynamoBundleReferenceTarget::External(_) => {
+            DynamoBundleReferenceTarget::External { lookup_id, .. }
+                if existing_external.contains(lookup_id) =>
+            {
+                continue;
+            }
+            DynamoBundleReferenceTarget::External { clear_path, .. } => {
                 warnings.push(DynamoImportWarning::MissingExternalReference);
-                Value::Null
+                missing_clears.push((reference.source, clear_path.clone()));
+                continue;
             }
         };
         let item = bundle
@@ -206,6 +212,16 @@ async fn resolve_references(
             .find(|item| item.id == reference.source)
             .ok_or_else(|| invalid_bundle("reference source was absent"))?;
         set_value_at_path(&mut item.data, &reference.path, replacement)?;
+    }
+    // Clear missing compound references after all remapping so clearing a
+    // containing value cannot invalidate another nested reference path.
+    for (source, clear_path) in missing_clears {
+        let item = bundle
+            .items
+            .iter_mut()
+            .find(|item| item.id == source)
+            .ok_or_else(|| invalid_bundle("reference source was absent"))?;
+        set_value_at_path(&mut item.data, &clear_path, Value::Null)?;
     }
     Ok(warnings)
 }
@@ -501,6 +517,15 @@ fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
             DynamoBundleReferenceTarget::Internal { id: target, .. } if !ids.contains(target)
         ) {
             return Err(invalid_bundle("bundle reference target was invalid"));
+        }
+        if let DynamoBundleReferenceTarget::External { clear_path, .. } = &reference.target {
+            let is_containing_path = clear_path.0.len() <= reference.path.0.len()
+                && reference.path.0.starts_with(&clear_path.0);
+            if !is_containing_path || value_at_path(&source.data, clear_path).is_none() {
+                return Err(invalid_bundle(
+                    "external reference clear path was not a containing value",
+                ));
+            }
         }
     }
     Ok(())

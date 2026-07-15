@@ -12,7 +12,7 @@ use crate::{
     schema::{
         id_calculations::{get_object_type, strip_ext_suffix},
         parsing::dynamo_map_to_serde_value,
-        PkSk,
+        ForeignRef, PkSk,
     },
     util::{
         collapse_helpers::collapse_partitioned_items, DynamoMap, DynamoUtil,
@@ -371,9 +371,13 @@ fn collect_references(
                         )?;
                         DynamoBundleReferenceTarget::Internal { id, encoding }
                     }
-                    DynamoBundleReferenceMatchTarget::External { lookup_id } => {
-                        DynamoBundleReferenceTarget::External(lookup_id)
-                    }
+                    DynamoBundleReferenceMatchTarget::External {
+                        lookup_id,
+                        clear_path,
+                    } => DynamoBundleReferenceTarget::External {
+                        lookup_id,
+                        clear_path: clear_path.unwrap_or_else(|| matched.path.clone()),
+                    },
                 };
                 references.push(DynamoBundleReference {
                     source: item.id.clone(),
@@ -396,6 +400,14 @@ fn find_internal_target(
     let raw = value
         .as_str()
         .ok_or_else(|| invalid_bundle("reference value was not a string"))?;
+    let foreign_ref = if encoding == DynamoBundleReferenceEncoding::ForeignRef {
+        Some(
+            serde_json::from_value::<ForeignRef<'static>>(Value::String(raw.to_owned()))
+                .map_err(|_| invalid_bundle("foreign reference was invalid"))?,
+        )
+    } else {
+        None
+    };
     let matches = bundle
         .items
         .iter()
@@ -405,7 +417,9 @@ fn find_internal_target(
                 .ok()
                 .and_then(|id| original_ids.get(&id))
                 .is_some_and(|id| id == &item.id),
-            DynamoBundleReferenceEncoding::ForeignRef => terminal_ref(&item.id.original_sk) == raw,
+            DynamoBundleReferenceEncoding::ForeignRef => foreign_ref
+                .as_ref()
+                .is_some_and(|reference| terminal_ref(&item.id.original_sk) == reference.raw()),
         })
         .map(|item| item.id.clone())
         .collect::<Vec<_>>();

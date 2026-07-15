@@ -50,6 +50,13 @@ pub struct DynamoBundleItem {
     pub data: Value,
 }
 
+impl DynamoBundleItem {
+    /// Reads a value selected by a bundle reference path.
+    pub fn value_at(&self, path: &BundleValuePath) -> Option<&Value> {
+        super::value::value_at_path(&self.data, path)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamoBundleStorage {
@@ -127,7 +134,12 @@ pub enum DynamoBundleReferenceTarget {
         encoding: DynamoBundleReferenceEncoding,
     },
     /// External references are supported only within the importing table.
-    External(PkSk),
+    External {
+        lookup_id: PkSk,
+        /// The reference path itself for scalar options, or a containing path
+        /// when one missing member must clear a compound optional value.
+        clear_path: BundleValuePath,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,9 +248,22 @@ impl DynamoBundleReferenceMatch {
     }
 
     pub fn external(path: BundleValuePath, lookup_id: PkSk) -> Self {
+        Self::external_clearing(path.clone(), lookup_id, path)
+    }
+
+    /// Marks an external reference whose absence clears a containing optional
+    /// value, such as an optional tuple holding more than one reference.
+    pub fn external_clearing(
+        path: BundleValuePath,
+        lookup_id: PkSk,
+        clear_path: BundleValuePath,
+    ) -> Self {
         Self {
             path,
-            target: DynamoBundleReferenceMatchTarget::External { lookup_id },
+            target: DynamoBundleReferenceMatchTarget::External {
+                lookup_id,
+                clear_path: Some(clear_path),
+            },
         }
     }
 }
@@ -251,6 +276,8 @@ pub enum DynamoBundleReferenceMatchTarget {
     },
     External {
         lookup_id: PkSk,
+        /// `None` means the matched reference path itself.
+        clear_path: Option<BundleValuePath>,
     },
 }
 
@@ -266,6 +293,9 @@ impl DynamoBundleReferenceMatchTarget {
     }
 
     pub fn external(lookup_id: PkSk) -> Self {
-        Self::External { lookup_id }
+        Self::External {
+            lookup_id,
+            clear_path: None,
+        }
     }
 }

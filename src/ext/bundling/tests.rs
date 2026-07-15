@@ -404,7 +404,8 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
                 json!({
                     "local": "old",
                     "kept": existing_external.to_string(),
-                    "missing": missing_external.to_string()
+                    "missing": missing_external.to_string(),
+                    "compound": [missing_external.to_string(), "kept member"]
                 }),
             ),
             bundle_item(
@@ -426,12 +427,26 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
             DynamoBundleReference {
                 source: root.clone(),
                 path: BundleValuePath::field("kept"),
-                target: DynamoBundleReferenceTarget::External(existing_external.clone()),
+                target: DynamoBundleReferenceTarget::External {
+                    lookup_id: existing_external.clone(),
+                    clear_path: BundleValuePath::field("kept"),
+                },
+            },
+            DynamoBundleReference {
+                source: root.clone(),
+                path: BundleValuePath::field("missing"),
+                target: DynamoBundleReferenceTarget::External {
+                    lookup_id: missing_external.clone(),
+                    clear_path: BundleValuePath::field("missing"),
+                },
             },
             DynamoBundleReference {
                 source: root,
-                path: BundleValuePath::field("missing"),
-                target: DynamoBundleReferenceTarget::External(missing_external),
+                path: BundleValuePath::field("compound").then_index(0),
+                target: DynamoBundleReferenceTarget::External {
+                    lookup_id: missing_external,
+                    clear_path: BundleValuePath::field("compound"),
+                },
             },
         ],
     };
@@ -471,6 +486,7 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
                 AttributeValue::S("ROOT|EXTERNAL#existing".into())
             );
             assert!(!root.contains_key("missing"));
+            assert!(!root.contains_key("compound"));
             Ok(BatchWriteItemOutput::builder().build())
         });
 
@@ -488,7 +504,10 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
     assert_eq!(bundle.items.len(), result.written_objects);
     assert_eq!(
         result.warnings,
-        vec![DynamoImportWarning::MissingExternalReference]
+        vec![
+            DynamoImportWarning::MissingExternalReference,
+            DynamoImportWarning::MissingExternalReference,
+        ]
     );
     assert!(result.duplicated);
 }
@@ -721,10 +740,13 @@ async fn import_rejects_reference_paths_that_are_not_present() {
         references: vec![DynamoBundleReference {
             source: root,
             path: BundleValuePath::field("missing"),
-            target: DynamoBundleReferenceTarget::External(PkSk {
-                pk: "ROOT".into(),
-                sk: "TARGET#one".into(),
-            }),
+            target: DynamoBundleReferenceTarget::External {
+                lookup_id: PkSk {
+                    pk: "ROOT".into(),
+                    sk: "TARGET#one".into(),
+                },
+                clear_path: BundleValuePath::field("missing"),
+            },
         }],
     };
 

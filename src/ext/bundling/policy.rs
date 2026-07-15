@@ -25,7 +25,7 @@ use super::{
 /// [`include`](Self::include), then describe omitted descendant subtrees and
 /// references on the returned object configuration.
 #[derive(Default)]
-pub struct DynamoBundleConfig {
+pub struct DynamoBundlePolicy {
     objects: HashMap<&'static str, DynamoBundleObjectConfig>,
 }
 
@@ -71,7 +71,7 @@ pub(crate) enum DynamoBundleReferenceMatchTarget {
 // Public interface.
 // ----------------------------------------------------------------------------
 
-impl DynamoBundleConfig {
+impl DynamoBundlePolicy {
     pub fn new() -> Self {
         Self::default()
     }
@@ -343,9 +343,9 @@ impl DynamoBundleReferenceMatch {
 // Internal.
 // ----------------------------------------------------------------------------
 
-pub(crate) fn configured_bundles(algorithms: &dyn DynamoCrudAlgorithms) -> DynamoBundleConfig {
-    let mut bundles = DynamoBundleConfig::new();
-    algorithms.configure_bundles(&mut bundles);
+pub(crate) fn configured_bundles(algorithms: &dyn DynamoCrudAlgorithms) -> DynamoBundlePolicy {
+    let mut bundles = DynamoBundlePolicy::new();
+    algorithms.bundle_policy(&mut bundles);
     bundles
 }
 
@@ -355,7 +355,7 @@ pub(crate) fn configured_bundles(algorithms: &dyn DynamoCrudAlgorithms) -> Dynam
 /// to be managed by Replace.
 pub(crate) fn validate_import_policy(
     bundle: &DynamoBundle,
-    bundles: &DynamoBundleConfig,
+    bundles: &DynamoBundlePolicy,
     root_id_logic: BundleIdLogic,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, ServerError> {
     let labels = bundle

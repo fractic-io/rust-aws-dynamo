@@ -7,7 +7,7 @@ mod policy;
 mod value;
 
 pub use model::*;
-pub use policy::{DynamoBundleConfig, DynamoBundleReferenceMatch, DynamoBundleReferenceRule};
+pub use policy::{DynamoBundlePolicy, DynamoBundleReferenceMatch, DynamoBundleReferenceRule};
 
 use fractic_server_error::ServerError;
 

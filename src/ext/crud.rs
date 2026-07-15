@@ -7,7 +7,7 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoNotFound,
-    ext::bundling::{self, DynamoBundle, DynamoBundleConfig, DynamoImportResult, IfExisting},
+    ext::bundling::{self, DynamoBundle, DynamoBundlePolicy, DynamoImportResult, IfExisting},
     schema::{DynamoObject, NestingLogic, PkSk},
     util::{DynamoInsertPosition, DynamoUtil},
 };
@@ -17,14 +17,14 @@ use crate::{
 pub trait DynamoCrudAlgorithms: Send + Sync {
     async fn recursive_delete(&self, id: PkSk) -> Result<(), ServerError>;
 
-    /// Registers the objects and relationships allowed in Dynamo bundles.
-    /// The empty default rejects every object type.
-    fn configure_bundles(&self, _bundles: &mut DynamoBundleConfig) {}
-
     async fn recursive_delete_archived(&self, id: PkSk) -> Result<(), ServerError> {
         // Default implementation: redirect to standard recursive delete.
         self.recursive_delete(id).await
     }
+
+    /// Registers the objects and relationships allowed in Dynamo bundles.
+    /// The empty default rejects every object type.
+    fn bundle_policy(&self, _policy: &mut DynamoBundlePolicy) {}
 }
 
 /// Marker trait used to validate whether a given type is a valid parent of `O`.

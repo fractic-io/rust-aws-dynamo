@@ -31,7 +31,7 @@ use super::{
     policy::{configured_bundles, validate_import_policy},
     root_nesting,
     value::{set_value_at_path, value_at_path},
-    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleConfig, DynamoBundleItem,
+    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
     DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
     DynamoImportResult, DynamoImportWarning, IfExisting,
 };
@@ -314,7 +314,7 @@ fn partition_payload(data: &Value) -> Result<(String, Option<f64>, Option<i64>),
 
 async fn replace_stale(
     util: &DynamoUtil,
-    bundles: &DynamoBundleConfig,
+    bundles: &DynamoBundlePolicy,
     parent: Option<&PkSk>,
     old: &DynamoBundle,
     new_ids: &HashMap<BundleId, PkSk>,

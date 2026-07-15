@@ -35,8 +35,8 @@ use super::{
     export::export_from_config,
     import::{build_id_map, import_bundle},
     policy::{configured_bundles, validate_import_policy, DynamoBundleReferenceMatchTarget},
-    BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleConfig,
-    DynamoBundleItem, DynamoBundleReference, DynamoBundleReferenceEncoding,
+    BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
+    DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
     DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportWarning, IfExisting,
 };
 
@@ -91,7 +91,7 @@ impl DynamoCrudAlgorithms for TestAlgorithms {
         Ok(())
     }
 
-    fn configure_bundles(&self, bundles: &mut DynamoBundleConfig) {
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
         for label in [
             "RECALC",
             "GRAND",
@@ -127,7 +127,7 @@ impl DynamoCrudAlgorithms for CountingAlgorithms {
         Ok(())
     }
 
-    fn configure_bundles(&self, bundles: &mut DynamoBundleConfig) {
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
         self.0.fetch_add(1, Ordering::Relaxed);
         bundles.include_label("ROOTOBJ", BundleIdLogic::Uuid, &[]);
     }
@@ -542,7 +542,7 @@ fn bundling_is_denied_by_default() {
 
 #[test]
 fn bundle_config_normalizes_top_level_renames_before_selecting_references() {
-    let mut bundles = DynamoBundleConfig::new();
+    let mut bundles = DynamoBundlePolicy::new();
     bundles
         .include::<TestRenamedRoot>()
         .external_pksk("canonical_ref");
@@ -564,7 +564,7 @@ fn bundle_config_normalizes_top_level_renames_before_selecting_references() {
 
 #[test]
 fn bundled_pksk_each_selects_only_string_array_members() {
-    let mut bundles = DynamoBundleConfig::new();
+    let mut bundles = DynamoBundlePolicy::new();
     bundles
         .include::<TestRoot>()
         .bundled_pksk_each::<TestBatch>("targets");

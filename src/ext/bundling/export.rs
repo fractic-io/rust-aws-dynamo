@@ -24,7 +24,7 @@ use crate::{
 use super::{
     policy::{configured_bundles, DynamoBundleObjectConfig, DynamoBundleReferenceMatchTarget},
     value::value_at_path,
-    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleConfig, DynamoBundleItem,
+    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
     DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
     DynamoBundleStorage,
 };
@@ -65,7 +65,7 @@ pub(crate) async fn export_from_config(
 /// Exports a destination snapshot using the incoming bundle's omission policy.
 pub(crate) async fn export_with_omissions(
     util: &DynamoUtil,
-    bundles: &DynamoBundleConfig,
+    bundles: &DynamoBundlePolicy,
     root: PkSk,
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
@@ -87,7 +87,7 @@ pub(crate) async fn export_with_omissions(
 
 async fn export_inner(
     util: &DynamoUtil,
-    bundles: &DynamoBundleConfig,
+    bundles: &DynamoBundlePolicy,
     root: PkSk,
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
@@ -161,7 +161,7 @@ async fn export_inner(
 
 pub(crate) async fn collect_items(
     util: &DynamoUtil,
-    bundles: &DynamoBundleConfig,
+    bundles: &DynamoBundlePolicy,
     root: &PkSk,
     root_nesting: BundleNesting,
     recursive: bool,
@@ -180,7 +180,7 @@ pub(crate) async fn collect_items(
 
 async fn collect_items_with_policies(
     util: &DynamoUtil,
-    bundles: &DynamoBundleConfig,
+    bundles: &DynamoBundlePolicy,
     root: &PkSk,
     root_nesting: BundleNesting,
     recursive: bool,
@@ -281,7 +281,7 @@ fn append_partition_groups(
     owner: &PkSk,
     groups: HashMap<PkSk, Vec<DynamoMap>>,
     owner_omissions: &BTreeSet<String>,
-    bundles: &DynamoBundleConfig,
+    bundles: &DynamoBundlePolicy,
     fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), ServerError> {
@@ -371,7 +371,7 @@ fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
 }
 
 fn collect_references(
-    bundles: &DynamoBundleConfig,
+    bundles: &DynamoBundlePolicy,
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
 ) -> Result<Vec<DynamoBundleReference>, ServerError> {

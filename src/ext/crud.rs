@@ -44,7 +44,7 @@ pub trait ParentOf<O: DynamoObject>: DynamoObject {}
 /// Type-safe accessor for CRUD operations on a root object.
 pub struct ManageRootUnordered<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
@@ -56,7 +56,7 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_algorithms: crud_algorithms,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -200,7 +200,7 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
 /// Type-safe accessor for CRUD operations on a root singleton object.
 pub struct ManageRootSingleton<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
@@ -212,7 +212,7 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_algorithms: crud_algorithms,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -250,7 +250,7 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
 /// Type-safe accessor for CRUD operations on a root indexed singleton object.
 pub struct ManageRootIndexedSingleton<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
@@ -262,7 +262,7 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_algorithms: crud_algorithms,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -325,7 +325,7 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
 /// sort-key-based insertion).
 pub struct ManageChildOrdered<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
@@ -337,7 +337,7 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_algorithms: crud_algorithms,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -548,7 +548,7 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
 /// avoiding costly sort-key determination).
 pub struct ManageChildUnordered<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
@@ -560,7 +560,7 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_algorithms: crud_algorithms,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -730,7 +730,7 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
 /// IdLogic::BatchOptimized.
 pub struct ManageChildBatch<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
@@ -742,7 +742,7 @@ impl<O: DynamoObject> ManageChildBatch<O> {
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_algorithms: crud_algorithms,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -781,7 +781,7 @@ impl<O: DynamoObject> ManageChildBatch<O> {
 /// Type-safe accessor for CRUD operations on a singleton child object.
 pub struct ManageChildSingleton<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
@@ -793,7 +793,7 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_algorithms: crud_algorithms,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -856,7 +856,7 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
 /// Type-safe accessor for CRUD operations on an indexed singleton child object.
 pub struct ManageChildIndexedSingleton<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
@@ -868,7 +868,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
     ) -> Self {
         Self {
             dynamo_util,
-            _crud_algorithms: crud_algorithms,
+            crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }
@@ -1024,25 +1024,25 @@ macro_rules! impl_child_bundle_operations {
     };
 }
 
-impl_root_bundle_operations!(ManageRootUnordered, _crud_algorithms, export);
+impl_root_bundle_operations!(ManageRootUnordered, crud_algorithms, export);
 impl_root_bundle_operations!(
     ManageRootUnorderedWithChildren,
     crud_algorithms,
     export_deep
 );
-impl_root_bundle_operations!(ManageRootSingleton, _crud_algorithms, export);
-impl_root_bundle_operations!(ManageRootIndexedSingleton, _crud_algorithms, export);
+impl_root_bundle_operations!(ManageRootSingleton, crud_algorithms, export);
+impl_root_bundle_operations!(ManageRootIndexedSingleton, crud_algorithms, export);
 
-impl_child_bundle_operations!(ManageChildOrdered, _crud_algorithms, export);
+impl_child_bundle_operations!(ManageChildOrdered, crud_algorithms, export);
 impl_child_bundle_operations!(ManageChildOrderedWithChildren, crud_algorithms, export_deep);
-impl_child_bundle_operations!(ManageChildUnordered, _crud_algorithms, export);
+impl_child_bundle_operations!(ManageChildUnordered, crud_algorithms, export);
 impl_child_bundle_operations!(
     ManageChildUnorderedWithChildren,
     crud_algorithms,
     export_deep
 );
-impl_child_bundle_operations!(ManageChildSingleton, _crud_algorithms, export);
-impl_child_bundle_operations!(ManageChildIndexedSingleton, _crud_algorithms, export);
+impl_child_bundle_operations!(ManageChildSingleton, crud_algorithms, export);
+impl_child_bundle_operations!(ManageChildIndexedSingleton, crud_algorithms, export);
 
 impl<O: DynamoObject> ManageChildBatch<O> {
     /// Imports a bundle below `parent`. Batch-optimized objects deliberately do
@@ -1059,7 +1059,7 @@ impl<O: DynamoObject> ManageChildBatch<O> {
     {
         bundling::import::<O>(
             &self.dynamo_util,
-            &*self._crud_algorithms,
+            &*self.crud_algorithms,
             Some(parent.id()),
             bundle,
             if_existing,

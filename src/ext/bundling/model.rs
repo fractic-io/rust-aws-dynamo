@@ -239,6 +239,6 @@ impl BundleDataPath {
     }
 
     pub(crate) fn is_prefix_of(&self, other: &Self) -> bool {
-        self.0.len() <= other.0.len() && other.0.starts_with(&self.0)
+        other.0.starts_with(&self.0)
     }
 }

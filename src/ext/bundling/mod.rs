@@ -12,6 +12,7 @@ pub use policy::{DynamoBundlePolicy, DynamoBundleReferenceMatch, DynamoBundleRef
 use fractic_server_error::ServerError;
 
 use crate::{
+    errors::DynamoInvalidOperation,
     ext::crud::DynamoCrudAlgorithms,
     schema::{DynamoObject, NestingLogic, PkSk},
     util::DynamoUtil,
@@ -73,6 +74,10 @@ pub(crate) fn root_nesting<O: DynamoObject>() -> BundleNesting {
         }
         NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => BundleNesting::Inline,
     }
+}
+
+pub(crate) fn invalid_bundle(details: &str) -> ServerError {
+    DynamoInvalidOperation::new(&format!("invalid Dynamo bundle: {details}"))
 }
 
 // Tests.

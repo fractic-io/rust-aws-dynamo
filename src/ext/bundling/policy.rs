@@ -13,7 +13,8 @@ use crate::{
 };
 
 use super::{
-    BundleDataPath, BundleIdLogic, DynamoBundle, DynamoBundleItem, DynamoBundleReferenceEncoding,
+    invalid_bundle, BundleDataPath, BundleIdLogic, DynamoBundle, DynamoBundleItem,
+    DynamoBundleReferenceEncoding,
 };
 
 // Definitions.
@@ -128,14 +129,13 @@ impl DynamoBundleObjectPolicy {
                 Ok(values
                     .iter()
                     .enumerate()
-                    .filter_map(|(index, value)| {
-                        value.as_str().map(|_| {
-                            DynamoBundleReferenceMatch::bundled_label(
-                                list_path.clone().then_index(index),
-                                DynamoBundleReferenceEncoding::PkSk,
-                                target_label.clone(),
-                            )
-                        })
+                    .filter(|(_, value)| value.is_string())
+                    .map(|(index, _)| {
+                        DynamoBundleReferenceMatch::bundled_label(
+                            list_path.clone().then_index(index),
+                            DynamoBundleReferenceEncoding::PkSk,
+                            target_label.clone(),
+                        )
                     })
                     .collect())
             }));
@@ -413,8 +413,4 @@ impl DynamoBundleReferenceRule {
             }))
         })
     }
-}
-
-fn invalid_bundle(details: &str) -> ServerError {
-    DynamoInvalidOperation::new(&format!("invalid Dynamo bundle: {details}"))
 }

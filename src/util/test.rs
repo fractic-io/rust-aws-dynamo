@@ -27,7 +27,6 @@ mod tests {
         types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
     };
     use chrono::{DateTime, Utc};
-    use core::panic;
     use fractic_core::collection;
     use mockall::predicate::*;
     use serde::{Deserialize, Serialize};
@@ -159,13 +158,13 @@ mod tests {
                     pk: "ROOT".to_string(),
                     sk: "GROUP#123#TEST#1".to_string(),
                 },
-                auto_fields: Default::default(),
+                auto_fields: AutoFields::default(),
                 data: TestDynamoObjectData::default(),
             },
             collection! {
                 "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                 "sk".to_string() => AttributeValue::S("GROUP#123#TEST#1".to_string()),
-                "val_non_null".to_string() => AttributeValue::S("".to_string()),
+                "val_non_null".to_string() => AttributeValue::S(String::new()),
                 // "val_nullable" should not be present, since keys with null
                 // values are skipped.
             },
@@ -1121,7 +1120,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "TEST#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: TestDynamoObjectData {
                 val_non_null: "new_data".into(),
                 val_nullable: None,
@@ -1168,7 +1167,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "TEST#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: TestDynamoObjectData {
                 val_non_null: "new_data".into(),
                 val_nullable: Some("non_null".into()),
@@ -1208,7 +1207,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedUpdateObjectData {
                 name: Some("new_data".into()),
             },
@@ -1247,7 +1246,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedUpdateObjectData { name: None },
         };
 
@@ -1349,7 +1348,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedUpdateObjectData {
                 name: Some("new_data".into()),
             },
@@ -1394,7 +1393,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDNESTEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedNestedUpdateObjectData {
                 profile: Some(RenamedNestedProfile {
                     name: Some("new_data".into()),
@@ -1440,7 +1439,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDNESTEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedNestedUpdateObjectData {
                 profile: Some(RenamedNestedProfile { name: None }),
             },
@@ -1519,7 +1518,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "TEST#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: TestDynamoObjectData {
                 val_non_null: "new_data".into(),
                 val_nullable: Some("claimed".into()),
@@ -1661,9 +1660,7 @@ mod tests {
                     sk: "TEST#321".to_string(),
                 },
                 |item| {
-                    if item.is_some() {
-                        panic!("Item should not exist");
-                    }
+                    assert!(item.is_none(), "Item should not exist");
                     Ok(TestDynamoObjectData {
                         val_non_null: "new_data".into(),
                         val_nullable: Some("non_null".into()),
@@ -2255,7 +2252,7 @@ mod tests {
 
         let new_items = (0..32)
             .map(|i| BatchOptInlineDynamoObjectData {
-                val: format!("n{}", i),
+                val: format!("n{i}"),
             })
             .collect::<Vec<_>>();
 

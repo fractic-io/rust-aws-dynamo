@@ -28,9 +28,10 @@ use crate::{
 
 use super::{
     export::{collect_bundle_items, export_with_omissions, terminal_ref},
+    invalid_bundle,
     policy::{configured_bundle_policy, validate_import_policy},
     root_nesting,
-    value::{set_value_at_path, value_at_path},
+    value::set_value_at_path,
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
     DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
     DynamoImportResult, DynamoImportWarning, IfExisting,
@@ -314,17 +315,18 @@ fn build_merge_plan(
             .ok_or_else(|| invalid_bundle("bundle item had no destination ID"))?;
         match item.storage {
             DynamoBundleStorage::Standard => {
-                let map = build_dynamo_map_internal(
-                    &item.data,
-                    Some(id.pk.clone()),
-                    Some(id.sk.clone()),
-                    Some(vec![
-                        (AUTO_FIELDS_CREATED_AT, Box::new(imported_at.clone())),
-                        (AUTO_FIELDS_UPDATED_AT, Box::new(imported_at.clone())),
-                    ]),
-                )?
-                .0;
-                puts.push(map);
+                puts.push(
+                    build_dynamo_map_internal(
+                        &item.data,
+                        Some(id.pk.clone()),
+                        Some(id.sk.clone()),
+                        Some(vec![
+                            (AUTO_FIELDS_CREATED_AT, Box::new(imported_at.clone())),
+                            (AUTO_FIELDS_UPDATED_AT, Box::new(imported_at.clone())),
+                        ]),
+                    )?
+                    .0,
+                );
                 if let Some(count) = existing_partition_counts.get(id) {
                     maintenance_deletes.extend(ext_partition_ids_for_count(id, *count));
                 }
@@ -402,11 +404,12 @@ async fn replace_stale(
     let stale_roots = old
         .items
         .iter()
-        .filter(|item| stale.contains(&item.id))
         .filter(|item| {
-            item.parent
-                .as_ref()
-                .is_none_or(|parent| !stale.contains(parent))
+            stale.contains(&item.id)
+                && item
+                    .parent
+                    .as_ref()
+                    .is_none_or(|parent| !stale.contains(parent))
         })
         .map(|item| {
             Ok((
@@ -623,7 +626,10 @@ fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
                 "bundle contained multiple references at the same path",
             ));
         }
-        if !value_at_path(&source.data, &reference.path).is_some_and(Value::is_string) {
+        if !source
+            .value_at(&reference.path)
+            .is_some_and(Value::is_string)
+        {
             return Err(invalid_bundle(
                 "bundle reference path was invalid or not a string",
             ));
@@ -636,7 +642,7 @@ fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
         }
         if let DynamoBundleReferenceTarget::External { clear_path, .. } = &reference.target {
             let is_containing_path = clear_path.is_prefix_of(&reference.path);
-            if !is_containing_path || value_at_path(&source.data, clear_path).is_none() {
+            if !is_containing_path || source.value_at(clear_path).is_none() {
                 return Err(invalid_bundle(
                     "external reference clear path was not a containing value",
                 ));
@@ -644,8 +650,4 @@ fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
         }
     }
     Ok(())
-}
-
-fn invalid_bundle(details: &str) -> ServerError {
-    DynamoInvalidOperation::new(&format!("invalid Dynamo bundle: {details}"))
 }

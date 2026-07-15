@@ -292,7 +292,7 @@ impl DynamoUtil {
     ) -> Result<Vec<DynamoMap>, ServerError> {
         let (index_name, partition_field, sort_field) = match index {
             Some(index) => (
-                Some(index.name.to_string()),
+                Some(index.name.to_owned()),
                 index.partition_field,
                 index.sort_field,
             ),
@@ -300,53 +300,34 @@ impl DynamoUtil {
         };
         let condition = match match_type {
             DynamoQueryMatchType::BeginsWith if id.sk.is_empty() => {
-                format!("{} = :pk_val", partition_field)
+                format!("{partition_field} = :pk_val")
             }
-            DynamoQueryMatchType::BeginsWith => format!(
-                "{} = :pk_val AND begins_with({}, :sk_val)",
-                partition_field, sort_field
-            ),
+            DynamoQueryMatchType::BeginsWith => {
+                format!("{partition_field} = :pk_val AND begins_with({sort_field}, :sk_val)")
+            }
             DynamoQueryMatchType::Equals => {
-                format!("{} = :pk_val AND {} = :sk_val", partition_field, sort_field)
+                format!("{partition_field} = :pk_val AND {sort_field} = :sk_val")
             }
             DynamoQueryMatchType::GreaterThan => {
-                format!("{} = :pk_val AND {} > :sk_val", partition_field, sort_field)
+                format!("{partition_field} = :pk_val AND {sort_field} > :sk_val")
             }
             DynamoQueryMatchType::GreaterThanOrEquals => {
-                format!(
-                    "{} = :pk_val AND {} >= :sk_val",
-                    partition_field, sort_field
-                )
+                format!("{partition_field} = :pk_val AND {sort_field} >= :sk_val")
             }
             DynamoQueryMatchType::LessThan => {
-                format!("{} = :pk_val AND {} < :sk_val", partition_field, sort_field)
+                format!("{partition_field} = :pk_val AND {sort_field} < :sk_val")
             }
             DynamoQueryMatchType::LessThanOrEquals => {
-                format!(
-                    "{} = :pk_val AND {} <= :sk_val",
-                    partition_field, sort_field
-                )
+                format!("{partition_field} = :pk_val AND {sort_field} <= :sk_val")
             }
-            DynamoQueryMatchType::SuffixGreaterThanOrEquals(_) => {
-                format!(
-                    "{} = :pk_val AND {} BETWEEN :sk_val AND :sk_max",
-                    partition_field, sort_field
-                )
+            DynamoQueryMatchType::SuffixGreaterThanOrEquals(_)
+            | DynamoQueryMatchType::UntilInclusive(_) => {
+                format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_val AND :sk_max")
             }
             DynamoQueryMatchType::SuffixLessThanOrEquals(_) => {
-                format!(
-                    "{} = :pk_val AND {} BETWEEN :sk_min AND :sk_val",
-                    partition_field, sort_field
-                )
+                format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_min AND :sk_val")
             }
-            DynamoQueryMatchType::UntilInclusive(_) => {
-                format!(
-                    "{} = :pk_val AND {} BETWEEN :sk_val AND :sk_max",
-                    partition_field, sort_field
-                )
-            }
-        }
-        .to_string();
+        };
         let mut attribute_values = HashMap::new();
         attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
         match match_type {
@@ -640,7 +621,7 @@ impl DynamoUtil {
             let mut items = Vec::new();
             let mut stale_delete_ids = Vec::new();
             let mut created = Vec::new();
-            for (logical_id, data, sort, ttl) in pending_writes.into_iter() {
+            for (logical_id, data, sort, ttl) in pending_writes {
                 let plan = build_partition_write_plan::<T>(
                     &logical_id,
                     &data,
@@ -662,7 +643,7 @@ impl DynamoUtil {
                 .map(|(idx, (data, options))| {
                     let PkSk { pk, sk } = create_batch_id(data, options.token.as_ref(), idx)?;
                     let sort: Option<f64> = options.custom_sort;
-                    let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
+                    let ttl: Option<i64> = options.ttl.as_ref().map(TtlConfig::compute_timestamp);
                     let now = Timestamp::now();
                     Ok((
                         build_dynamo_map_for_new_obj::<T>(
@@ -827,7 +808,7 @@ impl DynamoUtil {
                 Self::ITEM_DOES_NOT_EXIST_CONDITION.to_string(),
             ),
         };
-        let object_after = T::new(id, op(object_before.map(|o| o.into_data()))?);
+        let object_after = T::new(id, op(object_before.map(DynamoObject::into_data))?);
         self.update_item_internal::<T>(
             &object_after,
             map_before
@@ -892,8 +873,7 @@ impl DynamoUtil {
                         .find(|(_, v)| !matches!(v, AttributeValue::N(_)))
                     {
                         return Err(DynamoInvalidOperation::new(&format!(
-                            "non-numeric value provided for numeric comparison on '{}'",
-                            bad_k
+                            "non-numeric value provided for numeric comparison on '{bad_k}'"
                         )));
                     }
                     cmp_attribute_conditions.extend(
@@ -967,41 +947,39 @@ impl DynamoUtil {
         add_legacy_field_removals::<T>(&map, &mut null_keys);
 
         // Build update expression.
-        let set_expression = match map.is_empty() {
-            true => "".to_string(),
-            false => {
-                "SET ".to_string()
-                    + &map
-                        .into_iter()
-                        .enumerate()
-                        .map(|(idx, (key, value))| {
-                            let key_placeholder = format!("#k{}", idx + 1);
-                            let value_placeholder = format!(":v{}", idx + 1);
-                            expression_attribute_names.insert(key_placeholder.clone(), key);
-                            expression_attribute_values.insert(value_placeholder.clone(), value);
-                            format!("{} = {}", key_placeholder, value_placeholder)
-                        })
-                        .collect::<Vec<String>>()
-                        .join(", ")
-            }
+        let set_expression = if map.is_empty() {
+            String::new()
+        } else {
+            "SET ".to_string()
+                + &map
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (key, value))| {
+                        let key_placeholder = format!("#k{}", idx + 1);
+                        let value_placeholder = format!(":v{}", idx + 1);
+                        expression_attribute_names.insert(key_placeholder.clone(), key);
+                        expression_attribute_values.insert(value_placeholder.clone(), value);
+                        format!("{key_placeholder} = {value_placeholder}")
+                    })
+                    .collect::<Vec<String>>()
+                    .join(", ")
         };
-        let remove_expression = match null_keys.is_empty() {
-            true => "".to_string(),
-            false => {
-                "REMOVE ".to_string()
-                    + &null_keys
-                        .into_iter()
-                        .enumerate()
-                        .map(|(idx, key)| {
-                            let key_placeholder = format!("#rmk{}", idx + 1);
-                            expression_attribute_names.insert(key_placeholder.clone(), key);
-                            key_placeholder
-                        })
-                        .collect::<Vec<String>>()
-                        .join(", ")
-            }
+        let remove_expression = if null_keys.is_empty() {
+            String::new()
+        } else {
+            "REMOVE ".to_string()
+                + &null_keys
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, key)| {
+                        let key_placeholder = format!("#rmk{}", idx + 1);
+                        expression_attribute_names.insert(key_placeholder.clone(), key);
+                        key_placeholder
+                    })
+                    .collect::<Vec<String>>()
+                    .join(", ")
         };
-        let update_expression = format!("{} {}", set_expression, remove_expression);
+        let update_expression = format!("{set_expression} {remove_expression}");
 
         // Build custom conditions & attribute equality conditions.
         let condition_expression = custom_conditions

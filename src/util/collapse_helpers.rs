@@ -192,7 +192,7 @@ pub(crate) fn collapse_partitioned_items(
                     .map(|item| {
                         item.get(COLLAPSE_DATA_RESERVED_KEY)
                             .and_then(|v| v.as_s().ok())
-                            .map(|v| v.to_string())
+                            .cloned()
                             .ok_or_else(|| {
                                 DynamoInvalidPartitioning::new(
                                     "ext partition row was missing its data field",
@@ -271,8 +271,7 @@ fn partition_metadata(ttl: Option<i64>) -> Vec<(&'static str, Box<dyn erased_ser
 fn build_partition_ids(base_id: &PkSk, total_partitions: usize) -> Vec<PkSk> {
     fn partition_digits(total_partitions: usize) -> usize {
         match total_partitions {
-            0 => 1,
-            1 => 1,
+            0 | 1 => 1,
             n => (n - 1).ilog10() as usize + 1,
         }
     }
@@ -305,26 +304,9 @@ pub(crate) fn build_partition_write_plan<T: DynamoObject>(
     let serialized = serde_json::to_string(data).map_err(|e| {
         DynamoInvalidOperation::with_debug("failed to serialize partitioned item", &e)
     })?;
-    build_partition_write_plan_from_serialized(
-        logical_id,
-        &serialized,
-        sort,
-        ttl,
-        num_existing_partitions,
-    )
-}
-
-/// Builds ext physical rows from already-serialized logical object data.
-pub(crate) fn build_partition_write_plan_from_serialized(
-    logical_id: &PkSk,
-    serialized: &str,
-    sort: Option<f64>,
-    ttl: Option<i64>,
-    num_existing_partitions: Option<usize>,
-) -> Result<PartitionWritePlan, ServerError> {
     build_partition_write_plan_from_serialized_at(
         logical_id,
-        serialized,
+        &serialized,
         sort,
         ttl,
         num_existing_partitions,

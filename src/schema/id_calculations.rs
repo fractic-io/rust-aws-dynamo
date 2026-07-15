@@ -43,10 +43,7 @@ pub(crate) fn generate_pk_sk_opt<T: DynamoObject>(
         NestingLogic::InlineChildOf(ptype_req) | NestingLogic::TopLevelChildOf(ptype_req) => {
             let ptype = get_object_type(parent_pk, parent_sk)?;
             if ptype != ptype_req {
-                return Err(DynamoInvalidParent::new(&format!(
-                    "{} != {}",
-                    ptype, ptype_req
-                )));
+                return Err(DynamoInvalidParent::new(&format!("{ptype} != {ptype_req}")));
             }
         }
         _ => {}
@@ -64,8 +61,7 @@ pub(crate) fn generate_pk_sk_opt<T: DynamoObject>(
                 T::id_label(),
                 options
                     .timestamp_millis
-                    .map(timestamp_16_chars)
-                    .unwrap_or_else(now_timestamp_16_chars)
+                    .map_or_else(now_timestamp_16_chars, timestamp_16_chars)
             ),
             IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
             IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
@@ -112,7 +108,10 @@ pub(crate) fn object_sk_component<'a>(sk: &'a str, label: &str) -> Result<&'a st
     if let Some(index) = sk.rfind(&marker) {
         return Ok(&sk[index + 1..]);
     }
-    if sk.starts_with(&format!("{label}#")) {
+    if sk
+        .strip_prefix(label)
+        .is_some_and(|suffix| suffix.starts_with('#'))
+    {
         return Ok(sk);
     }
     Err(DynamoInvalidId::with_debug(
@@ -234,7 +233,7 @@ fn now_timestamp_16_chars() -> String {
 }
 
 fn timestamp_16_chars(timestamp_millis: i64) -> String {
-    format!("{:016}", timestamp_millis)
+    format!("{timestamp_millis:016}")
 }
 
 // Predicates.
@@ -256,8 +255,7 @@ pub(crate) fn strip_ext_suffix(sk: &str) -> &str {
         .last()
         .map(|(idx, _)| idx);
     match trailing_digits_search {
-        None => sk,
-        Some(0) => sk,
+        None | Some(0) => sk,
         Some(start) => match sk.as_bytes().get(start - 1) {
             Some(b'+') => &sk[..start - 1],
             _ => sk,

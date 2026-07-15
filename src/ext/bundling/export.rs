@@ -7,7 +7,7 @@ use futures_util::{stream, StreamExt as _, TryStreamExt as _};
 use serde_json::Value;
 
 use crate::{
-    errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoNotFound},
+    errors::{DynamoCalloutError, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
         id_calculations::{get_object_type, strip_ext_suffix},
@@ -22,10 +22,10 @@ use crate::{
 };
 
 use super::{
+    invalid_bundle,
     policy::{
         configured_bundle_policy, DynamoBundleObjectPolicy, DynamoBundleReferenceMatchTarget,
     },
-    value::value_at_path,
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
     DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
     DynamoBundleStorage,
@@ -203,7 +203,7 @@ pub(crate) fn terminal_ref(sk: &str) -> &str {
         }
         return "";
     }
-    sk.rsplit_once('#').map(|(_, value)| value).unwrap_or(sk)
+    sk.rsplit_once('#').map_or(sk, |(_, value)| value)
 }
 
 // Internal.
@@ -320,9 +320,7 @@ fn append_partition_groups(
             .iter()
             .filter(|(candidate, _)| is_inline_descendant(&id.sk, &candidate.sk))
             .max_by_key(|(candidate, _)| candidate.sk.len());
-        let inherited_omissions = inline_parent
-            .map(|(_, omissions)| omissions)
-            .unwrap_or(owner_omissions);
+        let inherited_omissions = inline_parent.map_or(owner_omissions, |(_, omissions)| omissions);
         if inherited_omissions.contains(&label)
             || omitted
                 .iter()
@@ -350,32 +348,26 @@ fn append_partition_groups(
     Ok(())
 }
 
-fn normalize_rows(mut rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Value), ServerError> {
+fn normalize_rows(rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Value), ServerError> {
     let partitioned = rows.iter().any(|row| {
         row.contains_key(COLLAPSE_PLACEHOLDER_RESERVED_KEY)
             || row.contains_key(COLLAPSE_DATA_RESERVED_KEY)
     });
     if partitioned {
-        let mut collapsed = collapse_partitioned_items(rows)?;
-        if collapsed.len() != 1 {
+        let collapsed = collapse_partitioned_items(rows)?;
+        let [map] = collapsed.as_slice() else {
             return Err(invalid_bundle(
                 "partitioned logical object did not collapse to one item",
             ));
-        }
-        return Ok((
-            DynamoBundleStorage::ExtPartitioned,
-            normalized_data(&collapsed.pop().expect("collapsed length was checked"))?,
-        ));
+        };
+        return Ok((DynamoBundleStorage::ExtPartitioned, normalized_data(map)?));
     }
-    if rows.len() != 1 {
+    let [map] = rows.as_slice() else {
         return Err(invalid_bundle(
             "non-partitioned logical object had multiple physical rows",
         ));
-    }
-    Ok((
-        DynamoBundleStorage::Standard,
-        normalized_data(&rows.pop().expect("row length was checked"))?,
-    ))
+    };
+    Ok((DynamoBundleStorage::Standard, normalized_data(map)?))
 }
 
 fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
@@ -401,7 +393,8 @@ fn collect_references(
         let object = bundles.require(&item.id.label)?;
         for rule in object.reference_rules() {
             for matched in (rule.selector)(item)? {
-                let original = value_at_path(&item.data, &matched.path)
+                let original = item
+                    .value_at(&matched.path)
                     .cloned()
                     .ok_or_else(|| invalid_bundle("reference path was missing"))?;
                 let target = match matched.target {
@@ -518,8 +511,4 @@ async fn raw_query(
 fn is_inline_descendant(sk: &str, parent_sk: &str) -> bool {
     sk.strip_prefix(parent_sk)
         .is_some_and(|suffix| suffix.starts_with('#') || suffix.starts_with('@'))
-}
-
-fn invalid_bundle(details: &str) -> ServerError {
-    DynamoInvalidOperation::new(&format!("invalid Dynamo bundle: {details}"))
 }

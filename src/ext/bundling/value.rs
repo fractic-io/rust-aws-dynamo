@@ -9,15 +9,13 @@ use super::{BundleDataPath, BundleDataPathSegment};
 // ----------------------------------------------------------------------------
 
 pub(crate) fn value_at_path<'a>(root: &'a Value, path: &BundleDataPath) -> Option<&'a Value> {
-    let mut value = root;
-    for segment in path.segments() {
-        value = match (segment, value) {
-            (BundleDataPathSegment::Field(field), Value::Object(map)) => map.get(field)?,
-            (BundleDataPathSegment::Index(index), Value::Array(list)) => list.get(*index)?,
-            _ => return None,
-        };
-    }
-    Some(value)
+    path.segments()
+        .iter()
+        .try_fold(root, |value, segment| match (segment, value) {
+            (BundleDataPathSegment::Field(field), Value::Object(map)) => map.get(field),
+            (BundleDataPathSegment::Index(index), Value::Array(list)) => list.get(*index),
+            _ => None,
+        })
 }
 
 pub(crate) fn set_value_at_path(

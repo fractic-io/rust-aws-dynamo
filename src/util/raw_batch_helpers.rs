@@ -51,9 +51,8 @@ pub(super) fn unprocessed_put_items(
 }
 
 pub(super) async fn wait_before_batch_write_retry(attempt: usize) {
-    let multiplier = 1_u64 << attempt;
     tokio::time::sleep(std::time::Duration::from_millis(
-        BATCH_WRITE_RETRY_BASE_DELAY_MS * multiplier,
+        BATCH_WRITE_RETRY_BASE_DELAY_MS * (1_u64 << attempt),
     ))
     .await;
 }

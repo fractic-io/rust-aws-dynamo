@@ -102,7 +102,6 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
                 .unwrap_or(sort_value_init);
             (0..num)
                 .map(|i| min_val - sort_value_default_gap * (i as f64 + 1.0))
-                .map(f64::from)
                 .rev()
                 .collect()
         }
@@ -113,7 +112,6 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
                 .unwrap_or(sort_value_init);
             (0..num)
                 .map(|i| max_val + sort_value_default_gap * (i as f64 + 1.0))
-                .map(f64::from)
                 .collect()
         }
         DynamoInsertPosition::After(id) => {
@@ -132,13 +130,11 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
                     let gap = (insert_before.sort - insert_after.sort) / (num as f64 + 1.0);
                     (0..num)
                         .map(|i| insert_after.sort + gap * (i as f64 + 1.0))
-                        .map(f64::from)
                         .collect()
                 }
                 // No items after, simple insert same as ::Last.
                 None => (0..num)
                     .map(|i| insert_after.sort + sort_value_default_gap * (i as f64 + 1.0))
-                    .map(f64::from)
                     .collect(),
             }
         }

@@ -16,8 +16,6 @@ pub struct BundleId {
     pub value: u64,
     pub label: String,
     pub original_sk: String,
-    /// ID generation behavior needed when duplicating this object.
-    pub id_logic: BundleIdLogic,
 }
 
 /// Portable representation of every `IdLogic` variant.
@@ -79,6 +77,8 @@ impl DynamoBundle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamoBundleItem {
     pub id: BundleId,
+    /// ID generation behavior needed when duplicating this object.
+    pub id_logic: BundleIdLogic,
     pub parent: Option<BundleId>,
     pub nesting: BundleNesting,
     #[serde(default)]
@@ -205,8 +205,7 @@ pub enum DynamoImportWarning {
     MissingExternalReference,
 }
 
-/// Per-label configuration carried by `DynamoBundleDisposition::Allowed`.
-#[derive(Default)]
+/// Per-label configuration carried by `DynamoBundlePolicy::Include`.
 pub struct DynamoBundleSpec {
     pub id_logic: BundleIdLogic,
     pub exclude_subtrees: BTreeSet<String>,
@@ -216,33 +215,40 @@ pub struct DynamoBundleSpec {
 /// Explicit application policy for bundling a persisted object label.
 ///
 /// Every label encountered by export or import must have a deliberate policy.
-/// `Skip` omits an encountered non-root object and its descendants during
-/// export, while `NotAllowed` rejects the entire operation. Bundle roots and
-/// every object already present in an imported bundle must be `Allowed`.
+/// `ExcludeSubtree` omits an encountered non-root object and its descendants
+/// during export, while `Reject` rejects the entire operation. Bundle roots and
+/// every object already present in an imported bundle must be `Include`.
 #[derive(Default)]
-pub enum DynamoBundleDisposition {
-    Allowed(DynamoBundleSpec),
-    Skip,
+pub enum DynamoBundlePolicy {
+    Include(DynamoBundleSpec),
+    ExcludeSubtree,
     #[default]
-    NotAllowed,
+    Reject,
 }
 
-impl From<DynamoBundleSpec> for DynamoBundleDisposition {
+impl From<DynamoBundleSpec> for DynamoBundlePolicy {
     fn from(spec: DynamoBundleSpec) -> Self {
-        Self::Allowed(spec)
+        Self::Include(spec)
     }
 }
 
 impl DynamoBundleSpec {
+    /// Creates a spec with explicit ID behavior and no exclusions or reference
+    /// rules.
+    pub fn new(id_logic: BundleIdLogic) -> Self {
+        Self {
+            id_logic,
+            exclude_subtrees: BTreeSet::new(),
+            reference_rules: Vec::new(),
+        }
+    }
+
     /// Creates a spec carrying the object's exact ID behavior.
     ///
-    /// Applications should use this for non-UUID descendant types so duplicate
-    /// imports can regenerate or preserve their IDs correctly.
+    /// Applications should use this for every included type so duplicate
+    /// imports can regenerate or preserve IDs correctly.
     pub fn for_object<O: DynamoObject>() -> Self {
-        Self {
-            id_logic: BundleIdLogic::from_object::<O>(),
-            ..Self::default()
-        }
+        Self::new(BundleIdLogic::from_object::<O>())
     }
 
     pub fn excluding(mut self, label: impl Into<String>) -> Self {

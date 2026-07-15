@@ -34,9 +34,9 @@ use crate::{
 use super::{
     export::export_from_specs,
     import::{build_id_map, import_bundle},
-    spec::{effective_import_exclusions, BundleSpecCache},
-    BundleId, BundleIdLogic, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleDisposition,
-    DynamoBundleItem, DynamoBundleReference, DynamoBundleReferenceEncoding,
+    spec::{effective_import_exclusions, BundlePolicyCache},
+    BundleId, BundleIdLogic, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleItem,
+    DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
     DynamoBundleReferenceTarget, DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning,
     IfExisting,
 };
@@ -69,13 +69,19 @@ impl DynamoCrudAlgorithms for TestAlgorithms {
         Ok(())
     }
 
-    fn bundle_spec(&self, id_label: &str) -> DynamoBundleDisposition {
+    fn bundle_policy(&self, id_label: &str) -> DynamoBundlePolicy {
         match id_label {
-            "ROOTOBJ" => DynamoBundleSpec::default().excluding("RECALC").into(),
-            "CHILD" => DynamoBundleSpec::default().excluding("GRAND").into(),
-            "SKIP" => DynamoBundleDisposition::Skip,
-            "DENIED" => DynamoBundleDisposition::NotAllowed,
-            _ => DynamoBundleSpec::default().into(),
+            "ROOTOBJ" => DynamoBundleSpec::new(BundleIdLogic::Uuid)
+                .excluding("RECALC")
+                .into(),
+            "CHILD" => DynamoBundleSpec::new(BundleIdLogic::Uuid)
+                .excluding("GRAND")
+                .into(),
+            "BIG" => DynamoBundleSpec::new(BundleIdLogic::SingletonExt).into(),
+            "BATCH" => DynamoBundleSpec::new(BundleIdLogic::BatchOptimized).into(),
+            "EXCLUDED" => DynamoBundlePolicy::ExcludeSubtree,
+            "DENIED" => DynamoBundlePolicy::Reject,
+            _ => DynamoBundleSpec::new(BundleIdLogic::Uuid).into(),
         }
     }
 }
@@ -88,9 +94,9 @@ impl DynamoCrudAlgorithms for CountingAlgorithms {
         Ok(())
     }
 
-    fn bundle_spec(&self, _id_label: &str) -> DynamoBundleDisposition {
+    fn bundle_policy(&self, _id_label: &str) -> DynamoBundlePolicy {
         self.0.fetch_add(1, Ordering::Relaxed);
-        DynamoBundleSpec::default().into()
+        DynamoBundleSpec::new(BundleIdLogic::Uuid).into()
     }
 }
 
@@ -108,7 +114,6 @@ fn id(value: u64, label: &str, sk: &str) -> BundleId {
         value,
         label: label.into(),
         original_sk: sk.into(),
-        id_logic: BundleIdLogic::Uuid,
     }
 }
 
@@ -128,6 +133,7 @@ fn bundle_item(
 ) -> DynamoBundleItem {
     DynamoBundleItem {
         id,
+        id_logic: BundleIdLogic::Uuid,
         parent,
         nesting,
         storage: DynamoBundleStorage::Standard,
@@ -256,6 +262,7 @@ async fn recursive_export_scopes_exclusions_and_normalizes_ext_partitioning() {
         .find(|item| item.id.label == "BIG")
         .unwrap();
     assert_eq!(big.storage, DynamoBundleStorage::ExtPartitioned);
+    assert_eq!(big.id_logic, BundleIdLogic::SingletonExt);
     assert_eq!(big.data["large"], "yes");
 
     let batch = bundle
@@ -264,6 +271,7 @@ async fn recursive_export_scopes_exclusions_and_normalizes_ext_partitioning() {
         .find(|item| item.id.label == "BATCH")
         .unwrap();
     assert_eq!(batch.storage, DynamoBundleStorage::Standard);
+    assert_eq!(batch.id_logic, BundleIdLogic::BatchOptimized);
     assert_eq!(batch.data[".."][0]["name"], "opaque");
 
     let inline = bundle
@@ -278,7 +286,7 @@ async fn recursive_export_scopes_exclusions_and_normalizes_ext_partitioning() {
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
-async fn recursive_export_omits_skipped_subtrees_and_records_the_omission() {
+async fn recursive_export_omits_excluded_subtrees_and_records_the_omission() {
     let root_sk = "ROOTOBJ#root";
     let mut backend = MockDynamoBackend::new();
     backend
@@ -289,8 +297,8 @@ async fn recursive_export_omits_skipped_subtrees_and_records_the_omission() {
             let rows = match pk.as_str() {
                 "ROOT" => vec![row("ROOT", root_sk)],
                 "ROOTOBJ#root" => vec![
-                    row(root_sk, "SKIP#one"),
-                    row(root_sk, "SKIP#one#CHILD#also-skipped"),
+                    row(root_sk, "EXCLUDED#one"),
+                    row(root_sk, "EXCLUDED#one#CHILD#also-excluded"),
                 ],
                 unexpected => panic!("unexpected partition query: {unexpected}"),
             };
@@ -314,7 +322,7 @@ async fn recursive_export_omits_skipped_subtrees_and_records_the_omission() {
     assert_eq!(bundle.items.len(), 1);
     assert_eq!(
         bundle.exclusions["ROOTOBJ"],
-        BTreeSet::from(["RECALC".into(), "SKIP".into()])
+        BTreeSet::from(["EXCLUDED".into(), "RECALC".into()])
     );
 }
 
@@ -393,7 +401,7 @@ fn import_exclusions_are_the_strict_union_and_require_present_owner_labels() {
         references: vec![],
     };
     let effective =
-        effective_import_exclusions(&bundle, &mut BundleSpecCache::new(&TestAlgorithms)).unwrap();
+        effective_import_exclusions(&bundle, &mut BundlePolicyCache::new(&TestAlgorithms)).unwrap();
     assert_eq!(
         effective["ROOTOBJ"],
         BTreeSet::from(["BUNDLE_ONLY".into(), "RECALC".into()])
@@ -401,13 +409,14 @@ fn import_exclusions_are_the_strict_union_and_require_present_owner_labels() {
 
     bundle.exclusions = BTreeMap::from([("ABSENT_OWNER".into(), BTreeSet::from(["CHILD".into()]))]);
     assert!(
-        effective_import_exclusions(&bundle, &mut BundleSpecCache::new(&TestAlgorithms),).is_err()
+        effective_import_exclusions(&bundle, &mut BundlePolicyCache::new(&TestAlgorithms),)
+            .is_err()
     );
 }
 
 #[test]
-fn import_rejects_skipped_and_denied_bundle_items() {
-    for label in ["SKIP", "DENIED"] {
+fn import_rejects_excluded_and_denied_bundle_items() {
+    for label in ["EXCLUDED", "DENIED"] {
         let root = id(0, label, &format!("{label}#root"));
         let bundle = DynamoBundle {
             version: DynamoBundle::VERSION,
@@ -419,7 +428,7 @@ fn import_rejects_skipped_and_denied_bundle_items() {
         };
 
         assert!(
-            effective_import_exclusions(&bundle, &mut BundleSpecCache::new(&TestAlgorithms))
+            effective_import_exclusions(&bundle, &mut BundlePolicyCache::new(&TestAlgorithms))
                 .is_err()
         );
     }
@@ -428,11 +437,11 @@ fn import_rejects_skipped_and_denied_bundle_items() {
 #[test]
 fn bundling_is_denied_by_default() {
     assert!(matches!(
-        DefaultAlgorithms.bundle_spec("UNREGISTERED"),
-        DynamoBundleDisposition::NotAllowed
+        DefaultAlgorithms.bundle_policy("UNREGISTERED"),
+        DynamoBundlePolicy::Reject
     ));
-    assert!(BundleSpecCache::new(&DefaultAlgorithms)
-        .require_allowed("UNREGISTERED")
+    assert!(BundlePolicyCache::new(&DefaultAlgorithms)
+        .require_included("UNREGISTERED")
         .is_err());
 }
 
@@ -504,12 +513,30 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
 #[test]
 fn duplicate_mapping_preserves_batch_ids_and_increments_timestamp_millis() {
     let root = id(0, "ROOTOBJ", "ROOTOBJ#old");
-    let mut first_timestamp = id(1, "EVENT", "EVENT#0000000000000001");
-    first_timestamp.id_logic = BundleIdLogic::Timestamp;
-    let mut second_timestamp = id(2, "EVENT", "EVENT#0000000000000002");
-    second_timestamp.id_logic = BundleIdLogic::Timestamp;
-    let mut batch = id(3, "BATCH", "BATCH#0");
-    batch.id_logic = BundleIdLogic::BatchOptimized;
+    let first_timestamp = id(1, "EVENT", "EVENT#0000000000000001");
+    let second_timestamp = id(2, "EVENT", "EVENT#0000000000000002");
+    let batch = id(3, "BATCH", "BATCH#0");
+    let mut first_timestamp_item = bundle_item(
+        first_timestamp.clone(),
+        Some(root.clone()),
+        BundleNesting::TopLevel,
+        json!({}),
+    );
+    first_timestamp_item.id_logic = BundleIdLogic::Timestamp;
+    let mut second_timestamp_item = bundle_item(
+        second_timestamp.clone(),
+        Some(root.clone()),
+        BundleNesting::TopLevel,
+        json!({}),
+    );
+    second_timestamp_item.id_logic = BundleIdLogic::Timestamp;
+    let mut batch_item = bundle_item(
+        batch.clone(),
+        Some(root.clone()),
+        BundleNesting::TopLevel,
+        json!({"..": [{"value": 1}]}),
+    );
+    batch_item.id_logic = BundleIdLogic::BatchOptimized;
     let bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
         root: root.clone(),
@@ -517,24 +544,9 @@ fn duplicate_mapping_preserves_batch_ids_and_increments_timestamp_millis() {
         exclusions: BTreeMap::new(),
         items: vec![
             bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
-            bundle_item(
-                first_timestamp.clone(),
-                Some(root.clone()),
-                BundleNesting::TopLevel,
-                json!({}),
-            ),
-            bundle_item(
-                second_timestamp.clone(),
-                Some(root.clone()),
-                BundleNesting::TopLevel,
-                json!({}),
-            ),
-            bundle_item(
-                batch.clone(),
-                Some(root.clone()),
-                BundleNesting::TopLevel,
-                json!({"..": [{"value": 1}]}),
-            ),
+            first_timestamp_item,
+            second_timestamp_item,
+            batch_item,
         ],
         references: vec![],
     };

@@ -22,8 +22,8 @@ use crate::{
 };
 
 use super::{
-    spec::BundleSpecCache, value::value_at_path, BundleId, BundleIdLogic, BundleNesting,
-    DynamoBundle, DynamoBundleDisposition, DynamoBundleItem, DynamoBundleReference,
+    spec::BundlePolicyCache, value::value_at_path, BundleId, BundleIdLogic, BundleNesting,
+    DynamoBundle, DynamoBundleItem, DynamoBundlePolicy, DynamoBundleReference,
     DynamoBundleReferenceEncoding, DynamoBundleReferenceMatchTarget, DynamoBundleReferenceTarget,
     DynamoBundleSpec, DynamoBundleStorage,
 };
@@ -93,7 +93,7 @@ async fn export_inner(
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
     include_references: bool,
 ) -> Result<DynamoBundle, ServerError> {
-    let mut specs = BundleSpecCache::new(algorithms);
+    let mut specs = BundlePolicyCache::new(algorithms);
     let (collected, exclusions) = collect_items_with_specs(
         util,
         &mut specs,
@@ -112,22 +112,18 @@ async fn export_inner(
         let (storage, data) = normalize_rows(item.rows.clone())?;
         let id_logic = if item.id == root_id {
             root_id_logic
-        } else if data.get("..").is_some_and(Value::is_array) {
-            BundleIdLogic::BatchOptimized
-        } else if is_singleton(&item.id.sk) {
-            singleton_id_logic(&item.id.sk, storage)
         } else {
-            specs.require_allowed(&label)?.id_logic
+            specs.require_included(&label)?.id_logic
         };
         let id = BundleId {
             value: index as u64,
             label,
             original_sk: item.id.sk.clone(),
-            id_logic,
         };
         by_pk_sk.insert(item.id.clone(), id.clone());
         items.push(DynamoBundleItem {
             id,
+            id_logic,
             parent: None,
             nesting: item.nesting,
             storage,
@@ -168,7 +164,7 @@ pub(crate) async fn collect_items(
     recursive: bool,
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
-    let mut specs = BundleSpecCache::new(algorithms);
+    let mut specs = BundlePolicyCache::new(algorithms);
     collect_items_with_specs(
         util,
         &mut specs,
@@ -182,7 +178,7 @@ pub(crate) async fn collect_items(
 
 async fn collect_items_with_specs(
     util: &DynamoUtil,
-    specs: &mut BundleSpecCache<'_>,
+    specs: &mut BundlePolicyCache<'_>,
     root: &PkSk,
     root_nesting: BundleNesting,
     recursive: bool,
@@ -190,7 +186,7 @@ async fn collect_items_with_specs(
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
     let root = logical_base_id(root);
     let root_label = get_object_type(&root.pk, &root.sk)?;
-    let root_spec = specs.require_allowed(root_label)?;
+    let root_spec = specs.require_included(root_label)?;
     let mut recorded = fixed_exclusions.cloned().unwrap_or_default();
     let root_exclusions = exclusions_for(root_spec, fixed_exclusions, &mut recorded, root_label);
     let initial_rows = raw_query(util, &root.pk, Some(&root.sk)).await?;
@@ -283,7 +279,7 @@ fn append_partition_groups(
     owner: &PkSk,
     groups: HashMap<PkSk, Vec<DynamoMap>>,
     owner_exclusions: &BTreeSet<String>,
-    specs: &mut BundleSpecCache<'_>,
+    specs: &mut BundlePolicyCache<'_>,
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), ServerError> {
@@ -316,8 +312,8 @@ fn append_partition_groups(
             None => (owner.clone(), owner_label.clone(), BundleNesting::TopLevel),
         };
         let spec = match specs.get(&label) {
-            DynamoBundleDisposition::Allowed(spec) => spec,
-            DynamoBundleDisposition::Skip => {
+            DynamoBundlePolicy::Include(spec) => spec,
+            DynamoBundlePolicy::ExcludeSubtree => {
                 recorded
                     .entry(parent_label)
                     .or_default()
@@ -325,7 +321,7 @@ fn append_partition_groups(
                 excluded.push(id);
                 continue;
             }
-            DynamoBundleDisposition::NotAllowed => {
+            DynamoBundlePolicy::Reject => {
                 return Err(DynamoInvalidOperation::new(&format!(
                     "Dynamo object label `{label}` is not allowed in bundles"
                 )))
@@ -376,20 +372,6 @@ fn normalize_rows(mut rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Valu
     ))
 }
 
-fn is_singleton(sk: &str) -> bool {
-    strip_ext_suffix(sk).contains('@')
-}
-
-fn singleton_id_logic(sk: &str, storage: DynamoBundleStorage) -> BundleIdLogic {
-    let indexed = strip_ext_suffix(sk).contains('[');
-    match (indexed, storage == DynamoBundleStorage::ExtPartitioned) {
-        (false, false) => BundleIdLogic::Singleton,
-        (true, false) => BundleIdLogic::IndexedSingleton,
-        (false, true) => BundleIdLogic::SingletonExt,
-        (true, true) => BundleIdLogic::IndexedSingletonExt,
-    }
-}
-
 fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
     let Value::Object(mut data) = dynamo_map_to_serde_value(map)? else {
         unreachable!("Dynamo map conversion always returns an object")
@@ -404,13 +386,13 @@ fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
 }
 
 fn collect_references(
-    specs: &mut BundleSpecCache<'_>,
+    specs: &mut BundlePolicyCache<'_>,
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
 ) -> Result<Vec<DynamoBundleReference>, ServerError> {
     let mut references = Vec::new();
     for item in &bundle.items {
-        let spec = specs.require_allowed(&item.id.label)?;
+        let spec = specs.require_included(&item.id.label)?;
         for rule in &spec.reference_rules {
             for matched in (rule.selector)(item)? {
                 let original = value_at_path(&item.data, &matched.path)

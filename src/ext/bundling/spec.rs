@@ -4,38 +4,38 @@ use fractic_server_error::ServerError;
 
 use crate::{errors::DynamoInvalidOperation, ext::crud::DynamoCrudAlgorithms};
 
-use super::{DynamoBundle, DynamoBundleDisposition, DynamoBundleSpec};
+use super::{DynamoBundle, DynamoBundlePolicy, DynamoBundleSpec};
 
 /// Loads each label's application configuration at most once per operation.
-pub(crate) struct BundleSpecCache<'a> {
+pub(crate) struct BundlePolicyCache<'a> {
     algorithms: &'a dyn DynamoCrudAlgorithms,
-    specs: HashMap<String, DynamoBundleDisposition>,
+    policies: HashMap<String, DynamoBundlePolicy>,
 }
 
-impl<'a> BundleSpecCache<'a> {
+impl<'a> BundlePolicyCache<'a> {
     pub(crate) fn new(algorithms: &'a dyn DynamoCrudAlgorithms) -> Self {
         Self {
             algorithms,
-            specs: HashMap::new(),
+            policies: HashMap::new(),
         }
     }
 
-    pub(crate) fn get(&mut self, label: &str) -> &DynamoBundleDisposition {
-        self.specs
+    pub(crate) fn get(&mut self, label: &str) -> &DynamoBundlePolicy {
+        self.policies
             .entry(label.to_string())
-            .or_insert_with(|| self.algorithms.bundle_spec(label))
+            .or_insert_with(|| self.algorithms.bundle_policy(label))
     }
 
-    pub(crate) fn require_allowed(
+    pub(crate) fn require_included(
         &mut self,
         label: &str,
     ) -> Result<&DynamoBundleSpec, ServerError> {
         match self.get(label) {
-            DynamoBundleDisposition::Allowed(spec) => Ok(spec),
-            DynamoBundleDisposition::Skip => Err(DynamoInvalidOperation::new(&format!(
-                "Dynamo object label `{label}` is configured to be skipped during bundling"
+            DynamoBundlePolicy::Include(spec) => Ok(spec),
+            DynamoBundlePolicy::ExcludeSubtree => Err(DynamoInvalidOperation::new(&format!(
+                "Dynamo object label `{label}` is configured to be excluded from bundles"
             ))),
-            DynamoBundleDisposition::NotAllowed => Err(DynamoInvalidOperation::new(&format!(
+            DynamoBundlePolicy::Reject => Err(DynamoInvalidOperation::new(&format!(
                 "Dynamo object label `{label}` is not allowed in bundles"
             ))),
         }
@@ -47,7 +47,7 @@ impl<'a> BundleSpecCache<'a> {
 /// subtree protected by the other source to be managed by Replace.
 pub(crate) fn effective_import_exclusions(
     bundle: &DynamoBundle,
-    specs: &mut BundleSpecCache<'_>,
+    policies: &mut BundlePolicyCache<'_>,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, ServerError> {
     let labels = bundle
         .items
@@ -68,7 +68,7 @@ pub(crate) fn effective_import_exclusions(
     }
 
     for label in labels {
-        let local = specs.require_allowed(label)?.exclude_subtrees.clone();
+        let local = policies.require_included(label)?.exclude_subtrees.clone();
         if !local.is_empty() {
             effective
                 .entry(label.to_string())

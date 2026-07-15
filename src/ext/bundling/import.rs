@@ -29,7 +29,7 @@ use crate::{
 use super::{
     export::{collect_items, export_with_policy, terminal_ref},
     root_nesting,
-    spec::{effective_import_exclusions, BundleSpecCache},
+    spec::{effective_import_exclusions, BundlePolicyCache},
     value::{set_value_at_path, value_at_path},
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
     DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
@@ -67,7 +67,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         ));
     }
     let effective_exclusions =
-        effective_import_exclusions(&bundle, &mut BundleSpecCache::new(algorithms))?;
+        effective_import_exclusions(&bundle, &mut BundlePolicyCache::new(algorithms))?;
 
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
@@ -315,7 +315,13 @@ async fn replace_stale(
     old: &DynamoBundle,
     new_ids: &HashMap<BundleId, PkSk>,
 ) -> Result<usize, ServerError> {
-    let old_ids = build_id_map(old, parent, false, old.root.id_logic)?;
+    let old_root_id_logic = old
+        .items
+        .iter()
+        .find(|item| item.id == old.root)
+        .ok_or_else(|| invalid_bundle("root item was missing"))?
+        .id_logic;
+    let old_ids = build_id_map(old, parent, false, old_root_id_logic)?;
     let desired = new_ids.values().cloned().collect::<HashSet<_>>();
     let stale = old
         .items
@@ -387,7 +393,7 @@ pub(crate) fn build_id_map(
             let id_logic = if item.id == bundle.root {
                 root_id_logic
             } else {
-                item.id.id_logic
+                item.id_logic
             };
             let mapped = if item.id == bundle.root {
                 place_root(item, parent, duplicate, id_logic, &mut duplicate_ids)?

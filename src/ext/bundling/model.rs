@@ -51,7 +51,8 @@ pub enum DynamoBundleStorage {
     #[default]
     Standard,
     /// A logical item that must be repartitioned on import.
-    SingletonExt,
+    #[serde(alias = "singleton_ext")]
+    ExtPartitioned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,15 +112,16 @@ pub enum DynamoBundleReferenceEncoding {
 pub struct DynamoBundleReference {
     pub source: BundleId,
     pub path: BundleValuePath,
-    pub encoding: DynamoBundleReferenceEncoding,
-    pub original: Value,
     pub target: DynamoBundleReferenceTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamoBundleReferenceTarget {
-    Internal(BundleId),
+    Internal {
+        id: BundleId,
+        encoding: DynamoBundleReferenceEncoding,
+    },
     /// External references are supported only within the importing table.
     External(PkSk),
 }
@@ -194,17 +196,12 @@ impl DynamoBundleReferenceRule {
         }
     }
 
-    pub fn at_path(
-        path: BundleValuePath,
-        encoding: DynamoBundleReferenceEncoding,
-        target: DynamoBundleReferenceMatchTarget,
-    ) -> Self {
+    pub fn at_path(path: BundleValuePath, target: DynamoBundleReferenceMatchTarget) -> Self {
         Self::new(move |item| {
             Ok(super::value::value_at_path(&item.data, &path)
                 .is_some()
                 .then(|| DynamoBundleReferenceMatch {
                     path: path.clone(),
-                    encoding,
                     target: target.clone(),
                 })
                 .into_iter()
@@ -216,7 +213,6 @@ impl DynamoBundleReferenceRule {
 #[derive(Debug, Clone)]
 pub struct DynamoBundleReferenceMatch {
     pub path: BundleValuePath,
-    pub encoding: DynamoBundleReferenceEncoding,
     pub target: DynamoBundleReferenceMatchTarget,
 }
 
@@ -224,23 +220,20 @@ impl DynamoBundleReferenceMatch {
     pub fn internal(
         path: BundleValuePath,
         encoding: DynamoBundleReferenceEncoding,
-        target_label: Option<String>,
+        target_label: impl Into<Option<String>>,
     ) -> Self {
         Self {
             path,
-            encoding,
-            target: DynamoBundleReferenceMatchTarget::Internal { target_label },
+            target: DynamoBundleReferenceMatchTarget::Internal {
+                target_label: target_label.into(),
+                encoding,
+            },
         }
     }
 
-    pub fn external(
-        path: BundleValuePath,
-        encoding: DynamoBundleReferenceEncoding,
-        lookup_id: PkSk,
-    ) -> Self {
+    pub fn external(path: BundleValuePath, lookup_id: PkSk) -> Self {
         Self {
             path,
-            encoding,
             target: DynamoBundleReferenceMatchTarget::External { lookup_id },
         }
     }
@@ -248,6 +241,27 @@ impl DynamoBundleReferenceMatch {
 
 #[derive(Debug, Clone)]
 pub enum DynamoBundleReferenceMatchTarget {
-    Internal { target_label: Option<String> },
-    External { lookup_id: PkSk },
+    Internal {
+        target_label: Option<String>,
+        encoding: DynamoBundleReferenceEncoding,
+    },
+    External {
+        lookup_id: PkSk,
+    },
+}
+
+impl DynamoBundleReferenceMatchTarget {
+    pub fn internal(
+        encoding: DynamoBundleReferenceEncoding,
+        target_label: impl Into<Option<String>>,
+    ) -> Self {
+        Self::Internal {
+            target_label: target_label.into(),
+            encoding,
+        }
+    }
+
+    pub fn external(lookup_id: PkSk) -> Self {
+        Self::External { lookup_id }
+    }
 }

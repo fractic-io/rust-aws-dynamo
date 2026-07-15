@@ -322,6 +322,24 @@ pub(crate) fn build_partition_write_plan_from_serialized(
     ttl: Option<i64>,
     num_existing_partitions: Option<usize>,
 ) -> Result<PartitionWritePlan, ServerError> {
+    build_partition_write_plan_from_serialized_at(
+        logical_id,
+        serialized,
+        sort,
+        ttl,
+        num_existing_partitions,
+        &Timestamp::now(),
+    )
+}
+
+pub(crate) fn build_partition_write_plan_from_serialized_at(
+    logical_id: &PkSk,
+    serialized: &str,
+    sort: Option<f64>,
+    ttl: Option<i64>,
+    num_existing_partitions: Option<usize>,
+    now: &Timestamp,
+) -> Result<PartitionWritePlan, ServerError> {
     let base_id = ext_base_id(logical_id);
     let partition_strings = split_json_partitions(serialized);
     let total_partitions = partition_strings.len();
@@ -340,7 +358,6 @@ pub(crate) fn build_partition_write_plan_from_serialized(
         .unwrap_or_default();
 
     // Build partition placeholder.
-    let now = Timestamp::now();
     let mut put_items = Vec::with_capacity(total_partitions + 1);
     put_items.push(
         build_dynamo_map_internal(
@@ -349,7 +366,7 @@ pub(crate) fn build_partition_write_plan_from_serialized(
             },
             Some(base_id.pk.clone()),
             Some(base_id.sk.clone()),
-            Some(placeholder_metadata(&now, sort, ttl)),
+            Some(placeholder_metadata(now, sort, ttl)),
         )?
         .0,
     );

@@ -9,7 +9,7 @@ use crate::{
     util::DynamoMap,
 };
 
-use super::{DynamoObject, IdLogic, NestingLogic};
+use super::{DynamoObject, IdLogic, NestingLogic, PkSk};
 
 // Primary ID functions.
 // ----------------------------------------------------------------------------
@@ -97,6 +97,92 @@ pub(crate) fn append_child_sk(parent_sk: &str, child_sk: &str) -> String {
         format!("{parent_sk}{child_sk}")
     } else {
         format!("{parent_sk}#{child_sk}")
+    }
+}
+
+/// Extracts the self-contained SK component of an object from a potentially
+/// inline-nested SK. This is useful when detaching and relocating a stored
+/// object without access to its original parent.
+pub(crate) fn object_sk_component<'a>(sk: &'a str, label: &str) -> Result<&'a str, ServerError> {
+    let sk = strip_ext_suffix(sk);
+    if let Some(at) = sk.rfind('@') {
+        return Ok(&sk[at..]);
+    }
+    let marker = format!("#{label}#");
+    if let Some(index) = sk.rfind(&marker) {
+        return Ok(&sk[index + 1..]);
+    }
+    if sk.starts_with(&format!("{label}#")) {
+        return Ok(sk);
+    }
+    Err(DynamoInvalidId::with_debug(
+        "could not extract object SK component",
+        &sk,
+    ))
+}
+
+/// Returns a child's SK relative to its stored parent.
+pub(crate) fn relative_child_sk<'a>(
+    child_sk: &'a str,
+    parent_sk: &str,
+) -> Result<&'a str, ServerError> {
+    strip_ext_suffix(child_sk)
+        .strip_prefix(strip_ext_suffix(parent_sk))
+        .filter(|relative| relative.starts_with('#') || relative.starts_with('@'))
+        .ok_or_else(|| {
+            DynamoInvalidId::with_debug("child SK did not start with its parent SK", &child_sk)
+        })
+}
+
+/// Generates a new canonical terminal ID while preserving the object's label
+/// and any ancestor path. Singleton IDs are fixed by definition.
+pub(crate) fn freshen_object_sk(sk: &str) -> String {
+    let sk = strip_ext_suffix(sk);
+    if is_singleton("", sk) {
+        return sk.to_string();
+    }
+    let Some((prefix, _)) = sk.rsplit_once('#') else {
+        return sk.to_string();
+    };
+    format!("{prefix}#{}", uuid_16_chars())
+}
+
+pub(crate) fn place_root_id(object_sk: &str, freshen: bool) -> PkSk {
+    PkSk {
+        pk: "ROOT".to_string(),
+        sk: if freshen {
+            freshen_object_sk(object_sk)
+        } else {
+            strip_ext_suffix(object_sk).to_string()
+        },
+    }
+}
+
+pub(crate) fn place_top_level_id(parent: &PkSk, object_sk: &str, freshen: bool) -> PkSk {
+    PkSk {
+        pk: parent.sk.clone(),
+        sk: if freshen {
+            freshen_object_sk(object_sk)
+        } else {
+            strip_ext_suffix(object_sk).to_string()
+        },
+    }
+}
+
+pub(crate) fn place_inline_id(parent: &PkSk, relative_sk: &str, freshen: bool) -> PkSk {
+    let relative_sk = if freshen {
+        freshen_object_sk(relative_sk)
+    } else {
+        strip_ext_suffix(relative_sk).to_string()
+    };
+    let sk = if relative_sk.starts_with('#') || relative_sk.starts_with('@') {
+        format!("{}{relative_sk}", parent.sk)
+    } else {
+        append_child_sk(&parent.sk, &relative_sk)
+    };
+    PkSk {
+        pk: parent.pk.clone(),
+        sk,
     }
 }
 
@@ -352,6 +438,45 @@ mod tests {
         assert_eq!(
             append_child_sk("ORDER#56#ITEM#1", "@POST"),
             "ORDER#56#ITEM#1@POST"
+        );
+    }
+
+    #[test]
+    fn test_relocate_stored_ids() {
+        assert_eq!(
+            object_sk_component("PARENT#old#CHILD#old", "CHILD").unwrap(),
+            "CHILD#old"
+        );
+        assert_eq!(
+            object_sk_component("PARENT#old@SETTINGS[key]", "SETTINGS").unwrap(),
+            "@SETTINGS[key]"
+        );
+        assert_eq!(
+            relative_child_sk("PARENT#old#CHILD#old", "PARENT#old").unwrap(),
+            "#CHILD#old"
+        );
+
+        let parent = PkSk {
+            pk: "ROOT".into(),
+            sk: "PARENT#new".into(),
+        };
+        let top = place_top_level_id(&parent, "CHILD#old", true);
+        assert_eq!(top.pk, "PARENT#new");
+        assert!(top.sk.starts_with("CHILD#"));
+        assert_ne!(top.sk, "CHILD#old");
+
+        let inline = place_inline_id(&parent, "#CHILD#old", true);
+        assert_eq!(inline.pk, "ROOT");
+        assert!(inline.sk.starts_with("PARENT#new#CHILD#"));
+        assert_ne!(inline.sk, "PARENT#new#CHILD#old");
+
+        assert_eq!(freshen_object_sk("@SETTINGS[key]"), "@SETTINGS[key]");
+        assert_eq!(
+            place_root_id("ROOTOBJ#old", false),
+            PkSk {
+                pk: "ROOT".into(),
+                sk: "ROOTOBJ#old".into(),
+            }
         );
     }
 

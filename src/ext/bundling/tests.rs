@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use async_trait::async_trait;
@@ -18,17 +21,20 @@ use serde_json::{json, Value};
 
 use crate::{
     ext::crud::DynamoCrudAlgorithms,
-    schema::{IdLogic, NestingLogic, PkSk},
+    schema::{
+        parsing::{dynamo_map_to_serde_value, serde_value_to_dynamo_map},
+        IdLogic, NestingLogic, PkSk,
+    },
     util::{
-        backend::MockDynamoBackend, DynamoMap, DynamoUtil, COLLAPSE_DATA_RESERVED_KEY,
-        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        backend::MockDynamoBackend, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
+        AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
     },
 };
 
 use super::{
     export::export_from_specs,
     import::{build_id_map, import_bundle},
-    value::{map_to_value, value_to_map},
+    spec::{effective_import_exclusions, BundleSpecCache},
     BundleId, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleItem,
     DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
     DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning, IfExisting, BUNDLE_VERSION,
@@ -68,6 +74,20 @@ impl DynamoCrudAlgorithms for TestAlgorithms {
             "CHILD" => Some(DynamoBundleSpec::default().excluding("GRAND")),
             _ => None,
         }
+    }
+}
+
+struct CountingAlgorithms(AtomicUsize);
+
+#[async_trait]
+impl DynamoCrudAlgorithms for CountingAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    fn bundle_spec(&self, _id_label: &str) -> Option<DynamoBundleSpec> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Some(DynamoBundleSpec::default())
     }
 }
 
@@ -120,12 +140,23 @@ async fn recursive_export_scopes_exclusions_and_normalizes_singleton_ext() {
         .returning(move |_, _, _, values, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
-                "ROOT" => vec![
-                    row("ROOT", root_sk),
-                    row("ROOT", "ROOTOBJ#root#ROOTINLINE#one"),
-                    // `begins_with` returns this too, but it is not structural.
-                    row("ROOT", "ROOTOBJ#root2"),
-                ],
+                "ROOT" => {
+                    let mut root = row("ROOT", root_sk);
+                    root.insert(
+                        AUTO_FIELDS_CREATED_AT.into(),
+                        AttributeValue::S("old-created".into()),
+                    );
+                    root.insert(
+                        AUTO_FIELDS_UPDATED_AT.into(),
+                        AttributeValue::S("old-updated".into()),
+                    );
+                    vec![
+                        root,
+                        row("ROOT", "ROOTOBJ#root#ROOTINLINE#one"),
+                        // `begins_with` returns this too, but it is not structural.
+                        row("ROOT", "ROOTOBJ#root2"),
+                    ]
+                }
                 "ROOTOBJ#root" => {
                     let mut placeholder = row(root_sk, "@BIG");
                     placeholder.remove("value");
@@ -197,13 +228,20 @@ async fn recursive_export_scopes_exclusions_and_normalizes_singleton_ext() {
         .items
         .iter()
         .any(|item| item.id.original_sk == "ROOTOBJ#root2"));
+    let root = bundle
+        .items
+        .iter()
+        .find(|item| item.id.label == "ROOTOBJ")
+        .unwrap();
+    assert!(root.data.get(AUTO_FIELDS_CREATED_AT).is_none());
+    assert!(root.data.get(AUTO_FIELDS_UPDATED_AT).is_none());
 
     let big = bundle
         .items
         .iter()
         .find(|item| item.id.label == "BIG")
         .unwrap();
-    assert_eq!(big.storage, DynamoBundleStorage::SingletonExt);
+    assert_eq!(big.storage, DynamoBundleStorage::ExtPartitioned);
     assert_eq!(big.data["large"], "yes");
 
     let batch = bundle
@@ -224,6 +262,65 @@ async fn recursive_export_scopes_exclusions_and_normalizes_singleton_ext() {
     serde_json::from_str::<DynamoBundle>(&serde_json::to_string(&bundle).unwrap()).unwrap();
 }
 
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn export_loads_each_label_spec_only_once() {
+    let algorithms = CountingAlgorithms(AtomicUsize::new(0));
+    let mut backend = MockDynamoBackend::new();
+    backend.expect_query().times(1).returning(|_, _, _, _, _| {
+        Ok(vec![QueryOutput::builder()
+            .set_items(Some(vec![row("ROOT", "ROOTOBJ#root")]))
+            .build()])
+    });
+
+    export_from_specs(
+        &util(backend),
+        &algorithms,
+        PkSk {
+            pk: "ROOT".into(),
+            sk: "ROOTOBJ#root".into(),
+        },
+        BundleNesting::Root,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(algorithms.0.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn import_exclusions_are_the_strict_union_and_require_present_owner_labels() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let mut bundle = DynamoBundle {
+        version: BUNDLE_VERSION,
+        root: root.clone(),
+        recursive: true,
+        exclusions: BTreeMap::from([("ROOTOBJ".into(), BTreeSet::from(["BUNDLE_ONLY".into()]))]),
+        items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
+        references: vec![],
+    };
+    let effective =
+        effective_import_exclusions(&bundle, &mut BundleSpecCache::new(&TestAlgorithms)).unwrap();
+    assert_eq!(
+        effective["ROOTOBJ"],
+        BTreeSet::from(["BUNDLE_ONLY".into(), "RECALC".into()])
+    );
+
+    bundle.exclusions = BTreeMap::from([("ABSENT_OWNER".into(), BTreeSet::from(["CHILD".into()]))]);
+    assert!(
+        effective_import_exclusions(&bundle, &mut BundleSpecCache::new(&TestAlgorithms),).is_err()
+    );
+}
+
+#[test]
+fn ext_partitioned_storage_accepts_the_previous_serialized_name() {
+    assert_eq!(
+        serde_json::from_value::<DynamoBundleStorage>(json!("singleton_ext")).unwrap(),
+        DynamoBundleStorage::ExtPartitioned
+    );
+}
+
 #[test]
 fn serde_values_omit_null_object_fields_and_reject_dynamo_only_values() {
     let map = HashMap::from([
@@ -234,13 +331,16 @@ fn serde_values_omit_null_object_fields_and_reject_dynamo_only_values() {
             AttributeValue::L(vec![AttributeValue::Null(true)]),
         ),
     ]);
-    let value = map_to_value(&map).unwrap();
+    let value = dynamo_map_to_serde_value(&map).unwrap();
     assert_eq!(value, json!({"text": "hello", "list": [null]}));
-    assert_eq!(value_to_map(&value).unwrap(), map_without_null_field(map));
+    assert_eq!(
+        serde_value_to_dynamo_map(&value).unwrap(),
+        map_without_null_field(map)
+    );
 
     let unsupported =
         HashMap::from([("binary".into(), AttributeValue::B(Blob::new(vec![1, 2, 3])))]);
-    assert!(map_to_value(&unsupported).is_err());
+    assert!(dynamo_map_to_serde_value(&unsupported).is_err());
 }
 
 fn map_without_null_field(mut map: DynamoMap) -> DynamoMap {
@@ -326,22 +426,19 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
             DynamoBundleReference {
                 source: root.clone(),
                 path: BundleValuePath::field("local"),
-                encoding: DynamoBundleReferenceEncoding::ForeignRef,
-                original: json!("old"),
-                target: DynamoBundleReferenceTarget::Internal(target),
+                target: DynamoBundleReferenceTarget::Internal {
+                    id: target,
+                    encoding: DynamoBundleReferenceEncoding::ForeignRef,
+                },
             },
             DynamoBundleReference {
                 source: root.clone(),
                 path: BundleValuePath::field("kept"),
-                encoding: DynamoBundleReferenceEncoding::PkSk,
-                original: json!(existing_external.to_string()),
                 target: DynamoBundleReferenceTarget::External(existing_external.clone()),
             },
             DynamoBundleReference {
                 source: root,
                 path: BundleValuePath::field("missing"),
-                encoding: DynamoBundleReferenceEncoding::PkSk,
-                original: json!(missing_external.to_string()),
                 target: DynamoBundleReferenceTarget::External(missing_external),
             },
         ],
@@ -468,6 +565,8 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
             assert_eq!(items.len(), 1);
             assert_eq!(items[0]["sk"], AttributeValue::S("ROOTOBJ#root".into()));
             assert_eq!(items[0]["value"], AttributeValue::S("ordinary".into()));
+            assert!(items[0].contains_key(AUTO_FIELDS_CREATED_AT));
+            assert!(items[0].contains_key(AUTO_FIELDS_UPDATED_AT));
             Ok(BatchWriteItemOutput::builder().build())
         });
 
@@ -608,6 +707,41 @@ async fn duplicate_rejects_a_conflicting_singleton_root_before_writing() {
         None,
         bundle,
         IfExisting::Duplicate,
+    )
+    .await
+    .is_err());
+}
+
+#[tokio::test]
+async fn import_rejects_reference_paths_that_are_not_present() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let bundle = DynamoBundle {
+        version: BUNDLE_VERSION,
+        root: root.clone(),
+        recursive: false,
+        exclusions: BTreeMap::new(),
+        items: vec![bundle_item(
+            root.clone(),
+            None,
+            BundleNesting::Root,
+            json!({"present": "value"}),
+        )],
+        references: vec![DynamoBundleReference {
+            source: root,
+            path: BundleValuePath::field("missing"),
+            target: DynamoBundleReferenceTarget::External(PkSk {
+                pk: "ROOT".into(),
+                sk: "TARGET#one".into(),
+            }),
+        }],
+    };
+
+    assert!(import_bundle::<TestRoot>(
+        &util(MockDynamoBackend::new()),
+        &TestAlgorithms,
+        None,
+        bundle,
+        IfExisting::Merge,
     )
     .await
     .is_err());

@@ -11,19 +11,20 @@ use crate::{
     ext::crud::DynamoCrudAlgorithms,
     schema::{
         id_calculations::{get_object_type, strip_ext_suffix},
+        parsing::dynamo_map_to_serde_value,
         PkSk,
     },
     util::{
         collapse_helpers::collapse_partitioned_items, DynamoMap, DynamoUtil,
-        COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY,
+        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
     },
 };
 
 use super::{
-    value::{map_to_value, value_at_path},
-    BundleId, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundleReference,
-    DynamoBundleReferenceEncoding, DynamoBundleReferenceMatchTarget, DynamoBundleReferenceTarget,
-    DynamoBundleStorage,
+    spec::BundleSpecCache, value::value_at_path, BundleId, BundleNesting, DynamoBundle,
+    DynamoBundleItem, DynamoBundleReference, DynamoBundleReferenceEncoding,
+    DynamoBundleReferenceMatchTarget, DynamoBundleReferenceTarget, DynamoBundleStorage,
 };
 
 const QUERY_CONCURRENCY: usize = 16;
@@ -77,9 +78,10 @@ async fn export_inner(
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
     include_references: bool,
 ) -> Result<DynamoBundle, ServerError> {
-    let (collected, exclusions) = collect_items(
+    let mut specs = BundleSpecCache::new(algorithms);
+    let (collected, exclusions) = collect_items_with_specs(
         util,
-        algorithms,
+        &mut specs,
         &root,
         root_nesting,
         recursive,
@@ -126,7 +128,7 @@ async fn export_inner(
         references: Vec::new(),
     };
     if include_references {
-        bundle.references = collect_references(algorithms, &bundle, &by_pk_sk)?;
+        bundle.references = collect_references(&mut specs, &bundle, &by_pk_sk)?;
     }
     Ok(bundle)
 }
@@ -134,6 +136,26 @@ async fn export_inner(
 pub(crate) async fn collect_items(
     util: &DynamoUtil,
     algorithms: &dyn DynamoCrudAlgorithms,
+    root: &PkSk,
+    root_nesting: BundleNesting,
+    recursive: bool,
+    fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
+) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
+    let mut specs = BundleSpecCache::new(algorithms);
+    collect_items_with_specs(
+        util,
+        &mut specs,
+        root,
+        root_nesting,
+        recursive,
+        fixed_exclusions,
+    )
+    .await
+}
+
+async fn collect_items_with_specs(
+    util: &DynamoUtil,
+    specs: &mut BundleSpecCache<'_>,
     root: &PkSk,
     root_nesting: BundleNesting,
     recursive: bool,
@@ -147,7 +169,7 @@ pub(crate) async fn collect_items(
         .ok_or_else(DynamoNotFound::new)?;
     let mut recorded = fixed_exclusions.cloned().unwrap_or_default();
     let root_label = get_object_type(&root.pk, &root.sk)?;
-    let root_exclusions = exclusions_for(algorithms, fixed_exclusions, &mut recorded, root_label);
+    let root_exclusions = exclusions_for(specs, fixed_exclusions, &mut recorded, root_label);
     let mut collected = vec![CollectedItem {
         id: root.clone(),
         parent: None,
@@ -165,7 +187,7 @@ pub(crate) async fn collect_items(
         &root,
         initial_groups,
         &root_exclusions,
-        algorithms,
+        specs,
         fixed_exclusions,
         &mut recorded,
     )?;
@@ -202,7 +224,7 @@ pub(crate) async fn collect_items(
                 &owner,
                 groups,
                 &exclusions,
-                algorithms,
+                specs,
                 fixed_exclusions,
                 &mut recorded,
             )?;
@@ -213,7 +235,7 @@ pub(crate) async fn collect_items(
 }
 
 fn exclusions_for(
-    algorithms: &dyn DynamoCrudAlgorithms,
+    specs: &mut BundleSpecCache<'_>,
     fixed: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
     label: &str,
@@ -221,10 +243,7 @@ fn exclusions_for(
     if let Some(fixed) = fixed {
         return fixed.get(label).cloned().unwrap_or_default();
     }
-    let exclusions = algorithms
-        .bundle_spec(label)
-        .map(|spec| spec.exclude_subtrees)
-        .unwrap_or_default();
+    let exclusions = specs.exclusions(label);
     if !exclusions.is_empty() {
         recorded.insert(label.to_string(), exclusions.clone());
     }
@@ -236,7 +255,7 @@ fn append_partition_groups(
     owner: &PkSk,
     groups: HashMap<PkSk, Vec<DynamoMap>>,
     owner_exclusions: &BTreeSet<String>,
-    algorithms: &dyn DynamoCrudAlgorithms,
+    specs: &mut BundleSpecCache<'_>,
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), ServerError> {
@@ -266,12 +285,7 @@ fn append_partition_groups(
             None => (owner.clone(), BundleNesting::TopLevel),
         };
         let mut descendant_exclusions = inherited_exclusions.clone();
-        descendant_exclusions.extend(exclusions_for(
-            algorithms,
-            fixed_exclusions,
-            recorded,
-            label,
-        ));
+        descendant_exclusions.extend(exclusions_for(specs, fixed_exclusions, recorded, label));
         collected.push(CollectedItem {
             id: id.clone(),
             parent: Some(parent),
@@ -300,8 +314,8 @@ fn normalize_rows(mut rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Valu
             ));
         }
         return Ok((
-            DynamoBundleStorage::SingletonExt,
-            map_to_value(&collapsed.remove(0))?,
+            DynamoBundleStorage::ExtPartitioned,
+            normalized_data(&collapsed.remove(0))?,
         ));
     }
     if rows.len() != 1 {
@@ -311,34 +325,51 @@ fn normalize_rows(mut rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Valu
     }
     Ok((
         DynamoBundleStorage::Standard,
-        map_to_value(&rows.remove(0))?,
+        normalized_data(&rows.remove(0))?,
     ))
 }
 
+fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
+    let Value::Object(mut data) = dynamo_map_to_serde_value(map)? else {
+        unreachable!("Dynamo map conversion always returns an object")
+    };
+    data.remove("pk");
+    data.remove("sk");
+    // Bundle imports represent new writes, so temporal metadata is regenerated
+    // consistently for standard, ext-partitioned, and opaque batch rows.
+    data.remove(AUTO_FIELDS_CREATED_AT);
+    data.remove(AUTO_FIELDS_UPDATED_AT);
+    Ok(Value::Object(data))
+}
+
 fn collect_references(
-    algorithms: &dyn DynamoCrudAlgorithms,
+    specs: &mut BundleSpecCache<'_>,
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
 ) -> Result<Vec<DynamoBundleReference>, ServerError> {
     let mut references = Vec::new();
     for item in &bundle.items {
-        let Some(spec) = algorithms.bundle_spec(&item.id.label) else {
+        let Some(spec) = specs.get(&item.id.label) else {
             continue;
         };
-        for rule in spec.reference_rules {
+        for rule in &spec.reference_rules {
             for matched in (rule.selector)(item)? {
                 let original = value_at_path(&item.data, &matched.path)
                     .cloned()
                     .ok_or_else(|| invalid_bundle("reference path was missing"))?;
                 let target = match matched.target {
-                    DynamoBundleReferenceMatchTarget::Internal { target_label } => {
-                        DynamoBundleReferenceTarget::Internal(find_internal_target(
+                    DynamoBundleReferenceMatchTarget::Internal {
+                        target_label,
+                        encoding,
+                    } => {
+                        let id = find_internal_target(
                             bundle,
                             original_ids,
                             &original,
-                            matched.encoding,
+                            encoding,
                             target_label.as_deref(),
-                        )?)
+                        )?;
+                        DynamoBundleReferenceTarget::Internal { id, encoding }
                     }
                     DynamoBundleReferenceMatchTarget::External { lookup_id } => {
                         DynamoBundleReferenceTarget::External(lookup_id)
@@ -347,8 +378,6 @@ fn collect_references(
                 references.push(DynamoBundleReference {
                     source: item.id.clone(),
                     path: matched.path,
-                    encoding: matched.encoding,
-                    original,
                     target,
                 });
             }

@@ -3,6 +3,7 @@
 mod export;
 mod import;
 mod model;
+mod spec;
 mod value;
 
 pub use model::*;
@@ -15,7 +16,7 @@ use crate::{
     util::DynamoUtil,
 };
 
-pub(crate) const BUNDLE_VERSION: u32 = 2;
+pub(crate) const BUNDLE_VERSION: u32 = 3;
 
 pub async fn export<O: DynamoObject>(
     util: &DynamoUtil,

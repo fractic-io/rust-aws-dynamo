@@ -26,6 +26,7 @@ pub async fn export<O: DynamoObject>(
         algorithms,
         item.id().clone(),
         root_nesting::<O>(),
+        BundleIdLogic::from_object::<O>(),
         false,
     )
     .await
@@ -41,6 +42,7 @@ pub async fn export_recursive<O: DynamoObject>(
         algorithms,
         item.id().clone(),
         root_nesting::<O>(),
+        BundleIdLogic::from_object::<O>(),
         true,
     )
     .await

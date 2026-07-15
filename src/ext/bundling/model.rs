@@ -8,7 +8,7 @@ use fractic_server_error::ServerError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::schema::PkSk;
+use crate::schema::{DynamoObject, IdLogic, PkSk};
 
 /// A stable, database-independent identifier for an item in a bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -16,6 +16,43 @@ pub struct BundleId {
     pub value: u64,
     pub label: String,
     pub original_sk: String,
+    /// ID generation behavior needed when duplicating this object.
+    pub id_logic: BundleIdLogic,
+}
+
+/// Portable representation of every `IdLogic` variant.
+///
+/// Keep `from_object` exhaustive: adding an `IdLogic` variant must require an
+/// explicit bundling decision at compile time.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleIdLogic {
+    #[default]
+    Uuid,
+    Timestamp,
+    Singleton,
+    IndexedSingleton,
+    BatchOptimized,
+    SingletonExt,
+    IndexedSingletonExt,
+    Phantom,
+}
+
+impl BundleIdLogic {
+    pub fn from_object<O: DynamoObject>() -> Self {
+        match O::id_logic() {
+            IdLogic::Uuid => Self::Uuid,
+            IdLogic::Timestamp => Self::Timestamp,
+            IdLogic::Singleton => Self::Singleton,
+            IdLogic::IndexedSingleton(_) => Self::IndexedSingleton,
+            IdLogic::BatchOptimized { .. } => Self::BatchOptimized,
+            IdLogic::SingletonExt => Self::SingletonExt,
+            IdLogic::IndexedSingletonExt(_) => Self::IndexedSingletonExt,
+            IdLogic::Phantom => Self::Phantom,
+        }
+    }
 }
 
 /// A portable snapshot of one Dynamo object and its stored descendants.
@@ -171,11 +208,23 @@ pub enum DynamoImportWarning {
 /// Per-label configuration returned by `DynamoCrudAlgorithms::bundle_spec`.
 #[derive(Default)]
 pub struct DynamoBundleSpec {
+    pub id_logic: BundleIdLogic,
     pub exclude_subtrees: BTreeSet<String>,
     pub reference_rules: Vec<DynamoBundleReferenceRule>,
 }
 
 impl DynamoBundleSpec {
+    /// Creates a spec carrying the object's exact ID behavior.
+    ///
+    /// Applications should use this for non-UUID descendant types so duplicate
+    /// imports can regenerate or preserve their IDs correctly.
+    pub fn for_object<O: DynamoObject>() -> Self {
+        Self {
+            id_logic: BundleIdLogic::from_object::<O>(),
+            ..Self::default()
+        }
+    }
+
     pub fn excluding(mut self, label: impl Into<String>) -> Self {
         self.exclude_subtrees.insert(label.into());
         self

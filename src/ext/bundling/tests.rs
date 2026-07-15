@@ -35,7 +35,7 @@ use super::{
     export::export_from_specs,
     import::{build_id_map, import_bundle},
     spec::{effective_import_exclusions, BundleSpecCache},
-    BundleId, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleItem,
+    BundleId, BundleIdLogic, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleItem,
     DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
     DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning, IfExisting,
 };
@@ -96,6 +96,7 @@ fn id(value: u64, label: &str, sk: &str) -> BundleId {
         value,
         label: label.into(),
         original_sk: sk.into(),
+        id_logic: BundleIdLogic::Uuid,
     }
 }
 
@@ -207,6 +208,7 @@ async fn recursive_export_scopes_exclusions_and_normalizes_ext_partitioning() {
             sk: root_sk.into(),
         },
         BundleNesting::Root,
+        BundleIdLogic::Uuid,
         true,
     )
     .await
@@ -281,6 +283,7 @@ async fn export_loads_each_label_spec_only_once() {
             sk: "ROOTOBJ#root".into(),
         },
         BundleNesting::Root,
+        BundleIdLogic::Uuid,
         false,
     )
     .await
@@ -368,7 +371,7 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
         references: vec![],
     };
 
-    let mapped = build_id_map(&bundle, None, true).unwrap();
+    let mapped = build_id_map(&bundle, None, true, BundleIdLogic::Uuid).unwrap();
     assert_eq!(mapped[&root].pk, "ROOT");
     assert_ne!(mapped[&root].sk, root.original_sk);
     assert_eq!(mapped[&top].pk, mapped[&root].sk);
@@ -376,6 +379,65 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
     assert!(mapped[&inline]
         .sk
         .starts_with(&format!("{}#INLINE#", mapped[&top].sk)));
+}
+
+#[test]
+fn duplicate_mapping_preserves_batch_ids_and_increments_timestamp_millis() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#old");
+    let mut first_timestamp = id(1, "EVENT", "EVENT#0000000000000001");
+    first_timestamp.id_logic = BundleIdLogic::Timestamp;
+    let mut second_timestamp = id(2, "EVENT", "EVENT#0000000000000002");
+    second_timestamp.id_logic = BundleIdLogic::Timestamp;
+    let mut batch = id(3, "BATCH", "BATCH#0");
+    batch.id_logic = BundleIdLogic::BatchOptimized;
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        root: root.clone(),
+        recursive: true,
+        exclusions: BTreeMap::new(),
+        items: vec![
+            bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
+            bundle_item(
+                first_timestamp.clone(),
+                Some(root.clone()),
+                BundleNesting::TopLevel,
+                json!({}),
+            ),
+            bundle_item(
+                second_timestamp.clone(),
+                Some(root.clone()),
+                BundleNesting::TopLevel,
+                json!({}),
+            ),
+            bundle_item(
+                batch.clone(),
+                Some(root.clone()),
+                BundleNesting::TopLevel,
+                json!({"..": [{"value": 1}]}),
+            ),
+        ],
+        references: vec![],
+    };
+
+    let mapped = build_id_map(&bundle, None, true, BundleIdLogic::Uuid).unwrap();
+    let first_millis = mapped[&first_timestamp]
+        .sk
+        .rsplit_once('#')
+        .unwrap()
+        .1
+        .parse::<i64>()
+        .unwrap();
+    let second_millis = mapped[&second_timestamp]
+        .sk
+        .rsplit_once('#')
+        .unwrap()
+        .1
+        .parse::<i64>()
+        .unwrap();
+
+    assert_eq!(second_millis, first_millis + 1);
+    assert_eq!(mapped[&batch].sk, "BATCH#0");
+    assert_eq!(mapped[&batch].pk, mapped[&root].sk);
 }
 
 #[tokio::test]
@@ -510,6 +572,80 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
         ]
     );
     assert!(result.duplicated);
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn external_reference_to_an_incoming_id_is_not_cleared() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let target = id(1, "TARGET", "TARGET#target");
+    let target_id = PkSk {
+        pk: root.original_sk.clone(),
+        sk: target.original_sk.clone(),
+    };
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        root: root.clone(),
+        recursive: true,
+        exclusions: BTreeMap::new(),
+        items: vec![
+            bundle_item(
+                root.clone(),
+                None,
+                BundleNesting::Root,
+                json!({"external": target_id.to_string()}),
+            ),
+            bundle_item(
+                target.clone(),
+                Some(root.clone()),
+                BundleNesting::TopLevel,
+                json!({}),
+            ),
+        ],
+        references: vec![DynamoBundleReference {
+            source: root,
+            path: BundleValuePath::field("external"),
+            target: DynamoBundleReferenceTarget::External {
+                lookup_id: target_id.clone(),
+                clear_path: BundleValuePath::field("external"),
+            },
+        }],
+    };
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(2)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(table, vec![])])))
+                .build())
+        });
+    backend
+        .expect_batch_put_item()
+        .times(1)
+        .returning(move |_, items| {
+            let imported_root = items
+                .iter()
+                .find(|item| item["pk"].as_s().unwrap() == "ROOT")
+                .unwrap();
+            assert_eq!(
+                imported_root["external"],
+                AttributeValue::S(target_id.to_string())
+            );
+            Ok(BatchWriteItemOutput::builder().build())
+        });
+
+    let result = import_bundle::<TestRoot>(
+        &util(backend),
+        &TestAlgorithms,
+        None,
+        bundle,
+        IfExisting::Merge,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.warnings.is_empty());
 }
 
 #[tokio::test]

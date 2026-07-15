@@ -137,6 +137,14 @@ pub(crate) fn relative_child_sk<'a>(
 /// Generates a new canonical terminal ID while preserving the object's label
 /// and any ancestor path. Singleton IDs are fixed by definition.
 pub(crate) fn freshen_object_sk(sk: &str) -> String {
+    freshen_object_sk_with(sk, &uuid_16_chars())
+}
+
+pub(crate) fn freshen_timestamp_object_sk(sk: &str, timestamp_millis: i64) -> String {
+    freshen_object_sk_with(sk, &timestamp_16_chars(timestamp_millis))
+}
+
+fn freshen_object_sk_with(sk: &str, terminal_id: &str) -> String {
     let sk = strip_ext_suffix(sk);
     if is_singleton("", sk) {
         return sk.to_string();
@@ -144,7 +152,7 @@ pub(crate) fn freshen_object_sk(sk: &str) -> String {
     let Some((prefix, _)) = sk.rsplit_once('#') else {
         return sk.to_string();
     };
-    format!("{prefix}#{}", uuid_16_chars())
+    format!("{prefix}#{terminal_id}")
 }
 
 pub(crate) fn place_root_id(object_sk: &str, freshen: bool) -> PkSk {

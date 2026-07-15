@@ -22,8 +22,8 @@ use crate::{
 };
 
 use super::{
-    spec::BundleSpecCache, value::value_at_path, BundleId, BundleNesting, DynamoBundle,
-    DynamoBundleItem, DynamoBundleReference, DynamoBundleReferenceEncoding,
+    spec::BundleSpecCache, value::value_at_path, BundleId, BundleIdLogic, BundleNesting,
+    DynamoBundle, DynamoBundleItem, DynamoBundleReference, DynamoBundleReferenceEncoding,
     DynamoBundleReferenceMatchTarget, DynamoBundleReferenceTarget, DynamoBundleStorage,
 };
 
@@ -43,9 +43,20 @@ pub(crate) async fn export_from_specs(
     algorithms: &dyn DynamoCrudAlgorithms,
     root: PkSk,
     root_nesting: BundleNesting,
+    root_id_logic: BundleIdLogic,
     recursive: bool,
 ) -> Result<DynamoBundle, ServerError> {
-    export_inner(util, algorithms, root, root_nesting, recursive, None, true).await
+    export_inner(
+        util,
+        algorithms,
+        root,
+        root_nesting,
+        root_id_logic,
+        recursive,
+        None,
+        true,
+    )
+    .await
 }
 
 /// Exports a destination snapshot using the incoming bundle's omission policy.
@@ -54,6 +65,7 @@ pub(crate) async fn export_with_policy(
     algorithms: &dyn DynamoCrudAlgorithms,
     root: PkSk,
     root_nesting: BundleNesting,
+    root_id_logic: BundleIdLogic,
     recursive: bool,
     exclusions: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<DynamoBundle, ServerError> {
@@ -62,6 +74,7 @@ pub(crate) async fn export_with_policy(
         algorithms,
         root,
         root_nesting,
+        root_id_logic,
         recursive,
         Some(exclusions),
         false,
@@ -74,6 +87,7 @@ async fn export_inner(
     algorithms: &dyn DynamoCrudAlgorithms,
     root: PkSk,
     root_nesting: BundleNesting,
+    root_id_logic: BundleIdLogic,
     recursive: bool,
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
     include_references: bool,
@@ -89,15 +103,30 @@ async fn export_inner(
     )
     .await?;
 
+    let root_id = logical_base_id(&root);
     let mut by_pk_sk = HashMap::new();
     let mut items = Vec::with_capacity(collected.len());
     for (index, item) in collected.iter().enumerate() {
+        let label = get_object_type(&item.id.pk, &item.id.sk)?.to_string();
+        let (storage, data) = normalize_rows(item.rows.clone())?;
+        let id_logic = if item.id == root_id {
+            root_id_logic
+        } else if data.get("..").is_some_and(Value::is_array) {
+            BundleIdLogic::BatchOptimized
+        } else if is_singleton(&item.id.sk) {
+            singleton_id_logic(&item.id.sk, storage)
+        } else {
+            specs
+                .get(&label)
+                .map(|spec| spec.id_logic)
+                .unwrap_or_default()
+        };
         let id = BundleId {
             value: index as u64,
-            label: get_object_type(&item.id.pk, &item.id.sk)?.to_string(),
+            label,
             original_sk: item.id.sk.clone(),
+            id_logic,
         };
-        let (storage, data) = normalize_rows(item.rows.clone())?;
         by_pk_sk.insert(item.id.clone(), id.clone());
         items.push(DynamoBundleItem {
             id,
@@ -327,6 +356,20 @@ fn normalize_rows(mut rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Valu
         DynamoBundleStorage::Standard,
         normalized_data(&rows.remove(0))?,
     ))
+}
+
+fn is_singleton(sk: &str) -> bool {
+    strip_ext_suffix(sk).contains('@')
+}
+
+fn singleton_id_logic(sk: &str, storage: DynamoBundleStorage) -> BundleIdLogic {
+    let indexed = strip_ext_suffix(sk).contains('[');
+    match (indexed, storage == DynamoBundleStorage::ExtPartitioned) {
+        (false, false) => BundleIdLogic::Singleton,
+        (true, false) => BundleIdLogic::IndexedSingleton,
+        (false, true) => BundleIdLogic::SingletonExt,
+        (true, true) => BundleIdLogic::IndexedSingletonExt,
+    }
 }
 
 fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use fractic_server_error::ServerError;
+use chrono::Utc;
+use fractic_server_error::{CriticalError, ServerError};
 use futures_util::{stream, StreamExt as _, TryStreamExt as _};
 use serde_json::Value;
 
@@ -9,8 +10,9 @@ use crate::{
     ext::crud::DynamoCrudAlgorithms,
     schema::{
         id_calculations::{
-            get_object_type, is_singleton, object_sk_component, place_inline_id, place_root_id,
-            place_top_level_id, relative_child_sk, strip_ext_suffix,
+            freshen_object_sk, freshen_timestamp_object_sk, get_object_type, is_singleton,
+            object_sk_component, place_inline_id, place_root_id, place_top_level_id,
+            relative_child_sk, strip_ext_suffix,
         },
         parsing::build_dynamo_map_internal,
         DynamoObject, PkSk, Timestamp,
@@ -29,9 +31,9 @@ use super::{
     root_nesting,
     spec::{effective_import_exclusions, BundleSpecCache},
     value::{set_value_at_path, value_at_path},
-    BundleId, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundleReferenceEncoding,
-    DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportResult, DynamoImportWarning,
-    IfExisting,
+    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
+    DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
+    DynamoImportResult, DynamoImportWarning, IfExisting,
 };
 
 const DELETE_CONCURRENCY: usize = 16;
@@ -67,7 +69,8 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     let effective_exclusions =
         effective_import_exclusions(&bundle, &mut BundleSpecCache::new(algorithms))?;
 
-    let preserved_ids = build_id_map(&bundle, parent, false)?;
+    let root_id_logic = BundleIdLogic::from_object::<O>();
+    let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
     let existing = find_existing(util, &preserved_ids).await?;
     let duplicated = !existing.conflicts.is_empty() && matches!(if_existing, IfExisting::Duplicate);
     if duplicated && is_singleton("", &bundle.root.original_sk) {
@@ -76,7 +79,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         ));
     }
     let id_map = if duplicated {
-        build_id_map(&bundle, parent, true)?
+        build_id_map(&bundle, parent, true, root_id_logic)?
     } else {
         preserved_ids
     };
@@ -97,6 +100,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
                 algorithms,
                 root_id.clone(),
                 root_nesting::<O>(),
+                root_id_logic,
                 bundle.recursive,
                 &effective_exclusions,
             )
@@ -176,6 +180,10 @@ async fn resolve_references(
         .iter()
         .map(PkSk::from_map)
         .collect::<Result<HashSet<_>, _>>()?;
+    let existing_external = existing_external
+        .into_iter()
+        .chain(id_map.values().cloned())
+        .collect::<HashSet<_>>();
 
     let mut warnings = Vec::new();
     let mut missing_clears = Vec::new();
@@ -307,7 +315,7 @@ async fn replace_stale(
     old: &DynamoBundle,
     new_ids: &HashMap<BundleId, PkSk>,
 ) -> Result<usize, ServerError> {
-    let old_ids = build_id_map(old, parent, false)?;
+    let old_ids = build_id_map(old, parent, false, old.root.id_logic)?;
     let desired = new_ids.values().cloned().collect::<HashSet<_>>();
     let stale = old
         .items
@@ -362,8 +370,10 @@ pub(crate) fn build_id_map(
     bundle: &DynamoBundle,
     parent: Option<&PkSk>,
     duplicate: bool,
+    root_id_logic: BundleIdLogic,
 ) -> Result<HashMap<BundleId, PkSk>, ServerError> {
     let mut result = HashMap::new();
+    let mut duplicate_ids = DuplicateIdGenerator::new();
     let mut pending = bundle.items.iter().collect::<Vec<_>>();
     while !pending.is_empty() {
         let mut next = Vec::new();
@@ -374,13 +384,20 @@ pub(crate) fn build_id_map(
                 next.push(item);
                 continue;
             }
+            let id_logic = if item.id == bundle.root {
+                root_id_logic
+            } else {
+                item.id.id_logic
+            };
             let mapped = if item.id == bundle.root {
-                place_root(item, parent, duplicate)?
+                place_root(item, parent, duplicate, id_logic, &mut duplicate_ids)?
             } else {
                 place_child(
                     item,
                     parent_id.expect("non-root bundle item has parent"),
                     duplicate,
+                    id_logic,
+                    &mut duplicate_ids,
                 )?
             };
             result.insert(item.id.clone(), mapped);
@@ -398,6 +415,8 @@ fn place_root(
     item: &DynamoBundleItem,
     parent: Option<&PkSk>,
     duplicate: bool,
+    id_logic: BundleIdLogic,
+    duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<PkSk, ServerError> {
     match item.nesting {
         BundleNesting::Root => {
@@ -406,16 +425,21 @@ fn place_root(
                     "root object cannot be imported below a parent",
                 ));
             }
-            Ok(place_root_id(&item.id.original_sk, duplicate))
+            let object_sk =
+                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
+            Ok(place_root_id(&object_sk, false))
         }
         BundleNesting::TopLevel => {
             let parent = parent.ok_or_else(|| invalid_bundle("child bundle requires a parent"))?;
-            Ok(place_top_level_id(parent, &item.id.original_sk, duplicate))
+            let object_sk =
+                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
+            Ok(place_top_level_id(parent, &object_sk, false))
         }
         BundleNesting::Inline => {
             let parent = parent.ok_or_else(|| invalid_bundle("child bundle requires a parent"))?;
             let component = object_sk_component(&item.id.original_sk, &item.id.label)?;
-            Ok(place_inline_id(parent, component, duplicate))
+            let component = destination_object_sk(component, duplicate, id_logic, duplicate_ids)?;
+            Ok(place_inline_id(parent, &component, false))
         }
     }
 }
@@ -424,18 +448,79 @@ fn place_child(
     item: &DynamoBundleItem,
     parent: &PkSk,
     duplicate: bool,
+    id_logic: BundleIdLogic,
+    duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<PkSk, ServerError> {
     match item.nesting {
-        BundleNesting::TopLevel => Ok(place_top_level_id(parent, &item.id.original_sk, duplicate)),
+        BundleNesting::TopLevel => {
+            let object_sk =
+                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
+            Ok(place_top_level_id(parent, &object_sk, false))
+        }
         BundleNesting::Inline => {
             let original_parent = item
                 .parent
                 .as_ref()
                 .ok_or_else(|| invalid_bundle("inline child had no parent"))?;
             let relative = relative_child_sk(&item.id.original_sk, &original_parent.original_sk)?;
-            Ok(place_inline_id(parent, relative, duplicate))
+            let relative = destination_object_sk(relative, duplicate, id_logic, duplicate_ids)?;
+            Ok(place_inline_id(parent, &relative, false))
         }
         BundleNesting::Root => Err(invalid_bundle("non-root item had root nesting")),
+    }
+}
+
+struct DuplicateIdGenerator {
+    timestamp_seed: i64,
+    timestamp_count: usize,
+}
+
+impl DuplicateIdGenerator {
+    fn new() -> Self {
+        Self {
+            timestamp_seed: Utc::now().timestamp_millis(),
+            timestamp_count: 0,
+        }
+    }
+
+    fn next_timestamp(&mut self) -> Result<i64, ServerError> {
+        let offset = i64::try_from(self.timestamp_count)
+            .map_err(|_| CriticalError::new("bundle timestamp item index overflowed i64"))?;
+        let timestamp = self
+            .timestamp_seed
+            .checked_add(offset)
+            .ok_or_else(|| CriticalError::new("bundle timestamp ID overflowed i64"))?;
+        self.timestamp_count = self
+            .timestamp_count
+            .checked_add(1)
+            .ok_or_else(|| CriticalError::new("bundle timestamp item count overflowed usize"))?;
+        Ok(timestamp)
+    }
+}
+
+fn destination_object_sk(
+    original_sk: &str,
+    duplicate: bool,
+    id_logic: BundleIdLogic,
+    duplicate_ids: &mut DuplicateIdGenerator,
+) -> Result<String, ServerError> {
+    if !duplicate {
+        return Ok(strip_ext_suffix(original_sk).to_string());
+    }
+    match id_logic {
+        BundleIdLogic::Uuid => Ok(freshen_object_sk(original_sk)),
+        BundleIdLogic::Timestamp => Ok(freshen_timestamp_object_sk(
+            original_sk,
+            duplicate_ids.next_timestamp()?,
+        )),
+        BundleIdLogic::Singleton
+        | BundleIdLogic::IndexedSingleton
+        | BundleIdLogic::BatchOptimized
+        | BundleIdLogic::SingletonExt
+        | BundleIdLogic::IndexedSingletonExt => Ok(strip_ext_suffix(original_sk).to_string()),
+        BundleIdLogic::Phantom => Err(invalid_bundle(
+            "persisted bundle item used phantom ID logic",
+        )),
     }
 }
 

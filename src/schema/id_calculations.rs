@@ -155,38 +155,26 @@ fn freshen_object_sk_with(sk: &str, terminal_id: &str) -> String {
     format!("{prefix}#{terminal_id}")
 }
 
-pub(crate) fn place_root_id(object_sk: &str, freshen: bool) -> PkSk {
+pub(crate) fn place_root_id(object_sk: &str) -> PkSk {
     PkSk {
         pk: "ROOT".to_string(),
-        sk: if freshen {
-            freshen_object_sk(object_sk)
-        } else {
-            strip_ext_suffix(object_sk).to_string()
-        },
+        sk: strip_ext_suffix(object_sk).to_string(),
     }
 }
 
-pub(crate) fn place_top_level_id(parent: &PkSk, object_sk: &str, freshen: bool) -> PkSk {
+pub(crate) fn place_top_level_id(parent: &PkSk, object_sk: &str) -> PkSk {
     PkSk {
         pk: parent.sk.clone(),
-        sk: if freshen {
-            freshen_object_sk(object_sk)
-        } else {
-            strip_ext_suffix(object_sk).to_string()
-        },
+        sk: strip_ext_suffix(object_sk).to_string(),
     }
 }
 
-pub(crate) fn place_inline_id(parent: &PkSk, relative_sk: &str, freshen: bool) -> PkSk {
-    let relative_sk = if freshen {
-        freshen_object_sk(relative_sk)
-    } else {
-        strip_ext_suffix(relative_sk).to_string()
-    };
+pub(crate) fn place_inline_id(parent: &PkSk, relative_sk: &str) -> PkSk {
+    let relative_sk = strip_ext_suffix(relative_sk);
     let sk = if relative_sk.starts_with('#') || relative_sk.starts_with('@') {
         format!("{}{relative_sk}", parent.sk)
     } else {
-        append_child_sk(&parent.sk, &relative_sk)
+        append_child_sk(&parent.sk, relative_sk)
     };
     PkSk {
         pk: parent.pk.clone(),
@@ -468,19 +456,19 @@ mod tests {
             pk: "ROOT".into(),
             sk: "PARENT#new".into(),
         };
-        let top = place_top_level_id(&parent, "CHILD#old", true);
+        let top = place_top_level_id(&parent, &freshen_object_sk("CHILD#old"));
         assert_eq!(top.pk, "PARENT#new");
         assert!(top.sk.starts_with("CHILD#"));
         assert_ne!(top.sk, "CHILD#old");
 
-        let inline = place_inline_id(&parent, "#CHILD#old", true);
+        let inline = place_inline_id(&parent, &freshen_object_sk("#CHILD#old"));
         assert_eq!(inline.pk, "ROOT");
         assert!(inline.sk.starts_with("PARENT#new#CHILD#"));
         assert_ne!(inline.sk, "PARENT#new#CHILD#old");
 
         assert_eq!(freshen_object_sk("@SETTINGS[key]"), "@SETTINGS[key]");
         assert_eq!(
-            place_root_id("ROOTOBJ#old", false),
+            place_root_id("ROOTOBJ#old"),
             PkSk {
                 pk: "ROOT".into(),
                 sk: "ROOTOBJ#old".into(),

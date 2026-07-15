@@ -27,8 +27,8 @@ use crate::{
 };
 
 use super::{
-    export::{collect_items, export_with_omissions, terminal_ref},
-    policy::{configured_bundles, validate_import_policy},
+    export::{collect_bundle_items, export_with_omissions, terminal_ref},
+    policy::{configured_bundle_policy, validate_import_policy},
     root_nesting,
     value::{set_value_at_path, value_at_path},
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
@@ -73,8 +73,8 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         ));
     }
     let root_id_logic = BundleIdLogic::from_object::<O>();
-    let bundles = configured_bundles(algorithms);
-    let effective_omissions = validate_import_policy(&bundle, &bundles, root_id_logic)?;
+    let policy = configured_bundle_policy(algorithms);
+    let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic)?;
     let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
     let existing = find_existing(util, &preserved_ids).await?;
     let duplicated = !existing.conflicts.is_empty() && matches!(if_existing, IfExisting::Duplicate);
@@ -107,8 +107,8 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         Some(
             export_with_omissions(
                 util,
-                &bundles,
-                root_id.clone(),
+                &policy,
+                &root_id,
                 root_nesting::<O>(),
                 root_id_logic,
                 bundle.recursive,
@@ -132,7 +132,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     util.raw_batch_put_item(merge_plan.puts).await?;
 
     let deleted_subtree_roots = match old {
-        Some(old) => replace_stale(util, &bundles, parent, &old, &id_map).await?,
+        Some(old) => replace_stale(util, &policy, parent, &old, &id_map).await?,
         None => 0,
     };
 
@@ -243,9 +243,19 @@ async fn resolve_references(
         .chain(id_map.values().cloned())
         .collect::<HashSet<_>>();
 
+    let source_indexes = bundle
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.value, index))
+        .collect::<HashMap<_, _>>();
     let mut warnings = Vec::new();
     let mut missing_clears = Vec::new();
-    for reference in bundle.references.clone() {
+    for reference in &bundle.references {
+        let source_index = source_indexes
+            .get(&reference.source.value)
+            .copied()
+            .ok_or_else(|| invalid_bundle("reference source was absent"))?;
         let replacement = match &reference.target {
             DynamoBundleReferenceTarget::Bundled {
                 id: target,
@@ -268,26 +278,24 @@ async fn resolve_references(
             }
             DynamoBundleReferenceTarget::External { clear_path, .. } => {
                 warnings.push(DynamoImportWarning::MissingExternalReference);
-                missing_clears.push((reference.source, clear_path.clone()));
+                missing_clears.push((source_index, clear_path));
                 continue;
             }
         };
-        let item = bundle
-            .items
-            .iter_mut()
-            .find(|item| item.id == reference.source)
-            .ok_or_else(|| invalid_bundle("reference source was absent"))?;
-        set_value_at_path(&mut item.data, &reference.path, replacement)?;
+        set_value_at_path(
+            &mut bundle.items[source_index].data,
+            &reference.path,
+            replacement,
+        )?;
     }
     // Clear missing compound references after all remapping so clearing a
     // containing value cannot invalidate another nested reference path.
-    for (source, clear_path) in missing_clears {
-        let item = bundle
-            .items
-            .iter_mut()
-            .find(|item| item.id == source)
-            .ok_or_else(|| invalid_bundle("reference source was absent"))?;
-        set_value_at_path(&mut item.data, &clear_path, Value::Null)?;
+    for (source_index, clear_path) in missing_clears {
+        set_value_at_path(
+            &mut bundle.items[source_index].data,
+            clear_path,
+            Value::Null,
+        )?;
     }
     Ok(warnings)
 }
@@ -415,7 +423,8 @@ async fn replace_stale(
         .map(|(id, nesting)| async move {
             let no_omissions = BTreeMap::new();
             let (items, _) =
-                collect_items(util, bundles, &id, nesting, true, Some(&no_omissions)).await?;
+                collect_bundle_items(util, bundles, &id, nesting, true, Some(&no_omissions))
+                    .await?;
             items
                 .into_iter()
                 .flat_map(|item| item.rows)
@@ -449,19 +458,19 @@ fn place_root(
             }
             let object_sk =
                 destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_root_id(&object_sk, false))
+            Ok(place_root_id(&object_sk))
         }
         BundleNesting::TopLevel => {
             let parent = parent.ok_or_else(|| invalid_bundle("child bundle requires a parent"))?;
             let object_sk =
                 destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_top_level_id(parent, &object_sk, false))
+            Ok(place_top_level_id(parent, &object_sk))
         }
         BundleNesting::Inline => {
             let parent = parent.ok_or_else(|| invalid_bundle("child bundle requires a parent"))?;
             let component = object_sk_component(&item.id.original_sk, &item.id.label)?;
             let component = destination_object_sk(component, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_inline_id(parent, &component, false))
+            Ok(place_inline_id(parent, &component))
         }
     }
 }
@@ -477,7 +486,7 @@ fn place_child(
         BundleNesting::TopLevel => {
             let object_sk =
                 destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_top_level_id(parent, &object_sk, false))
+            Ok(place_top_level_id(parent, &object_sk))
         }
         BundleNesting::Inline => {
             let original_parent = item
@@ -486,7 +495,7 @@ fn place_child(
                 .ok_or_else(|| invalid_bundle("inline child had no parent"))?;
             let relative = relative_child_sk(&item.id.original_sk, &original_parent.original_sk)?;
             let relative = destination_object_sk(relative, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_inline_id(parent, &relative, false))
+            Ok(place_inline_id(parent, &relative))
         }
         BundleNesting::Root => Err(invalid_bundle("non-root item had root nesting")),
     }

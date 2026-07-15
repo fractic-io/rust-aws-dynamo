@@ -182,15 +182,16 @@ impl BundleDataPath {
     /// Selects fields using a dot-separated path such as
     /// `transformation.prompt_template`.
     pub fn dotted(path: impl AsRef<str>) -> Self {
-        let fields = path.as_ref().split('.').collect::<Vec<_>>();
-        assert!(
-            !fields.is_empty() && fields.iter().all(|field| !field.is_empty()),
-            "bundle data paths must contain non-empty dot-separated fields"
-        );
         Self(
-            fields
-                .into_iter()
-                .map(|field| BundleDataPathSegment::Field(field.to_owned()))
+            path.as_ref()
+                .split('.')
+                .map(|field| {
+                    assert!(
+                        !field.is_empty(),
+                        "bundle data paths must contain non-empty dot-separated fields"
+                    );
+                    BundleDataPathSegment::Field(field.to_owned())
+                })
                 .collect(),
         )
     }

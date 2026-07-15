@@ -293,10 +293,12 @@ impl DynamoBundleObjectPolicy {
     }
 }
 
-pub(crate) fn configured_bundles(algorithms: &dyn DynamoCrudAlgorithms) -> DynamoBundlePolicy {
-    let mut bundles = DynamoBundlePolicy::new();
-    algorithms.bundle_policy(&mut bundles);
-    bundles
+pub(crate) fn configured_bundle_policy(
+    algorithms: &dyn DynamoCrudAlgorithms,
+) -> DynamoBundlePolicy {
+    let mut policy = DynamoBundlePolicy::new();
+    algorithms.bundle_policy(&mut policy);
+    policy
 }
 
 /// Validates portable ID behavior against the importing application and
@@ -305,7 +307,7 @@ pub(crate) fn configured_bundles(algorithms: &dyn DynamoCrudAlgorithms) -> Dynam
 /// to be managed by Replace.
 pub(crate) fn validate_import_policy(
     bundle: &DynamoBundle,
-    bundles: &DynamoBundlePolicy,
+    policy: &DynamoBundlePolicy,
     root_id_logic: BundleIdLogic,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, ServerError> {
     let labels = bundle
@@ -327,18 +329,17 @@ pub(crate) fn validate_import_policy(
     }
 
     for label in labels {
-        let local = bundles.require(label)?;
-        let omissions = local.omitted_descendants().clone();
-        if !omissions.is_empty() {
+        let local = policy.require(label)?;
+        if !local.omitted_descendants().is_empty() {
             effective
                 .entry(label.to_owned())
                 .or_default()
-                .extend(omissions);
+                .extend(local.omitted_descendants().iter().cloned());
         }
     }
 
     for item in &bundle.items {
-        let local_id_logic = bundles.require(&item.id.label)?.id_logic();
+        let local_id_logic = policy.require(&item.id.label)?.id_logic();
         let expected = if item.id == bundle.root {
             if local_id_logic != root_id_logic {
                 return Err(invalid_bundle(&format!(
@@ -403,18 +404,13 @@ impl DynamoBundleReferenceRule {
         target_label: String,
     ) -> Self {
         Self::custom(move |item| {
-            Ok(item
-                .value_at(&path)
-                .is_some()
-                .then(|| {
-                    DynamoBundleReferenceMatch::bundled_label(
-                        path.clone(),
-                        encoding,
-                        target_label.clone(),
-                    )
-                })
-                .into_iter()
-                .collect())
+            Ok(item.value_at(&path).map_or_else(Vec::new, |_| {
+                vec![DynamoBundleReferenceMatch::bundled_label(
+                    path.clone(),
+                    encoding,
+                    target_label.clone(),
+                )]
+            }))
         })
     }
 }

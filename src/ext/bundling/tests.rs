@@ -34,7 +34,7 @@ use crate::{
 use super::{
     export::export_from_config,
     import::{build_id_map, import_bundle},
-    policy::{configured_bundles, validate_import_policy, DynamoBundleReferenceMatchTarget},
+    policy::{configured_bundle_policy, validate_import_policy, DynamoBundleReferenceMatchTarget},
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
     DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
     DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportWarning, IfExisting,
@@ -441,7 +441,7 @@ fn import_omissions_are_the_strict_union_and_require_present_owner_labels() {
     };
     let effective = validate_import_policy(
         &bundle,
-        &configured_bundles(&TestAlgorithms),
+        &configured_bundle_policy(&TestAlgorithms),
         BundleIdLogic::Uuid,
     )
     .unwrap();
@@ -454,7 +454,7 @@ fn import_omissions_are_the_strict_union_and_require_present_owner_labels() {
         BTreeMap::from([("ABSENT_OWNER".into(), BTreeSet::from(["CHILD".into()]))]);
     assert!(validate_import_policy(
         &bundle,
-        &configured_bundles(&TestAlgorithms),
+        &configured_bundle_policy(&TestAlgorithms),
         BundleIdLogic::Uuid,
     )
     .is_err());
@@ -475,7 +475,7 @@ fn import_rejects_unconfigured_bundle_items() {
 
         assert!(validate_import_policy(
             &bundle,
-            &configured_bundles(&TestAlgorithms),
+            &configured_bundle_policy(&TestAlgorithms),
             BundleIdLogic::Uuid,
         )
         .is_err());
@@ -507,7 +507,7 @@ fn import_rejects_id_logic_metadata_that_disagrees_with_local_policy() {
 
     assert!(validate_import_policy(
         &bundle,
-        &configured_bundles(&TestAlgorithms),
+        &configured_bundle_policy(&TestAlgorithms),
         BundleIdLogic::Uuid,
     )
     .is_err());
@@ -527,7 +527,7 @@ fn import_rejects_root_policy_that_disagrees_with_crud_type() {
 
     assert!(validate_import_policy(
         &bundle,
-        &configured_bundles(&TestAlgorithms),
+        &configured_bundle_policy(&TestAlgorithms),
         BundleIdLogic::Timestamp,
     )
     .is_err());
@@ -535,7 +535,7 @@ fn import_rejects_root_policy_that_disagrees_with_crud_type() {
 
 #[test]
 fn bundling_is_denied_by_default() {
-    let bundles = configured_bundles(&DefaultAlgorithms);
+    let bundles = configured_bundle_policy(&DefaultAlgorithms);
     assert!(!bundles.contains_label("UNREGISTERED"));
     assert!(bundles.require("UNREGISTERED").is_err());
 }

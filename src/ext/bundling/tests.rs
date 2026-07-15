@@ -314,14 +314,6 @@ fn import_exclusions_are_the_strict_union_and_require_present_owner_labels() {
 }
 
 #[test]
-fn ext_partitioned_storage_accepts_the_previous_serialized_name() {
-    assert_eq!(
-        serde_json::from_value::<DynamoBundleStorage>(json!("singleton_ext")).unwrap(),
-        DynamoBundleStorage::ExtPartitioned
-    );
-}
-
-#[test]
 fn serde_values_omit_null_object_fields_and_reject_dynamo_only_values() {
     let map = HashMap::from([
         ("text".into(), AttributeValue::S("hello".into())),

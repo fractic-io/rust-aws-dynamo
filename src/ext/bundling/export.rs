@@ -120,7 +120,7 @@ async fn export_inner(
         .cloned()
         .ok_or_else(|| invalid_bundle("source root was not returned by DynamoDB"))?;
     let mut bundle = DynamoBundle {
-        version: super::BUNDLE_VERSION,
+        version: DynamoBundle::VERSION,
         root,
         recursive,
         exclusions,

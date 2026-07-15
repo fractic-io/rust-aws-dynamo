@@ -37,7 +37,7 @@ use super::{
     spec::{effective_import_exclusions, BundleSpecCache},
     BundleId, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleItem,
     DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
-    DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning, IfExisting, BUNDLE_VERSION,
+    DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning, IfExisting,
 };
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -131,7 +131,7 @@ fn util(backend: MockDynamoBackend) -> DynamoUtil {
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
-async fn recursive_export_scopes_exclusions_and_normalizes_singleton_ext() {
+async fn recursive_export_scopes_exclusions_and_normalizes_ext_partitioning() {
     let root_sk = "ROOTOBJ#root";
     let mut backend = MockDynamoBackend::new();
     backend
@@ -293,7 +293,7 @@ async fn export_loads_each_label_spec_only_once() {
 fn import_exclusions_are_the_strict_union_and_require_present_owner_labels() {
     let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
     let mut bundle = DynamoBundle {
-        version: BUNDLE_VERSION,
+        version: DynamoBundle::VERSION,
         root: root.clone(),
         recursive: true,
         exclusions: BTreeMap::from([("ROOTOBJ".into(), BTreeSet::from(["BUNDLE_ONLY".into()]))]),
@@ -346,7 +346,7 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
     let top = id(1, "TOP", "TOP#old");
     let inline = id(2, "INLINE", "TOP#old#INLINE#old");
     let bundle = DynamoBundle {
-        version: BUNDLE_VERSION,
+        version: DynamoBundle::VERSION,
         root: root.clone(),
         recursive: true,
         exclusions: BTreeMap::new(),
@@ -392,7 +392,7 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
         sk: "EXTERNAL#missing".into(),
     };
     let bundle = DynamoBundle {
-        version: BUNDLE_VERSION,
+        version: DynamoBundle::VERSION,
         root: root.clone(),
         recursive: true,
         exclusions: BTreeMap::new(),
@@ -485,7 +485,7 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
     .unwrap();
     // `import_bundle` owns and mutates the bundle; this assertion keeps the
     // original fixture useful and verifies the result contract instead.
-    assert_eq!(bundle.items.len(), result.merged);
+    assert_eq!(bundle.items.len(), result.written_objects);
     assert_eq!(
         result.warnings,
         vec![DynamoImportWarning::MissingExternalReference]
@@ -498,7 +498,7 @@ async fn duplicate_remaps_internal_refs_and_clears_missing_same_table_refs() {
 async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
     let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
     let bundle = DynamoBundle {
-        version: BUNDLE_VERSION,
+        version: DynamoBundle::VERSION,
         root: root.clone(),
         recursive: false,
         exclusions: BTreeMap::new(),
@@ -572,7 +572,7 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
     .await
     .unwrap();
     assert_eq!(result.root_id.sk, "ROOTOBJ#root");
-    assert_eq!(result.merged, 1);
+    assert_eq!(result.written_objects, 1);
     assert!(!result.duplicated);
 }
 
@@ -581,7 +581,7 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
 async fn replace_deletes_excluded_descendants_when_their_managed_parent_is_removed() {
     let root_id = id(0, "ROOTOBJ", "ROOTOBJ#root");
     let bundle = DynamoBundle {
-        version: BUNDLE_VERSION,
+        version: DynamoBundle::VERSION,
         root: root_id.clone(),
         recursive: true,
         exclusions: BTreeMap::from([("ROOTOBJ".into(), BTreeSet::from(["RECALC".into()]))]),
@@ -659,7 +659,7 @@ async fn replace_deletes_excluded_descendants_when_their_managed_parent_is_remov
     .await
     .unwrap();
 
-    assert_eq!(result.deleted, 1);
+    assert_eq!(result.deleted_subtree_roots, 1);
     assert!(!result.duplicated);
 }
 
@@ -668,7 +668,7 @@ async fn replace_deletes_excluded_descendants_when_their_managed_parent_is_remov
 async fn duplicate_rejects_a_conflicting_singleton_root_before_writing() {
     let root = id(0, "SETTINGS", "@SETTINGS");
     let bundle = DynamoBundle {
-        version: BUNDLE_VERSION,
+        version: DynamoBundle::VERSION,
         root: root.clone(),
         recursive: false,
         exclusions: BTreeMap::new(),
@@ -708,7 +708,7 @@ async fn duplicate_rejects_a_conflicting_singleton_root_before_writing() {
 async fn import_rejects_reference_paths_that_are_not_present() {
     let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
     let bundle = DynamoBundle {
-        version: BUNDLE_VERSION,
+        version: DynamoBundle::VERSION,
         root: root.clone(),
         recursive: false,
         exclusions: BTreeMap::new(),

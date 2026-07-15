@@ -117,15 +117,15 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         .await?;
     util.raw_batch_put_item(merge_plan.puts).await?;
 
-    let deleted = match old {
+    let deleted_subtree_roots = match old {
         Some(old) => replace_stale(util, algorithms, parent, &old, &id_map).await?,
         None => 0,
     };
 
     Ok(DynamoImportResult {
         root_id,
-        merged: bundle.items.len(),
-        deleted,
+        written_objects: bundle.items.len(),
+        deleted_subtree_roots,
         duplicated,
         warnings,
     })
@@ -424,7 +424,7 @@ fn place_child(
 }
 
 fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
-    if bundle.version != super::BUNDLE_VERSION {
+    if bundle.version != DynamoBundle::VERSION {
         return Err(invalid_bundle("unsupported bundle version"));
     }
     let ids = bundle

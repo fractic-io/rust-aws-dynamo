@@ -33,6 +33,11 @@ pub struct DynamoBundle {
     pub references: Vec<DynamoBundleReference>,
 }
 
+impl DynamoBundle {
+    /// Version of the first public Dynamo bundle format.
+    pub const VERSION: u32 = 1;
+}
+
 /// One logical Dynamo object. Batch-optimized records remain opaque values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamoBundleItem {
@@ -137,10 +142,10 @@ pub enum IfExisting {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamoImportResult {
     pub root_id: PkSk,
-    /// Number of logical bundle items written by Merge.
-    pub merged: usize,
+    /// Number of logical bundle objects written by the import.
+    pub written_objects: usize,
     /// Number of logical stale roots recursively removed by Replace.
-    pub deleted: usize,
+    pub deleted_subtree_roots: usize,
     pub duplicated: bool,
     pub warnings: Vec<DynamoImportWarning>,
 }

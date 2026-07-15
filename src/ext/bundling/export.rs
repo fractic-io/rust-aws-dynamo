@@ -105,6 +105,79 @@ pub(crate) async fn export_with_omissions(
     .await
 }
 
+async fn export_bundle(
+    util: &DynamoUtil,
+    bundles: &DynamoBundlePolicy,
+    root: &PkSk,
+    options: ExportOptions<'_>,
+) -> Result<DynamoBundle, ServerError> {
+    let (collected, omitted_descendants) = collect_bundle_items(
+        util,
+        bundles,
+        root,
+        options.root_nesting,
+        options.recursive,
+        options.fixed_omissions,
+    )
+    .await?;
+
+    let root_id = logical_base_id(root);
+    let mut by_pk_sk = HashMap::new();
+    let mut items = Vec::with_capacity(collected.len());
+    for (index, item) in collected.into_iter().enumerate() {
+        let label = get_object_type(&item.id.pk, &item.id.sk)?.to_string();
+        let (storage, mut data) = normalize_rows(item.rows)?;
+        let object = bundles.require(&label)?;
+        object.normalize_renamed_fields(&mut data);
+        let id_logic = if item.id == root_id {
+            options.root_id_logic
+        } else {
+            object.id_logic()
+        };
+        let id = BundleId {
+            value: index as u64,
+            label,
+            original_sk: item.id.sk.clone(),
+        };
+        let parent = item
+            .parent
+            .as_ref()
+            .map(|parent| {
+                by_pk_sk
+                    .get(parent)
+                    .cloned()
+                    .ok_or_else(|| invalid_bundle("bundle item preceded its parent"))
+            })
+            .transpose()?;
+        by_pk_sk.insert(item.id, id.clone());
+        items.push(DynamoBundleItem {
+            id,
+            id_logic,
+            parent,
+            nesting: item.nesting,
+            storage,
+            data,
+        });
+    }
+
+    let root = by_pk_sk
+        .get(&root_id)
+        .cloned()
+        .ok_or_else(|| invalid_bundle("source root was not returned by DynamoDB"))?;
+    let mut bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        root,
+        recursive: options.recursive,
+        omitted_descendants,
+        items,
+        references: Vec::new(),
+    };
+    if options.include_references {
+        bundle.references = collect_references(bundles, &bundle, &by_pk_sk)?;
+    }
+    Ok(bundle)
+}
+
 pub(crate) async fn collect_bundle_items(
     util: &DynamoUtil,
     bundles: &DynamoBundlePolicy,
@@ -204,82 +277,6 @@ pub(crate) fn terminal_ref(sk: &str) -> &str {
         return "";
     }
     sk.rsplit_once('#').map_or(sk, |(_, value)| value)
-}
-
-// Internal.
-// ----------------------------------------------------------------------------
-
-async fn export_bundle(
-    util: &DynamoUtil,
-    bundles: &DynamoBundlePolicy,
-    root: &PkSk,
-    options: ExportOptions<'_>,
-) -> Result<DynamoBundle, ServerError> {
-    let (collected, omitted_descendants) = collect_bundle_items(
-        util,
-        bundles,
-        root,
-        options.root_nesting,
-        options.recursive,
-        options.fixed_omissions,
-    )
-    .await?;
-
-    let root_id = logical_base_id(root);
-    let mut by_pk_sk = HashMap::new();
-    let mut items = Vec::with_capacity(collected.len());
-    for (index, item) in collected.into_iter().enumerate() {
-        let label = get_object_type(&item.id.pk, &item.id.sk)?.to_string();
-        let (storage, mut data) = normalize_rows(item.rows)?;
-        let object = bundles.require(&label)?;
-        object.normalize_renamed_fields(&mut data);
-        let id_logic = if item.id == root_id {
-            options.root_id_logic
-        } else {
-            object.id_logic()
-        };
-        let id = BundleId {
-            value: index as u64,
-            label,
-            original_sk: item.id.sk.clone(),
-        };
-        let parent = item
-            .parent
-            .as_ref()
-            .map(|parent| {
-                by_pk_sk
-                    .get(parent)
-                    .cloned()
-                    .ok_or_else(|| invalid_bundle("bundle item preceded its parent"))
-            })
-            .transpose()?;
-        by_pk_sk.insert(item.id, id.clone());
-        items.push(DynamoBundleItem {
-            id,
-            id_logic,
-            parent,
-            nesting: item.nesting,
-            storage,
-            data,
-        });
-    }
-
-    let root = by_pk_sk
-        .get(&root_id)
-        .cloned()
-        .ok_or_else(|| invalid_bundle("source root was not returned by DynamoDB"))?;
-    let mut bundle = DynamoBundle {
-        version: DynamoBundle::VERSION,
-        root,
-        recursive: options.recursive,
-        omitted_descendants,
-        items,
-        references: Vec::new(),
-    };
-    if options.include_references {
-        bundle.references = collect_references(bundles, &bundle, &by_pk_sk)?;
-    }
-    Ok(bundle)
 }
 
 // Helpers.

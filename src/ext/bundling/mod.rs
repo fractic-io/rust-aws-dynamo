@@ -17,6 +17,9 @@ use crate::{
     util::DynamoUtil,
 };
 
+// Public interface.
+// ----------------------------------------------------------------------------
+
 pub async fn export<O: DynamoObject>(
     util: &DynamoUtil,
     algorithms: &dyn DynamoCrudAlgorithms,
@@ -59,6 +62,9 @@ pub async fn import<O: DynamoObject>(
     import::import_bundle::<O>(util, algorithms, parent, bundle, if_existing).await
 }
 
+// Helpers.
+// ----------------------------------------------------------------------------
+
 pub(crate) fn root_nesting<O: DynamoObject>() -> BundleNesting {
     match O::nesting_logic() {
         NestingLogic::Root => BundleNesting::Root,
@@ -68,6 +74,9 @@ pub(crate) fn root_nesting<O: DynamoObject>() -> BundleNesting {
         NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => BundleNesting::Inline,
     }
 }
+
+// Tests.
+// ----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests;

@@ -68,7 +68,10 @@ pub(crate) fn effective_import_exclusions(
     }
 
     for label in labels {
-        let local = policies.require_included(label)?.exclude_subtrees.clone();
+        let local = policies
+            .require_included(label)?
+            .excluded_subtrees()
+            .clone();
         if !local.is_empty() {
             effective
                 .entry(label.to_string())

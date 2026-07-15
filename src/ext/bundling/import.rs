@@ -28,8 +28,8 @@ use crate::{
 
 use super::{
     export::{collect_items, export_with_policy, terminal_ref},
+    policy::{effective_import_exclusions, BundlePolicyCache},
     root_nesting,
-    spec::{effective_import_exclusions, BundlePolicyCache},
     value::{set_value_at_path, value_at_path},
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
     DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,

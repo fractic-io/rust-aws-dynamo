@@ -207,9 +207,9 @@ pub enum DynamoImportWarning {
 
 /// Per-label configuration carried by `DynamoBundlePolicy::Include`.
 pub struct DynamoBundleSpec {
-    pub id_logic: BundleIdLogic,
-    pub exclude_subtrees: BTreeSet<String>,
-    pub reference_rules: Vec<DynamoBundleReferenceRule>,
+    id_logic: BundleIdLogic,
+    exclude_subtrees: BTreeSet<String>,
+    reference_rules: Vec<DynamoBundleReferenceRule>,
 }
 
 /// Explicit application policy for bundling a persisted object label.
@@ -232,10 +232,18 @@ impl From<DynamoBundleSpec> for DynamoBundlePolicy {
     }
 }
 
+impl DynamoBundlePolicy {
+    /// Includes an object type using its exact ID behavior and no custom
+    /// exclusions or reference rules.
+    pub fn include<O: DynamoObject>() -> Self {
+        DynamoBundleSpec::for_object::<O>().into()
+    }
+}
+
 impl DynamoBundleSpec {
     /// Creates a spec with explicit ID behavior and no exclusions or reference
     /// rules.
-    pub fn new(id_logic: BundleIdLogic) -> Self {
+    pub(crate) fn new(id_logic: BundleIdLogic) -> Self {
         Self {
             id_logic,
             exclude_subtrees: BTreeSet::new(),
@@ -249,6 +257,18 @@ impl DynamoBundleSpec {
     /// imports can regenerate or preserve IDs correctly.
     pub fn for_object<O: DynamoObject>() -> Self {
         Self::new(BundleIdLogic::from_object::<O>())
+    }
+
+    pub fn id_logic(&self) -> BundleIdLogic {
+        self.id_logic
+    }
+
+    pub fn excluded_subtrees(&self) -> &BTreeSet<String> {
+        &self.exclude_subtrees
+    }
+
+    pub fn reference_rules(&self) -> &[DynamoBundleReferenceRule] {
+        &self.reference_rules
     }
 
     pub fn excluding(mut self, label: impl Into<String>) -> Self {

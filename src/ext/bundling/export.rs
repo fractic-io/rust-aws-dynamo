@@ -22,7 +22,7 @@ use crate::{
 };
 
 use super::{
-    spec::BundlePolicyCache, value::value_at_path, BundleId, BundleIdLogic, BundleNesting,
+    policy::BundlePolicyCache, value::value_at_path, BundleId, BundleIdLogic, BundleNesting,
     DynamoBundle, DynamoBundleItem, DynamoBundlePolicy, DynamoBundleReference,
     DynamoBundleReferenceEncoding, DynamoBundleReferenceMatchTarget, DynamoBundleReferenceTarget,
     DynamoBundleSpec, DynamoBundleStorage,
@@ -93,10 +93,10 @@ async fn export_inner(
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
     include_references: bool,
 ) -> Result<DynamoBundle, ServerError> {
-    let mut specs = BundlePolicyCache::new(algorithms);
-    let (collected, exclusions) = collect_items_with_specs(
+    let mut policies = BundlePolicyCache::new(algorithms);
+    let (collected, exclusions) = collect_items_with_policies(
         util,
-        &mut specs,
+        &mut policies,
         &root,
         root_nesting,
         recursive,
@@ -113,7 +113,7 @@ async fn export_inner(
         let id_logic = if item.id == root_id {
             root_id_logic
         } else {
-            specs.require_included(&label)?.id_logic
+            policies.require_included(&label)?.id_logic()
         };
         let id = BundleId {
             value: index as u64,
@@ -151,7 +151,7 @@ async fn export_inner(
         references: Vec::new(),
     };
     if include_references {
-        bundle.references = collect_references(&mut specs, &bundle, &by_pk_sk)?;
+        bundle.references = collect_references(&mut policies, &bundle, &by_pk_sk)?;
     }
     Ok(bundle)
 }
@@ -164,10 +164,10 @@ pub(crate) async fn collect_items(
     recursive: bool,
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
-    let mut specs = BundlePolicyCache::new(algorithms);
-    collect_items_with_specs(
+    let mut policies = BundlePolicyCache::new(algorithms);
+    collect_items_with_policies(
         util,
-        &mut specs,
+        &mut policies,
         root,
         root_nesting,
         recursive,
@@ -176,9 +176,9 @@ pub(crate) async fn collect_items(
     .await
 }
 
-async fn collect_items_with_specs(
+async fn collect_items_with_policies(
     util: &DynamoUtil,
-    specs: &mut BundlePolicyCache<'_>,
+    policies: &mut BundlePolicyCache<'_>,
     root: &PkSk,
     root_nesting: BundleNesting,
     recursive: bool,
@@ -186,7 +186,7 @@ async fn collect_items_with_specs(
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
     let root = logical_base_id(root);
     let root_label = get_object_type(&root.pk, &root.sk)?;
-    let root_spec = specs.require_included(root_label)?;
+    let root_spec = policies.require_included(root_label)?;
     let mut recorded = fixed_exclusions.cloned().unwrap_or_default();
     let root_exclusions = exclusions_for(root_spec, fixed_exclusions, &mut recorded, root_label);
     let initial_rows = raw_query(util, &root.pk, Some(&root.sk)).await?;
@@ -211,7 +211,7 @@ async fn collect_items_with_specs(
         &root,
         initial_groups,
         &root_exclusions,
-        specs,
+        policies,
         fixed_exclusions,
         &mut recorded,
     )?;
@@ -248,7 +248,7 @@ async fn collect_items_with_specs(
                 &owner,
                 groups,
                 &exclusions,
-                specs,
+                policies,
                 fixed_exclusions,
                 &mut recorded,
             )?;
@@ -267,7 +267,7 @@ fn exclusions_for(
     if let Some(fixed) = fixed {
         return fixed.get(label).cloned().unwrap_or_default();
     }
-    let exclusions = spec.exclude_subtrees.clone();
+    let exclusions = spec.excluded_subtrees().clone();
     if !exclusions.is_empty() {
         recorded.insert(label.to_string(), exclusions.clone());
     }
@@ -279,7 +279,7 @@ fn append_partition_groups(
     owner: &PkSk,
     groups: HashMap<PkSk, Vec<DynamoMap>>,
     owner_exclusions: &BTreeSet<String>,
-    specs: &mut BundlePolicyCache<'_>,
+    policies: &mut BundlePolicyCache<'_>,
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), ServerError> {
@@ -311,7 +311,7 @@ fn append_partition_groups(
             }
             None => (owner.clone(), owner_label.clone(), BundleNesting::TopLevel),
         };
-        let spec = match specs.get(&label) {
+        let spec = match policies.get(&label) {
             DynamoBundlePolicy::Include(spec) => spec,
             DynamoBundlePolicy::ExcludeSubtree => {
                 recorded
@@ -386,14 +386,14 @@ fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
 }
 
 fn collect_references(
-    specs: &mut BundlePolicyCache<'_>,
+    policies: &mut BundlePolicyCache<'_>,
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
 ) -> Result<Vec<DynamoBundleReference>, ServerError> {
     let mut references = Vec::new();
     for item in &bundle.items {
-        let spec = specs.require_included(&item.id.label)?;
-        for rule in &spec.reference_rules {
+        let spec = policies.require_included(&item.id.label)?;
+        for rule in spec.reference_rules() {
             for matched in (rule.selector)(item)? {
                 let original = value_at_path(&item.data, &matched.path)
                     .cloned()

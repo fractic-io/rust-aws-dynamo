@@ -34,7 +34,7 @@ use crate::{
 use super::{
     export::export_from_specs,
     import::{build_id_map, import_bundle},
-    spec::{effective_import_exclusions, BundlePolicyCache},
+    policy::{effective_import_exclusions, BundlePolicyCache},
     BundleId, BundleIdLogic, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleItem,
     DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
     DynamoBundleReferenceTarget, DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning,

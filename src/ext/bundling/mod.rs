@@ -33,7 +33,7 @@ pub async fn export<O: DynamoObject>(
     .await
 }
 
-pub async fn export_recursive<O: DynamoObject>(
+pub async fn export_deep<O: DynamoObject>(
     util: &DynamoUtil,
     algorithms: &dyn DynamoCrudAlgorithms,
     item: O,

@@ -1028,22 +1028,18 @@ impl_root_bundle_operations!(ManageRootUnordered, _crud_algorithms, export);
 impl_root_bundle_operations!(
     ManageRootUnorderedWithChildren,
     crud_algorithms,
-    export_recursive
+    export_deep
 );
 impl_root_bundle_operations!(ManageRootSingleton, _crud_algorithms, export);
 impl_root_bundle_operations!(ManageRootIndexedSingleton, _crud_algorithms, export);
 
 impl_child_bundle_operations!(ManageChildOrdered, _crud_algorithms, export);
-impl_child_bundle_operations!(
-    ManageChildOrderedWithChildren,
-    crud_algorithms,
-    export_recursive
-);
+impl_child_bundle_operations!(ManageChildOrderedWithChildren, crud_algorithms, export_deep);
 impl_child_bundle_operations!(ManageChildUnordered, _crud_algorithms, export);
 impl_child_bundle_operations!(
     ManageChildUnorderedWithChildren,
     crud_algorithms,
-    export_recursive
+    export_deep
 );
 impl_child_bundle_operations!(ManageChildSingleton, _crud_algorithms, export);
 impl_child_bundle_operations!(ManageChildIndexedSingleton, _crud_algorithms, export);

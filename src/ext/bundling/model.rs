@@ -205,12 +205,32 @@ pub enum DynamoImportWarning {
     MissingExternalReference,
 }
 
-/// Per-label configuration returned by `DynamoCrudAlgorithms::bundle_spec`.
+/// Per-label configuration carried by `DynamoBundleDisposition::Allowed`.
 #[derive(Default)]
 pub struct DynamoBundleSpec {
     pub id_logic: BundleIdLogic,
     pub exclude_subtrees: BTreeSet<String>,
     pub reference_rules: Vec<DynamoBundleReferenceRule>,
+}
+
+/// Explicit application policy for bundling a persisted object label.
+///
+/// Every label encountered by export or import must have a deliberate policy.
+/// `Skip` omits an encountered non-root object and its descendants during
+/// export, while `NotAllowed` rejects the entire operation. Bundle roots and
+/// every object already present in an imported bundle must be `Allowed`.
+#[derive(Default)]
+pub enum DynamoBundleDisposition {
+    Allowed(DynamoBundleSpec),
+    Skip,
+    #[default]
+    NotAllowed,
+}
+
+impl From<DynamoBundleSpec> for DynamoBundleDisposition {
+    fn from(spec: DynamoBundleSpec) -> Self {
+        Self::Allowed(spec)
+    }
 }
 
 impl DynamoBundleSpec {

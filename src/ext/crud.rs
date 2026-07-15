@@ -7,7 +7,7 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoNotFound,
-    ext::bundling::{self, DynamoBundle, DynamoBundleSpec, DynamoImportResult, IfExisting},
+    ext::bundling::{self, DynamoBundle, DynamoBundleDisposition, DynamoImportResult, IfExisting},
     schema::{DynamoObject, NestingLogic, PkSk},
     util::{DynamoInsertPosition, DynamoUtil},
 };
@@ -17,12 +17,14 @@ use crate::{
 pub trait DynamoCrudAlgorithms: Send + Sync {
     async fn recursive_delete(&self, id: PkSk) -> Result<(), ServerError>;
 
-    /// Optional export/import behavior for a persisted object label.
+    /// Export/import behavior for a persisted object label.
     ///
     /// Dispatch is label-based because this trait is used as a trait object;
     /// generic methods would make it non-object-safe.
-    fn bundle_spec(&self, _id_label: &str) -> Option<DynamoBundleSpec> {
-        None
+    /// The default is deliberately restrictive so every bundleable object type
+    /// must be enabled explicitly by the application.
+    fn bundle_spec(&self, _id_label: &str) -> DynamoBundleDisposition {
+        DynamoBundleDisposition::NotAllowed
     }
 
     async fn recursive_delete_archived(&self, id: PkSk) -> Result<(), ServerError> {

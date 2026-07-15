@@ -35,9 +35,10 @@ use super::{
     export::export_from_specs,
     import::{build_id_map, import_bundle},
     spec::{effective_import_exclusions, BundleSpecCache},
-    BundleId, BundleIdLogic, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleItem,
-    DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
-    DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning, IfExisting,
+    BundleId, BundleIdLogic, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleDisposition,
+    DynamoBundleItem, DynamoBundleReference, DynamoBundleReferenceEncoding,
+    DynamoBundleReferenceTarget, DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning,
+    IfExisting,
 };
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -68,11 +69,13 @@ impl DynamoCrudAlgorithms for TestAlgorithms {
         Ok(())
     }
 
-    fn bundle_spec(&self, id_label: &str) -> Option<DynamoBundleSpec> {
+    fn bundle_spec(&self, id_label: &str) -> DynamoBundleDisposition {
         match id_label {
-            "ROOTOBJ" => Some(DynamoBundleSpec::default().excluding("RECALC")),
-            "CHILD" => Some(DynamoBundleSpec::default().excluding("GRAND")),
-            _ => None,
+            "ROOTOBJ" => DynamoBundleSpec::default().excluding("RECALC").into(),
+            "CHILD" => DynamoBundleSpec::default().excluding("GRAND").into(),
+            "SKIP" => DynamoBundleDisposition::Skip,
+            "DENIED" => DynamoBundleDisposition::NotAllowed,
+            _ => DynamoBundleSpec::default().into(),
         }
     }
 }
@@ -85,9 +88,18 @@ impl DynamoCrudAlgorithms for CountingAlgorithms {
         Ok(())
     }
 
-    fn bundle_spec(&self, _id_label: &str) -> Option<DynamoBundleSpec> {
+    fn bundle_spec(&self, _id_label: &str) -> DynamoBundleDisposition {
         self.0.fetch_add(1, Ordering::Relaxed);
-        Some(DynamoBundleSpec::default())
+        DynamoBundleSpec::default().into()
+    }
+}
+
+struct DefaultAlgorithms;
+
+#[async_trait]
+impl DynamoCrudAlgorithms for DefaultAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
     }
 }
 
@@ -266,6 +278,83 @@ async fn recursive_export_scopes_exclusions_and_normalizes_ext_partitioning() {
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
+async fn recursive_export_omits_skipped_subtrees_and_records_the_omission() {
+    let root_sk = "ROOTOBJ#root";
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_query()
+        .times(2)
+        .returning(move |_, _, _, values, _| {
+            let pk = values.get(":pk").unwrap().as_s().unwrap();
+            let rows = match pk.as_str() {
+                "ROOT" => vec![row("ROOT", root_sk)],
+                "ROOTOBJ#root" => vec![
+                    row(root_sk, "SKIP#one"),
+                    row(root_sk, "SKIP#one#CHILD#also-skipped"),
+                ],
+                unexpected => panic!("unexpected partition query: {unexpected}"),
+            };
+            Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
+        });
+
+    let bundle = export_from_specs(
+        &util(backend),
+        &TestAlgorithms,
+        PkSk {
+            pk: "ROOT".into(),
+            sk: root_sk.into(),
+        },
+        BundleNesting::Root,
+        BundleIdLogic::Uuid,
+        true,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(bundle.items.len(), 1);
+    assert_eq!(
+        bundle.exclusions["ROOTOBJ"],
+        BTreeSet::from(["RECALC".into(), "SKIP".into()])
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn recursive_export_rejects_denied_descendants() {
+    let root_sk = "ROOTOBJ#root";
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_query()
+        .times(2)
+        .returning(move |_, _, _, values, _| {
+            let pk = values.get(":pk").unwrap().as_s().unwrap();
+            let rows = match pk.as_str() {
+                "ROOT" => vec![row("ROOT", root_sk)],
+                "ROOTOBJ#root" => vec![row(root_sk, "DENIED#one")],
+                unexpected => panic!("unexpected partition query: {unexpected}"),
+            };
+            Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
+        });
+
+    let error = export_from_specs(
+        &util(backend),
+        &TestAlgorithms,
+        PkSk {
+            pk: "ROOT".into(),
+            sk: root_sk.into(),
+        },
+        BundleNesting::Root,
+        BundleIdLogic::Uuid,
+        true,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("DENIED"));
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
 async fn export_loads_each_label_spec_only_once() {
     let algorithms = CountingAlgorithms(AtomicUsize::new(0));
     let mut backend = MockDynamoBackend::new();
@@ -314,6 +403,37 @@ fn import_exclusions_are_the_strict_union_and_require_present_owner_labels() {
     assert!(
         effective_import_exclusions(&bundle, &mut BundleSpecCache::new(&TestAlgorithms),).is_err()
     );
+}
+
+#[test]
+fn import_rejects_skipped_and_denied_bundle_items() {
+    for label in ["SKIP", "DENIED"] {
+        let root = id(0, label, &format!("{label}#root"));
+        let bundle = DynamoBundle {
+            version: DynamoBundle::VERSION,
+            root: root.clone(),
+            recursive: false,
+            exclusions: BTreeMap::new(),
+            items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
+            references: vec![],
+        };
+
+        assert!(
+            effective_import_exclusions(&bundle, &mut BundleSpecCache::new(&TestAlgorithms))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn bundling_is_denied_by_default() {
+    assert!(matches!(
+        DefaultAlgorithms.bundle_spec("UNREGISTERED"),
+        DynamoBundleDisposition::NotAllowed
+    ));
+    assert!(BundleSpecCache::new(&DefaultAlgorithms)
+        .require_allowed("UNREGISTERED")
+        .is_err());
 }
 
 #[test]

@@ -4,12 +4,12 @@ use fractic_server_error::ServerError;
 
 use crate::{errors::DynamoInvalidOperation, ext::crud::DynamoCrudAlgorithms};
 
-use super::{DynamoBundle, DynamoBundleSpec};
+use super::{DynamoBundle, DynamoBundleDisposition, DynamoBundleSpec};
 
 /// Loads each label's application configuration at most once per operation.
 pub(crate) struct BundleSpecCache<'a> {
     algorithms: &'a dyn DynamoCrudAlgorithms,
-    specs: HashMap<String, Option<DynamoBundleSpec>>,
+    specs: HashMap<String, DynamoBundleDisposition>,
 }
 
 impl<'a> BundleSpecCache<'a> {
@@ -20,18 +20,25 @@ impl<'a> BundleSpecCache<'a> {
         }
     }
 
-    pub(crate) fn get(&mut self, label: &str) -> Option<&DynamoBundleSpec> {
-        if !self.specs.contains_key(label) {
-            self.specs
-                .insert(label.to_string(), self.algorithms.bundle_spec(label));
-        }
-        self.specs.get(label).and_then(Option::as_ref)
+    pub(crate) fn get(&mut self, label: &str) -> &DynamoBundleDisposition {
+        self.specs
+            .entry(label.to_string())
+            .or_insert_with(|| self.algorithms.bundle_spec(label))
     }
 
-    pub(crate) fn exclusions(&mut self, label: &str) -> BTreeSet<String> {
-        self.get(label)
-            .map(|spec| spec.exclude_subtrees.clone())
-            .unwrap_or_default()
+    pub(crate) fn require_allowed(
+        &mut self,
+        label: &str,
+    ) -> Result<&DynamoBundleSpec, ServerError> {
+        match self.get(label) {
+            DynamoBundleDisposition::Allowed(spec) => Ok(spec),
+            DynamoBundleDisposition::Skip => Err(DynamoInvalidOperation::new(&format!(
+                "Dynamo object label `{label}` is configured to be skipped during bundling"
+            ))),
+            DynamoBundleDisposition::NotAllowed => Err(DynamoInvalidOperation::new(&format!(
+                "Dynamo object label `{label}` is not allowed in bundles"
+            ))),
+        }
     }
 }
 
@@ -61,7 +68,7 @@ pub(crate) fn effective_import_exclusions(
     }
 
     for label in labels {
-        let local = specs.exclusions(label);
+        let local = specs.require_allowed(label)?.exclude_subtrees.clone();
         if !local.is_empty() {
             effective
                 .entry(label.to_string())

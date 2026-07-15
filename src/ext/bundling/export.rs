@@ -23,8 +23,9 @@ use crate::{
 
 use super::{
     spec::BundleSpecCache, value::value_at_path, BundleId, BundleIdLogic, BundleNesting,
-    DynamoBundle, DynamoBundleItem, DynamoBundleReference, DynamoBundleReferenceEncoding,
-    DynamoBundleReferenceMatchTarget, DynamoBundleReferenceTarget, DynamoBundleStorage,
+    DynamoBundle, DynamoBundleDisposition, DynamoBundleItem, DynamoBundleReference,
+    DynamoBundleReferenceEncoding, DynamoBundleReferenceMatchTarget, DynamoBundleReferenceTarget,
+    DynamoBundleSpec, DynamoBundleStorage,
 };
 
 const QUERY_CONCURRENCY: usize = 16;
@@ -116,10 +117,7 @@ async fn export_inner(
         } else if is_singleton(&item.id.sk) {
             singleton_id_logic(&item.id.sk, storage)
         } else {
-            specs
-                .get(&label)
-                .map(|spec| spec.id_logic)
-                .unwrap_or_default()
+            specs.require_allowed(&label)?.id_logic
         };
         let id = BundleId {
             value: index as u64,
@@ -191,14 +189,15 @@ async fn collect_items_with_specs(
     fixed_exclusions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
     let root = logical_base_id(root);
+    let root_label = get_object_type(&root.pk, &root.sk)?;
+    let root_spec = specs.require_allowed(root_label)?;
+    let mut recorded = fixed_exclusions.cloned().unwrap_or_default();
+    let root_exclusions = exclusions_for(root_spec, fixed_exclusions, &mut recorded, root_label);
     let initial_rows = raw_query(util, &root.pk, Some(&root.sk)).await?;
     let mut initial_groups = group_logical_rows(initial_rows)?;
     let root_rows = initial_groups
         .remove(&root)
         .ok_or_else(DynamoNotFound::new)?;
-    let mut recorded = fixed_exclusions.cloned().unwrap_or_default();
-    let root_label = get_object_type(&root.pk, &root.sk)?;
-    let root_exclusions = exclusions_for(specs, fixed_exclusions, &mut recorded, root_label);
     let mut collected = vec![CollectedItem {
         id: root.clone(),
         parent: None,
@@ -264,7 +263,7 @@ async fn collect_items_with_specs(
 }
 
 fn exclusions_for(
-    specs: &mut BundleSpecCache<'_>,
+    spec: &DynamoBundleSpec,
     fixed: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
     label: &str,
@@ -272,7 +271,7 @@ fn exclusions_for(
     if let Some(fixed) = fixed {
         return fixed.get(label).cloned().unwrap_or_default();
     }
-    let exclusions = specs.exclusions(label);
+    let exclusions = spec.exclude_subtrees.clone();
     if !exclusions.is_empty() {
         recorded.insert(label.to_string(), exclusions.clone());
     }
@@ -290,18 +289,19 @@ fn append_partition_groups(
 ) -> Result<(), ServerError> {
     let mut ids = groups.keys().cloned().collect::<Vec<_>>();
     ids.sort_by(|a, b| a.sk.len().cmp(&b.sk.len()).then_with(|| a.sk.cmp(&b.sk)));
-    let mut accepted = vec![(owner.clone(), owner_exclusions.clone())];
+    let owner_label = get_object_type(&owner.pk, &owner.sk)?.to_string();
+    let mut accepted = vec![(owner.clone(), owner_exclusions.clone(), owner_label.clone())];
     let mut excluded = Vec::<PkSk>::new();
     for id in ids {
-        let label = get_object_type(&id.pk, &id.sk)?;
+        let label = get_object_type(&id.pk, &id.sk)?.to_string();
         let inline_parent = accepted
             .iter()
-            .filter(|(candidate, _)| is_inline_descendant(&id.sk, &candidate.sk))
-            .max_by_key(|(candidate, _)| candidate.sk.len());
+            .filter(|(candidate, _, _)| is_inline_descendant(&id.sk, &candidate.sk))
+            .max_by_key(|(candidate, _, _)| candidate.sk.len());
         let inherited_exclusions = inline_parent
-            .map(|(_, exclusions)| exclusions)
+            .map(|(_, exclusions, _)| exclusions)
             .unwrap_or(owner_exclusions);
-        if inherited_exclusions.contains(label)
+        if inherited_exclusions.contains(&label)
             || excluded
                 .iter()
                 .any(|ancestor| is_inline_descendant(&id.sk, &ancestor.sk))
@@ -309,12 +309,30 @@ fn append_partition_groups(
             excluded.push(id);
             continue;
         }
-        let (parent, nesting) = match inline_parent {
-            Some((parent, _)) => (parent.clone(), BundleNesting::Inline),
-            None => (owner.clone(), BundleNesting::TopLevel),
+        let (parent, parent_label, nesting) = match inline_parent {
+            Some((parent, _, parent_label)) => {
+                (parent.clone(), parent_label.clone(), BundleNesting::Inline)
+            }
+            None => (owner.clone(), owner_label.clone(), BundleNesting::TopLevel),
+        };
+        let spec = match specs.get(&label) {
+            DynamoBundleDisposition::Allowed(spec) => spec,
+            DynamoBundleDisposition::Skip => {
+                recorded
+                    .entry(parent_label)
+                    .or_default()
+                    .insert(label.clone());
+                excluded.push(id);
+                continue;
+            }
+            DynamoBundleDisposition::NotAllowed => {
+                return Err(DynamoInvalidOperation::new(&format!(
+                    "Dynamo object label `{label}` is not allowed in bundles"
+                )))
+            }
         };
         let mut descendant_exclusions = inherited_exclusions.clone();
-        descendant_exclusions.extend(exclusions_for(specs, fixed_exclusions, recorded, label));
+        descendant_exclusions.extend(exclusions_for(spec, fixed_exclusions, recorded, &label));
         collected.push(CollectedItem {
             id: id.clone(),
             parent: Some(parent),
@@ -325,7 +343,7 @@ fn append_partition_groups(
                 .ok_or_else(|| invalid_bundle("grouped rows disappeared"))?,
             descendant_exclusions: descendant_exclusions.clone(),
         });
-        accepted.push((id, descendant_exclusions));
+        accepted.push((id, descendant_exclusions, label));
     }
     Ok(())
 }
@@ -392,9 +410,7 @@ fn collect_references(
 ) -> Result<Vec<DynamoBundleReference>, ServerError> {
     let mut references = Vec::new();
     for item in &bundle.items {
-        let Some(spec) = specs.get(&item.id.label) else {
-            continue;
-        };
+        let spec = specs.require_allowed(&item.id.label)?;
         for rule in &spec.reference_rules {
             for matched in (rule.selector)(item)? {
                 let original = value_at_path(&item.data, &matched.path)

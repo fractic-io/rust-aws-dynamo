@@ -50,7 +50,7 @@ use crate::{
 
 pub mod backend;
 mod calculate_sort;
-mod collapse_helpers;
+pub(crate) mod collapse_helpers;
 mod expand_helpers;
 mod id_relations;
 mod metadata_helpers;

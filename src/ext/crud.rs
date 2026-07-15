@@ -7,10 +7,7 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoNotFound,
-    ext::bundling::{
-        self, DynamoBundle, DynamoBundleExternalRef, DynamoBundleSpec, DynamoImportResult,
-        IfExisting,
-    },
+    ext::bundling::{self, DynamoBundle, DynamoBundleSpec, DynamoImportResult, IfExisting},
     schema::{DynamoObject, NestingLogic, PkSk},
     util::{DynamoInsertPosition, DynamoUtil},
 };
@@ -26,16 +23,6 @@ pub trait DynamoCrudAlgorithms: Send + Sync {
     /// generic methods would make it non-object-safe.
     fn bundle_spec(&self, _id_label: &str) -> Option<DynamoBundleSpec> {
         None
-    }
-
-    /// Checks an application-specific external reference. Return `None` to use
-    /// the bundler's same-table `lookup_id` check, or to retain references that
-    /// do not provide a lookup ID.
-    async fn bundle_external_ref_exists(
-        &self,
-        _reference: &DynamoBundleExternalRef,
-    ) -> Result<Option<bool>, ServerError> {
-        Ok(None)
     }
 
     async fn recursive_delete_archived(&self, id: PkSk) -> Result<(), ServerError> {

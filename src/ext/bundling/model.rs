@@ -51,7 +51,6 @@ pub enum DynamoBundleStorage {
     #[default]
     Standard,
     /// A logical item that must be repartitioned on import.
-    #[serde(alias = "singleton_ext")]
     ExtPartitioned,
 }
 

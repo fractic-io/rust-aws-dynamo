@@ -7,6 +7,10 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoNotFound,
+    ext::bundling::{
+        self, DynamoBundle, DynamoBundleExternalRef, DynamoBundleSpec, DynamoImportResult,
+        IfExisting,
+    },
     schema::{DynamoObject, NestingLogic, PkSk},
     util::{DynamoInsertPosition, DynamoUtil},
 };
@@ -15,6 +19,24 @@ use crate::{
 #[async_trait]
 pub trait DynamoCrudAlgorithms: Send + Sync {
     async fn recursive_delete(&self, id: PkSk) -> Result<(), ServerError>;
+
+    /// Optional export/import behavior for a persisted object label.
+    ///
+    /// Dispatch is label-based because this trait is used as a trait object;
+    /// generic methods would make it non-object-safe.
+    fn bundle_spec(&self, _id_label: &str) -> Option<DynamoBundleSpec> {
+        None
+    }
+
+    /// Checks an application-specific external reference. Return `None` to use
+    /// the bundler's same-table `lookup_id` check, or to retain references that
+    /// do not provide a lookup ID.
+    async fn bundle_external_ref_exists(
+        &self,
+        _reference: &DynamoBundleExternalRef,
+    ) -> Result<Option<bool>, ServerError> {
+        Ok(None)
+    }
 
     async fn recursive_delete_archived(&self, id: PkSk) -> Result<(), ServerError> {
         // Default implementation: redirect to standard recursive delete.
@@ -959,5 +981,110 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
                 sk: format!("{}@{}[{}]", parent.id().sk, O::id_label(), key),
             },
         }
+    }
+}
+
+// Bundle operations.
+// ----------------------------------------------------------------------------
+
+macro_rules! impl_root_bundle_operations {
+    ($manager:ident, $algorithms:ident, $export:ident) => {
+        impl<O: DynamoObject> $manager<O> {
+            pub async fn $export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+                bundling::$export(&self.dynamo_util, &*self.$algorithms, item).await
+            }
+
+            pub async fn import(
+                &self,
+                bundle: DynamoBundle,
+                if_existing: IfExisting,
+            ) -> Result<DynamoImportResult, ServerError> {
+                bundling::import::<O>(
+                    &self.dynamo_util,
+                    &*self.$algorithms,
+                    None,
+                    bundle,
+                    if_existing,
+                )
+                .await
+            }
+        }
+    };
+}
+
+macro_rules! impl_child_bundle_operations {
+    ($manager:ident, $algorithms:ident, $export:ident) => {
+        impl<O: DynamoObject> $manager<O> {
+            pub async fn $export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+                bundling::$export(&self.dynamo_util, &*self.$algorithms, item).await
+            }
+
+            pub async fn import<P>(
+                &self,
+                parent: &P,
+                bundle: DynamoBundle,
+                if_existing: IfExisting,
+            ) -> Result<DynamoImportResult, ServerError>
+            where
+                P: DynamoObject + ParentOf<O>,
+            {
+                bundling::import::<O>(
+                    &self.dynamo_util,
+                    &*self.$algorithms,
+                    Some(parent.id()),
+                    bundle,
+                    if_existing,
+                )
+                .await
+            }
+        }
+    };
+}
+
+impl_root_bundle_operations!(ManageRootUnordered, _crud_algorithms, export);
+impl_root_bundle_operations!(
+    ManageRootUnorderedWithChildren,
+    crud_algorithms,
+    export_recursive
+);
+impl_root_bundle_operations!(ManageRootSingleton, _crud_algorithms, export);
+impl_root_bundle_operations!(ManageRootIndexedSingleton, _crud_algorithms, export);
+
+impl_child_bundle_operations!(ManageChildOrdered, _crud_algorithms, export);
+impl_child_bundle_operations!(
+    ManageChildOrderedWithChildren,
+    crud_algorithms,
+    export_recursive
+);
+impl_child_bundle_operations!(ManageChildUnordered, _crud_algorithms, export);
+impl_child_bundle_operations!(
+    ManageChildUnorderedWithChildren,
+    crud_algorithms,
+    export_recursive
+);
+impl_child_bundle_operations!(ManageChildSingleton, _crud_algorithms, export);
+impl_child_bundle_operations!(ManageChildIndexedSingleton, _crud_algorithms, export);
+
+impl<O: DynamoObject> ManageChildBatch<O> {
+    /// Imports a bundle below `parent`. Batch-optimized objects deliberately do
+    /// not expose item-level export because their logical items share physical
+    /// rows; export their owning object recursively instead.
+    pub async fn import<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        bundling::import::<O>(
+            &self.dynamo_util,
+            &*self._crud_algorithms,
+            Some(parent.id()),
+            bundle,
+            if_existing,
+        )
+        .await
     }
 }

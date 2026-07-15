@@ -7,6 +7,7 @@ pub use context::*;
 
 // Extensions:
 pub mod ext {
+    pub mod bundling;
     pub mod crud;
     pub mod ingress;
     pub mod macros;

@@ -22,7 +22,7 @@ use crate::{
 };
 
 use super::{
-    policy::{configured_bundles, DynamoBundleObjectConfig, DynamoBundleReferenceMatchTarget},
+    policy::{configured_bundles, DynamoBundleObjectPolicy, DynamoBundleReferenceMatchTarget},
     value::value_at_path,
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
     DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
@@ -261,7 +261,7 @@ async fn collect_items_with_policies(
 }
 
 fn omissions_for(
-    object: &DynamoBundleObjectConfig,
+    object: &DynamoBundleObjectPolicy,
     fixed: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
     label: &str,

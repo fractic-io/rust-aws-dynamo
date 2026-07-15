@@ -26,14 +26,11 @@ use super::{
 /// references on the returned object configuration.
 #[derive(Default)]
 pub struct DynamoBundlePolicy {
-    objects: HashMap<&'static str, DynamoBundleObjectConfig>,
+    objects: HashMap<&'static str, DynamoBundleObjectPolicy>,
 }
 
 /// Bundle behavior for one included Dynamo object type.
-///
-/// Values are created by [`DynamoBundleConfig::include`]; callers generally do
-/// not need to name this type.
-pub struct DynamoBundleObjectConfig {
+pub struct DynamoBundleObjectPolicy {
     id_logic: BundleIdLogic,
     renamed_fields: &'static [DynamoFieldRename],
     omitted_descendants: BTreeSet<String>,
@@ -80,7 +77,7 @@ impl DynamoBundlePolicy {
     ///
     /// Types sharing a persisted label share one configuration and must have
     /// identical ID and rename behavior.
-    pub fn include<O: DynamoObject>(&mut self) -> &mut DynamoBundleObjectConfig {
+    pub fn include<O: DynamoObject>(&mut self) -> &mut DynamoBundleObjectPolicy {
         self.include_label(
             O::id_label(),
             BundleIdLogic::from_object::<O>(),
@@ -93,9 +90,9 @@ impl DynamoBundlePolicy {
         label: &'static str,
         id_logic: BundleIdLogic,
         renamed_fields: &'static [DynamoFieldRename],
-    ) -> &mut DynamoBundleObjectConfig {
+    ) -> &mut DynamoBundleObjectPolicy {
         match self.objects.entry(label) {
-            Entry::Vacant(entry) => entry.insert(DynamoBundleObjectConfig {
+            Entry::Vacant(entry) => entry.insert(DynamoBundleObjectPolicy {
                 id_logic,
                 renamed_fields,
                 omitted_descendants: BTreeSet::new(),
@@ -117,7 +114,7 @@ impl DynamoBundlePolicy {
         }
     }
 
-    pub fn object<O: DynamoObject>(&self) -> Option<&DynamoBundleObjectConfig> {
+    pub fn object<O: DynamoObject>(&self) -> Option<&DynamoBundleObjectPolicy> {
         self.objects.get(O::id_label())
     }
 
@@ -129,11 +126,11 @@ impl DynamoBundlePolicy {
         self.objects.contains_key(label)
     }
 
-    pub(crate) fn get(&self, label: &str) -> Option<&DynamoBundleObjectConfig> {
+    pub(crate) fn get(&self, label: &str) -> Option<&DynamoBundleObjectPolicy> {
         self.objects.get(label)
     }
 
-    pub(crate) fn require(&self, label: &str) -> Result<&DynamoBundleObjectConfig, ServerError> {
+    pub(crate) fn require(&self, label: &str) -> Result<&DynamoBundleObjectPolicy, ServerError> {
         self.get(label).ok_or_else(|| {
             DynamoInvalidOperation::new(&format!(
                 "Dynamo object label `{label}` is not allowed in bundles"
@@ -142,7 +139,7 @@ impl DynamoBundlePolicy {
     }
 }
 
-impl DynamoBundleObjectConfig {
+impl DynamoBundleObjectPolicy {
     pub fn id_logic(&self) -> BundleIdLogic {
         self.id_logic
     }

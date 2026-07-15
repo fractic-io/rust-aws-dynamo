@@ -5,6 +5,9 @@ use crate::errors::DynamoInvalidOperation;
 
 use super::{BundleDataPath, BundleDataPathSegment};
 
+// Private interface.
+// ----------------------------------------------------------------------------
+
 pub(crate) fn value_at_path<'a>(root: &'a Value, path: &BundleDataPath) -> Option<&'a Value> {
     let mut value = root;
     for segment in path.segments() {
@@ -42,6 +45,9 @@ pub(crate) fn set_value_at_path(
 
     descend(root, path.segments(), replacement)
 }
+
+// Helpers.
+// ----------------------------------------------------------------------------
 
 fn invalid_value(details: &str) -> ServerError {
     DynamoInvalidOperation::new(&format!("invalid Dynamo bundle value: {details}"))

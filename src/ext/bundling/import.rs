@@ -38,6 +38,9 @@ use super::{
 
 const DELETE_CONCURRENCY: usize = 16;
 
+// Definitions.
+// ----------------------------------------------------------------------------
+
 struct MergePlan {
     puts: Vec<DynamoMap>,
     maintenance_deletes: Vec<PkSk>,
@@ -47,6 +50,9 @@ struct ExistingState {
     conflicts: HashSet<PkSk>,
     ext_partition_counts: HashMap<PkSk, usize>,
 }
+
+// Private interface.
+// ----------------------------------------------------------------------------
 
 pub(crate) async fn import_bundle<O: DynamoObject>(
     util: &DynamoUtil,
@@ -138,6 +144,54 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         warnings,
     })
 }
+
+pub(crate) fn build_id_map(
+    bundle: &DynamoBundle,
+    parent: Option<&PkSk>,
+    duplicate: bool,
+    root_id_logic: BundleIdLogic,
+) -> Result<HashMap<BundleId, PkSk>, ServerError> {
+    let mut result = HashMap::new();
+    let mut duplicate_ids = DuplicateIdGenerator::new();
+    let mut pending = bundle.items.iter().collect::<Vec<_>>();
+    while !pending.is_empty() {
+        let mut next = Vec::new();
+        let mut mapped_any = false;
+        for item in pending {
+            let parent_id = item.parent.as_ref().and_then(|id| result.get(id));
+            if item.parent.is_some() && parent_id.is_none() {
+                next.push(item);
+                continue;
+            }
+            let id_logic = if item.id == bundle.root {
+                root_id_logic
+            } else {
+                item.id_logic
+            };
+            let mapped = if item.id == bundle.root {
+                place_root(item, parent, duplicate, id_logic, &mut duplicate_ids)?
+            } else {
+                place_child(
+                    item,
+                    parent_id.expect("non-root bundle item has parent"),
+                    duplicate,
+                    id_logic,
+                    &mut duplicate_ids,
+                )?
+            };
+            result.insert(item.id.clone(), mapped);
+            mapped_any = true;
+        }
+        if !mapped_any {
+            return Err(invalid_bundle("bundle item parent graph was invalid"));
+        }
+        pending = next;
+    }
+    Ok(result)
+}
+
+// Internal.
+// ----------------------------------------------------------------------------
 
 async fn find_existing(
     util: &DynamoUtil,
@@ -376,50 +430,8 @@ async fn replace_stale(
     Ok(stale_roots.len())
 }
 
-pub(crate) fn build_id_map(
-    bundle: &DynamoBundle,
-    parent: Option<&PkSk>,
-    duplicate: bool,
-    root_id_logic: BundleIdLogic,
-) -> Result<HashMap<BundleId, PkSk>, ServerError> {
-    let mut result = HashMap::new();
-    let mut duplicate_ids = DuplicateIdGenerator::new();
-    let mut pending = bundle.items.iter().collect::<Vec<_>>();
-    while !pending.is_empty() {
-        let mut next = Vec::new();
-        let mut mapped_any = false;
-        for item in pending {
-            let parent_id = item.parent.as_ref().and_then(|id| result.get(id));
-            if item.parent.is_some() && parent_id.is_none() {
-                next.push(item);
-                continue;
-            }
-            let id_logic = if item.id == bundle.root {
-                root_id_logic
-            } else {
-                item.id_logic
-            };
-            let mapped = if item.id == bundle.root {
-                place_root(item, parent, duplicate, id_logic, &mut duplicate_ids)?
-            } else {
-                place_child(
-                    item,
-                    parent_id.expect("non-root bundle item has parent"),
-                    duplicate,
-                    id_logic,
-                    &mut duplicate_ids,
-                )?
-            };
-            result.insert(item.id.clone(), mapped);
-            mapped_any = true;
-        }
-        if !mapped_any {
-            return Err(invalid_bundle("bundle item parent graph was invalid"));
-        }
-        pending = next;
-    }
-    Ok(result)
-}
+// Helpers.
+// ----------------------------------------------------------------------------
 
 fn place_root(
     item: &DynamoBundleItem,

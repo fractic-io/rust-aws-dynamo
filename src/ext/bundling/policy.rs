@@ -53,18 +53,6 @@ pub struct DynamoBundleReferenceMatch {
     pub(crate) target: DynamoBundleReferenceMatchTarget,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum DynamoBundleReferenceMatchTarget {
-    Bundled {
-        target_label: String,
-        encoding: DynamoBundleReferenceEncoding,
-    },
-    External {
-        lookup_id: PkSk,
-        clear_path: BundleDataPath,
-    },
-}
-
 // Public interface.
 // ----------------------------------------------------------------------------
 
@@ -85,35 +73,6 @@ impl DynamoBundlePolicy {
         )
     }
 
-    pub(crate) fn include_label(
-        &mut self,
-        label: &'static str,
-        id_logic: BundleIdLogic,
-        renamed_fields: &'static [DynamoFieldRename],
-    ) -> &mut DynamoBundleObjectPolicy {
-        match self.objects.entry(label) {
-            Entry::Vacant(entry) => entry.insert(DynamoBundleObjectPolicy {
-                id_logic,
-                renamed_fields,
-                omitted_descendants: BTreeSet::new(),
-                reference_rules: Vec::new(),
-            }),
-            Entry::Occupied(entry) => {
-                assert_eq!(
-                    entry.get().id_logic,
-                    id_logic,
-                    "bundle types sharing label `{label}` used different ID behavior"
-                );
-                assert_eq!(
-                    entry.get().renamed_fields,
-                    renamed_fields,
-                    "bundle types sharing label `{label}` used different field renames"
-                );
-                entry.into_mut()
-            }
-        }
-    }
-
     pub fn object<O: DynamoObject>(&self) -> Option<&DynamoBundleObjectPolicy> {
         self.objects.get(O::id_label())
     }
@@ -124,18 +83,6 @@ impl DynamoBundlePolicy {
 
     pub fn contains_label(&self, label: &str) -> bool {
         self.objects.contains_key(label)
-    }
-
-    pub(crate) fn get(&self, label: &str) -> Option<&DynamoBundleObjectPolicy> {
-        self.objects.get(label)
-    }
-
-    pub(crate) fn require(&self, label: &str) -> Result<&DynamoBundleObjectPolicy, ServerError> {
-        self.get(label).ok_or_else(|| {
-            DynamoInvalidOperation::new(&format!(
-                "Dynamo object label `{label}` is not allowed in bundles"
-            ))
-        })
     }
 }
 
@@ -157,11 +104,6 @@ impl DynamoBundleObjectPolicy {
     /// root when it is registered separately.
     pub fn omit_descendants<O: DynamoObject>(&mut self) -> &mut Self {
         self.omit_descendant_label(O::id_label())
-    }
-
-    pub(crate) fn omit_descendant_label(&mut self, label: &str) -> &mut Self {
-        self.omitted_descendants.insert(label.to_owned());
-        self
     }
 
     /// Remaps a `ForeignRef` whose target must be present in the bundle.
@@ -222,42 +164,6 @@ impl DynamoBundleObjectPolicy {
         self.reference_rules.push(rule);
         self
     }
-
-    pub(crate) fn reference_rules(&self) -> &[DynamoBundleReferenceRule] {
-        &self.reference_rules
-    }
-
-    pub(crate) fn normalize_renamed_fields(&self, data: &mut Value) {
-        let Value::Object(data) = data else {
-            return;
-        };
-        for renamed in self.renamed_fields {
-            if renamed.is_noop() {
-                continue;
-            }
-            if data.contains_key(renamed.to) {
-                data.remove(renamed.from);
-            } else if let Some(value) = data.remove(renamed.from) {
-                data.insert(renamed.to.to_owned(), value);
-            }
-        }
-    }
-
-    fn bundled_reference<O: DynamoObject>(
-        &mut self,
-        path: &'static str,
-        encoding: DynamoBundleReferenceEncoding,
-    ) -> &mut Self {
-        let path = BundleDataPath::dotted(path);
-        let target_label = O::id_label().to_owned();
-        self.reference_rules
-            .push(DynamoBundleReferenceRule::at_bundled_path(
-                path,
-                encoding,
-                target_label,
-            ));
-        self
-    }
 }
 
 impl DynamoBundleReferenceRule {
@@ -271,27 +177,6 @@ impl DynamoBundleReferenceRule {
             selector: Arc::new(selector),
         }
     }
-
-    fn at_bundled_path(
-        path: BundleDataPath,
-        encoding: DynamoBundleReferenceEncoding,
-        target_label: String,
-    ) -> Self {
-        Self::custom(move |item| {
-            Ok(item
-                .value_at(&path)
-                .is_some()
-                .then(|| {
-                    DynamoBundleReferenceMatch::bundled_label(
-                        path.clone(),
-                        encoding,
-                        target_label.clone(),
-                    )
-                })
-                .into_iter()
-                .collect())
-        })
-    }
 }
 
 impl DynamoBundleReferenceMatch {
@@ -300,20 +185,6 @@ impl DynamoBundleReferenceMatch {
         encoding: DynamoBundleReferenceEncoding,
     ) -> Self {
         Self::bundled_label(path, encoding, O::id_label().to_owned())
-    }
-
-    pub(crate) fn bundled_label(
-        path: BundleDataPath,
-        encoding: DynamoBundleReferenceEncoding,
-        target_label: impl Into<String>,
-    ) -> Self {
-        Self {
-            path,
-            target: DynamoBundleReferenceMatchTarget::Bundled {
-                target_label: target_label.into(),
-                encoding,
-            },
-        }
     }
 
     pub fn external(path: BundleDataPath, lookup_id: PkSk) -> Self {
@@ -337,8 +208,90 @@ impl DynamoBundleReferenceMatch {
     }
 }
 
-// Internal.
+// Private interface.
 // ----------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub(crate) enum DynamoBundleReferenceMatchTarget {
+    Bundled {
+        target_label: String,
+        encoding: DynamoBundleReferenceEncoding,
+    },
+    External {
+        lookup_id: PkSk,
+        clear_path: BundleDataPath,
+    },
+}
+
+impl DynamoBundlePolicy {
+    pub(crate) fn include_label(
+        &mut self,
+        label: &'static str,
+        id_logic: BundleIdLogic,
+        renamed_fields: &'static [DynamoFieldRename],
+    ) -> &mut DynamoBundleObjectPolicy {
+        match self.objects.entry(label) {
+            Entry::Vacant(entry) => entry.insert(DynamoBundleObjectPolicy {
+                id_logic,
+                renamed_fields,
+                omitted_descendants: BTreeSet::new(),
+                reference_rules: Vec::new(),
+            }),
+            Entry::Occupied(entry) => {
+                assert_eq!(
+                    entry.get().id_logic,
+                    id_logic,
+                    "bundle types sharing label `{label}` used different ID behavior"
+                );
+                assert_eq!(
+                    entry.get().renamed_fields,
+                    renamed_fields,
+                    "bundle types sharing label `{label}` used different field renames"
+                );
+                entry.into_mut()
+            }
+        }
+    }
+
+    pub(crate) fn get(&self, label: &str) -> Option<&DynamoBundleObjectPolicy> {
+        self.objects.get(label)
+    }
+
+    pub(crate) fn require(&self, label: &str) -> Result<&DynamoBundleObjectPolicy, ServerError> {
+        self.get(label).ok_or_else(|| {
+            DynamoInvalidOperation::new(&format!(
+                "Dynamo object label `{label}` is not allowed in bundles"
+            ))
+        })
+    }
+}
+
+impl DynamoBundleObjectPolicy {
+    pub(crate) fn omit_descendant_label(&mut self, label: &str) -> &mut Self {
+        self.omitted_descendants.insert(label.to_owned());
+        self
+    }
+
+    pub(crate) fn reference_rules(&self) -> &[DynamoBundleReferenceRule] {
+        &self.reference_rules
+    }
+
+    pub(crate) fn normalize_renamed_fields(&self, data: &mut Value) {
+        let Value::Object(data) = data else {
+            return;
+        };
+        for renamed in self.renamed_fields {
+            if renamed.is_noop() {
+                continue;
+            }
+            if data.contains_key(renamed.to) {
+                data.remove(renamed.from);
+            } else if let Some(value) = data.remove(renamed.from) {
+                data.insert(renamed.to.to_owned(), value);
+            }
+        }
+    }
+}
 
 pub(crate) fn configured_bundles(algorithms: &dyn DynamoCrudAlgorithms) -> DynamoBundlePolicy {
     let mut bundles = DynamoBundlePolicy::new();
@@ -404,6 +357,66 @@ pub(crate) fn validate_import_policy(
         }
     }
     Ok(effective)
+}
+
+impl DynamoBundleReferenceMatch {
+    pub(crate) fn bundled_label(
+        path: BundleDataPath,
+        encoding: DynamoBundleReferenceEncoding,
+        target_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            path,
+            target: DynamoBundleReferenceMatchTarget::Bundled {
+                target_label: target_label.into(),
+                encoding,
+            },
+        }
+    }
+}
+
+// Helpers.
+// ----------------------------------------------------------------------------
+
+impl DynamoBundleObjectPolicy {
+    fn bundled_reference<O: DynamoObject>(
+        &mut self,
+        path: &'static str,
+        encoding: DynamoBundleReferenceEncoding,
+    ) -> &mut Self {
+        let path = BundleDataPath::dotted(path);
+        let target_label = O::id_label().to_owned();
+        self.reference_rules
+            .push(DynamoBundleReferenceRule::at_bundled_path(
+                path,
+                encoding,
+                target_label,
+            ));
+        self
+    }
+}
+
+impl DynamoBundleReferenceRule {
+    fn at_bundled_path(
+        path: BundleDataPath,
+        encoding: DynamoBundleReferenceEncoding,
+        target_label: String,
+    ) -> Self {
+        Self::custom(move |item| {
+            Ok(item
+                .value_at(&path)
+                .is_some()
+                .then(|| {
+                    DynamoBundleReferenceMatch::bundled_label(
+                        path.clone(),
+                        encoding,
+                        target_label.clone(),
+                    )
+                })
+                .into_iter()
+                .collect())
+        })
+    }
 }
 
 fn invalid_bundle(details: &str) -> ServerError {

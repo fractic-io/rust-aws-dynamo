@@ -8,6 +8,9 @@ use serde_json::Value;
 
 use crate::schema::{DynamoObject, IdLogic, PkSk};
 
+// Definitions.
+// ----------------------------------------------------------------------------
+
 /// A stable, database-independent identifier for an item in a bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct BundleId {
@@ -36,21 +39,6 @@ pub enum BundleIdLogic {
     Phantom,
 }
 
-impl BundleIdLogic {
-    pub fn from_object<O: DynamoObject>() -> Self {
-        match O::id_logic() {
-            IdLogic::Uuid => Self::Uuid,
-            IdLogic::Timestamp => Self::Timestamp,
-            IdLogic::Singleton => Self::Singleton,
-            IdLogic::IndexedSingleton(_) => Self::IndexedSingleton,
-            IdLogic::BatchOptimized { .. } => Self::BatchOptimized,
-            IdLogic::SingletonExt => Self::SingletonExt,
-            IdLogic::IndexedSingletonExt(_) => Self::IndexedSingletonExt,
-            IdLogic::Phantom => Self::Phantom,
-        }
-    }
-}
-
 /// A portable snapshot of one Dynamo object and its stored descendants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamoBundle {
@@ -66,11 +54,6 @@ pub struct DynamoBundle {
     pub references: Vec<DynamoBundleReference>,
 }
 
-impl DynamoBundle {
-    /// Version of the first public Dynamo bundle format.
-    pub const VERSION: u32 = 1;
-}
-
 /// One logical Dynamo object. Batch-optimized records remain opaque values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamoBundleItem {
@@ -83,13 +66,6 @@ pub struct DynamoBundleItem {
     pub storage: DynamoBundleStorage,
     /// Object-shaped Serde data without `pk` or `sk`.
     pub data: Value,
-}
-
-impl DynamoBundleItem {
-    /// Reads a value selected by a bundle reference path.
-    pub fn value_at(&self, path: &BundleDataPath) -> Option<&Value> {
-        super::value::value_at_path(&self.data, path)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,65 +88,6 @@ pub enum BundleNesting {
 /// A location within the serialized data of a [`DynamoBundleItem`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BundleDataPath(Vec<BundleDataPathSegment>);
-
-impl BundleDataPath {
-    /// Selects fields using a dot-separated path such as
-    /// `transformation.prompt_template`.
-    pub fn dotted(path: impl AsRef<str>) -> Self {
-        let fields = path.as_ref().split('.').collect::<Vec<_>>();
-        assert!(
-            !fields.is_empty() && fields.iter().all(|field| !field.is_empty()),
-            "bundle data paths must contain non-empty dot-separated fields"
-        );
-        Self(
-            fields
-                .into_iter()
-                .map(|field| BundleDataPathSegment::Field(field.to_owned()))
-                .collect(),
-        )
-    }
-
-    pub fn field(field: impl Into<String>) -> Self {
-        Self(vec![BundleDataPathSegment::Field(field.into())])
-    }
-
-    pub fn then_field(mut self, field: impl Into<String>) -> Self {
-        self.0.push(BundleDataPathSegment::Field(field.into()));
-        self
-    }
-
-    pub fn then_index(mut self, index: usize) -> Self {
-        self.0.push(BundleDataPathSegment::Index(index));
-        self
-    }
-
-    pub(crate) fn segments(&self) -> &[BundleDataPathSegment] {
-        &self.0
-    }
-
-    pub(crate) fn is_prefix_of(&self, other: &Self) -> bool {
-        self.0.len() <= other.0.len() && other.0.starts_with(&self.0)
-    }
-}
-
-impl fmt::Display for BundleDataPath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for segment in &self.0 {
-            match segment {
-                BundleDataPathSegment::Field(field) => write!(f, ".{field}")?,
-                BundleDataPathSegment::Index(index) => write!(f, "[{index}]")?,
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum BundleDataPathSegment {
-    Field(String),
-    Index(usize),
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -229,4 +146,98 @@ pub struct DynamoImportResult {
 #[serde(rename_all = "snake_case")]
 pub enum DynamoImportWarning {
     MissingExternalReference,
+}
+
+// Public interface.
+// ----------------------------------------------------------------------------
+
+impl BundleIdLogic {
+    pub fn from_object<O: DynamoObject>() -> Self {
+        match O::id_logic() {
+            IdLogic::Uuid => Self::Uuid,
+            IdLogic::Timestamp => Self::Timestamp,
+            IdLogic::Singleton => Self::Singleton,
+            IdLogic::IndexedSingleton(_) => Self::IndexedSingleton,
+            IdLogic::BatchOptimized { .. } => Self::BatchOptimized,
+            IdLogic::SingletonExt => Self::SingletonExt,
+            IdLogic::IndexedSingletonExt(_) => Self::IndexedSingletonExt,
+            IdLogic::Phantom => Self::Phantom,
+        }
+    }
+}
+
+impl DynamoBundle {
+    /// Version of the first public Dynamo bundle format.
+    pub const VERSION: u32 = 1;
+}
+
+impl DynamoBundleItem {
+    /// Reads a value selected by a bundle reference path.
+    pub fn value_at(&self, path: &BundleDataPath) -> Option<&Value> {
+        super::value::value_at_path(&self.data, path)
+    }
+}
+
+impl BundleDataPath {
+    /// Selects fields using a dot-separated path such as
+    /// `transformation.prompt_template`.
+    pub fn dotted(path: impl AsRef<str>) -> Self {
+        let fields = path.as_ref().split('.').collect::<Vec<_>>();
+        assert!(
+            !fields.is_empty() && fields.iter().all(|field| !field.is_empty()),
+            "bundle data paths must contain non-empty dot-separated fields"
+        );
+        Self(
+            fields
+                .into_iter()
+                .map(|field| BundleDataPathSegment::Field(field.to_owned()))
+                .collect(),
+        )
+    }
+
+    pub fn field(field: impl Into<String>) -> Self {
+        Self(vec![BundleDataPathSegment::Field(field.into())])
+    }
+
+    pub fn then_field(mut self, field: impl Into<String>) -> Self {
+        self.0.push(BundleDataPathSegment::Field(field.into()));
+        self
+    }
+
+    pub fn then_index(mut self, index: usize) -> Self {
+        self.0.push(BundleDataPathSegment::Index(index));
+        self
+    }
+}
+
+impl fmt::Display for BundleDataPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for segment in &self.0 {
+            match segment {
+                BundleDataPathSegment::Field(field) => write!(f, ".{field}")?,
+                BundleDataPathSegment::Index(index) => write!(f, "[{index}]")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+// Private interface.
+// ----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BundleDataPathSegment {
+    Field(String),
+    Index(usize),
+}
+
+impl BundleDataPath {
+    pub(crate) fn segments(&self) -> &[BundleDataPathSegment] {
+        &self.0
+    }
+
+    pub(crate) fn is_prefix_of(&self, other: &Self) -> bool {
+        self.0.len() <= other.0.len() && other.0.starts_with(&self.0)
+    }
 }

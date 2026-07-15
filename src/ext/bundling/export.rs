@@ -31,6 +31,9 @@ use super::{
 
 const QUERY_CONCURRENCY: usize = 16;
 
+// Definitions.
+// ----------------------------------------------------------------------------
+
 #[derive(Clone)]
 pub(crate) struct CollectedItem {
     pub id: PkSk,
@@ -39,6 +42,9 @@ pub(crate) struct CollectedItem {
     pub rows: Vec<DynamoMap>,
     omitted_descendants: BTreeSet<String>,
 }
+
+// Private interface.
+// ----------------------------------------------------------------------------
 
 pub(crate) async fn export_from_config(
     util: &DynamoUtil,
@@ -84,6 +90,47 @@ pub(crate) async fn export_with_omissions(
     )
     .await
 }
+
+pub(crate) async fn collect_items(
+    util: &DynamoUtil,
+    bundles: &DynamoBundlePolicy,
+    root: &PkSk,
+    root_nesting: BundleNesting,
+    recursive: bool,
+    fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
+) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
+    collect_items_with_policies(
+        util,
+        bundles,
+        root,
+        root_nesting,
+        recursive,
+        fixed_omissions,
+    )
+    .await
+}
+
+pub(crate) fn logical_base_id(id: &PkSk) -> PkSk {
+    PkSk {
+        pk: id.pk.clone(),
+        sk: strip_ext_suffix(&id.sk).to_string(),
+    }
+}
+
+pub(crate) fn terminal_ref(sk: &str) -> &str {
+    let sk = strip_ext_suffix(sk);
+    if let Some(at) = sk.rfind('@') {
+        let singleton = &sk[at + 1..];
+        if let (Some(open), Some(close)) = (singleton.find('['), singleton.find(']')) {
+            return &singleton[open + 1..close];
+        }
+        return "";
+    }
+    sk.rsplit_once('#').map(|(_, value)| value).unwrap_or(sk)
+}
+
+// Internal.
+// ----------------------------------------------------------------------------
 
 async fn export_inner(
     util: &DynamoUtil,
@@ -157,25 +204,6 @@ async fn export_inner(
         bundle.references = collect_references(bundles, &bundle, &by_pk_sk)?;
     }
     Ok(bundle)
-}
-
-pub(crate) async fn collect_items(
-    util: &DynamoUtil,
-    bundles: &DynamoBundlePolicy,
-    root: &PkSk,
-    root_nesting: BundleNesting,
-    recursive: bool,
-    fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
-) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
-    collect_items_with_policies(
-        util,
-        bundles,
-        root,
-        root_nesting,
-        recursive,
-        fixed_omissions,
-    )
-    .await
 }
 
 async fn collect_items_with_policies(
@@ -259,6 +287,9 @@ async fn collect_items_with_policies(
     }
     Ok((collected, recorded))
 }
+
+// Helpers.
+// ----------------------------------------------------------------------------
 
 fn omissions_for(
     object: &DynamoBundleObjectPolicy,
@@ -502,28 +533,9 @@ async fn raw_query(
         .collect())
 }
 
-pub(crate) fn logical_base_id(id: &PkSk) -> PkSk {
-    PkSk {
-        pk: id.pk.clone(),
-        sk: strip_ext_suffix(&id.sk).to_string(),
-    }
-}
-
 fn is_inline_descendant(sk: &str, parent_sk: &str) -> bool {
     sk.strip_prefix(parent_sk)
         .is_some_and(|suffix| suffix.starts_with('#') || suffix.starts_with('@'))
-}
-
-pub(crate) fn terminal_ref(sk: &str) -> &str {
-    let sk = strip_ext_suffix(sk);
-    if let Some(at) = sk.rfind('@') {
-        let singleton = &sk[at + 1..];
-        if let (Some(open), Some(close)) = (singleton.find('['), singleton.find(']')) {
-            return &singleton[open + 1..close];
-        }
-        return "";
-    }
-    sk.rsplit_once('#').map(|(_, value)| value).unwrap_or(sk)
 }
 
 fn invalid_bundle(details: &str) -> ServerError {

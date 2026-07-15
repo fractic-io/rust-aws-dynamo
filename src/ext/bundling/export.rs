@@ -178,6 +178,28 @@ async fn export_bundle(
     Ok(bundle)
 }
 
+pub(crate) fn logical_base_id(id: &PkSk) -> PkSk {
+    PkSk {
+        pk: id.pk.clone(),
+        sk: strip_ext_suffix(&id.sk).to_string(),
+    }
+}
+
+pub(crate) fn terminal_ref(sk: &str) -> &str {
+    let sk = strip_ext_suffix(sk);
+    if let Some(at) = sk.rfind('@') {
+        let singleton = &sk[at + 1..];
+        if let (Some(open), Some(close)) = (singleton.find('['), singleton.find(']')) {
+            return &singleton[open + 1..close];
+        }
+        return "";
+    }
+    sk.rsplit_once('#').map_or(sk, |(_, value)| value)
+}
+
+// Item / ref collection.
+// ----------------------------------------------------------------------------
+
 pub(crate) async fn collect_bundle_items(
     util: &DynamoUtil,
     bundles: &DynamoBundlePolicy,
@@ -260,23 +282,51 @@ pub(crate) async fn collect_bundle_items(
     Ok((collected, recorded))
 }
 
-pub(crate) fn logical_base_id(id: &PkSk) -> PkSk {
-    PkSk {
-        pk: id.pk.clone(),
-        sk: strip_ext_suffix(&id.sk).to_string(),
-    }
-}
-
-pub(crate) fn terminal_ref(sk: &str) -> &str {
-    let sk = strip_ext_suffix(sk);
-    if let Some(at) = sk.rfind('@') {
-        let singleton = &sk[at + 1..];
-        if let (Some(open), Some(close)) = (singleton.find('['), singleton.find(']')) {
-            return &singleton[open + 1..close];
+fn collect_references(
+    bundles: &DynamoBundlePolicy,
+    bundle: &DynamoBundle,
+    original_ids: &HashMap<PkSk, BundleId>,
+) -> Result<Vec<DynamoBundleReference>, ServerError> {
+    let mut references = Vec::new();
+    for item in &bundle.items {
+        let object = bundles.require(&item.id.label)?;
+        for rule in object.reference_rules() {
+            for matched in (rule.selector)(item)? {
+                let original = item
+                    .value_at(&matched.path)
+                    .cloned()
+                    .ok_or_else(|| invalid_bundle("reference path was missing"))?;
+                let target = match matched.target {
+                    DynamoBundleReferenceMatchTarget::Bundled {
+                        target_label,
+                        encoding,
+                    } => {
+                        let id = find_bundled_target(
+                            bundle,
+                            original_ids,
+                            &original,
+                            encoding,
+                            Some(&target_label),
+                        )?;
+                        DynamoBundleReferenceTarget::Bundled { id, encoding }
+                    }
+                    DynamoBundleReferenceMatchTarget::External {
+                        lookup_id,
+                        clear_path,
+                    } => DynamoBundleReferenceTarget::External {
+                        lookup_id,
+                        clear_path,
+                    },
+                };
+                references.push(DynamoBundleReference {
+                    source: item.id.clone(),
+                    path: matched.path,
+                    target,
+                });
+            }
         }
-        return "";
     }
-    sk.rsplit_once('#').map_or(sk, |(_, value)| value)
+    Ok(references)
 }
 
 // Helpers.
@@ -378,53 +428,6 @@ fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
     data.remove(AUTO_FIELDS_CREATED_AT);
     data.remove(AUTO_FIELDS_UPDATED_AT);
     Ok(Value::Object(data))
-}
-
-fn collect_references(
-    bundles: &DynamoBundlePolicy,
-    bundle: &DynamoBundle,
-    original_ids: &HashMap<PkSk, BundleId>,
-) -> Result<Vec<DynamoBundleReference>, ServerError> {
-    let mut references = Vec::new();
-    for item in &bundle.items {
-        let object = bundles.require(&item.id.label)?;
-        for rule in object.reference_rules() {
-            for matched in (rule.selector)(item)? {
-                let original = item
-                    .value_at(&matched.path)
-                    .cloned()
-                    .ok_or_else(|| invalid_bundle("reference path was missing"))?;
-                let target = match matched.target {
-                    DynamoBundleReferenceMatchTarget::Bundled {
-                        target_label,
-                        encoding,
-                    } => {
-                        let id = find_bundled_target(
-                            bundle,
-                            original_ids,
-                            &original,
-                            encoding,
-                            Some(&target_label),
-                        )?;
-                        DynamoBundleReferenceTarget::Bundled { id, encoding }
-                    }
-                    DynamoBundleReferenceMatchTarget::External {
-                        lookup_id,
-                        clear_path,
-                    } => DynamoBundleReferenceTarget::External {
-                        lookup_id,
-                        clear_path,
-                    },
-                };
-                references.push(DynamoBundleReference {
-                    source: item.id.clone(),
-                    path: matched.path,
-                    target,
-                });
-            }
-        }
-    }
-    Ok(references)
 }
 
 fn find_bundled_target(

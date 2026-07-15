@@ -5,8 +5,7 @@ use std::{
 
 use aws_sdk_dynamodb::{
     operation::{
-        batch_write_item::{BatchWriteItemError, BatchWriteItemOutput},
-        delete_item::DeleteItemError,
+        batch_write_item::BatchWriteItemError, delete_item::DeleteItemError,
         update_item::UpdateItemError,
     },
     types::AttributeValue,
@@ -55,6 +54,7 @@ pub(crate) mod collapse_helpers;
 mod expand_helpers;
 mod id_relations;
 mod metadata_helpers;
+mod raw_batch_helpers;
 mod rename_safety_helpers;
 mod test;
 mod update_helpers;
@@ -79,8 +79,10 @@ pub const EXPAND_DATA_RESERVED_KEY: &str = "..";
 pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
 pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
 
-const MAX_BATCH_WRITE_RETRIES: usize = 3;
-const BATCH_WRITE_RETRY_BASE_DELAY_MS: u64 = 25;
+use raw_batch_helpers::{
+    unprocessed_delete_keys, unprocessed_put_items, wait_before_batch_write_retry,
+    MAX_BATCH_WRITE_RETRIES,
+};
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -1306,56 +1308,4 @@ impl DynamoUtil {
         }
         Ok(())
     }
-}
-
-fn unprocessed_delete_keys(
-    response: &BatchWriteItemOutput,
-    table: &str,
-) -> Result<Vec<DynamoMap>, ServerError> {
-    response
-        .unprocessed_items()
-        .and_then(|items| items.get(table))
-        .into_iter()
-        .flatten()
-        .map(|request| {
-            request
-                .delete_request()
-                .map(|delete| delete.key().clone())
-                .ok_or_else(|| {
-                    CriticalError::new(
-                        "DynamoDB returned a non-delete request for an unprocessed batch delete",
-                    )
-                })
-        })
-        .collect()
-}
-
-fn unprocessed_put_items(
-    response: &BatchWriteItemOutput,
-    table: &str,
-) -> Result<Vec<DynamoMap>, ServerError> {
-    response
-        .unprocessed_items()
-        .and_then(|items| items.get(table))
-        .into_iter()
-        .flatten()
-        .map(|request| {
-            request
-                .put_request()
-                .map(|put| put.item().clone())
-                .ok_or_else(|| {
-                    CriticalError::new(
-                        "DynamoDB returned a non-put request for an unprocessed batch put",
-                    )
-                })
-        })
-        .collect()
-}
-
-async fn wait_before_batch_write_retry(attempt: usize) {
-    let multiplier = 1_u64 << attempt;
-    tokio::time::sleep(std::time::Duration::from_millis(
-        BATCH_WRITE_RETRY_BASE_DELAY_MS * multiplier,
-    ))
-    .await;
 }

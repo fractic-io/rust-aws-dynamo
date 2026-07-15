@@ -34,7 +34,7 @@ use crate::{
 use super::{
     export::export_from_specs,
     import::{build_id_map, import_bundle},
-    policy::{effective_import_exclusions, BundlePolicyCache},
+    policy::{validate_import_policy, BundlePolicyCache},
     BundleId, BundleIdLogic, BundleNesting, BundleValuePath, DynamoBundle, DynamoBundleItem,
     DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
     DynamoBundleReferenceTarget, DynamoBundleSpec, DynamoBundleStorage, DynamoImportWarning,
@@ -79,6 +79,7 @@ impl DynamoCrudAlgorithms for TestAlgorithms {
                 .into(),
             "BIG" => DynamoBundleSpec::new(BundleIdLogic::SingletonExt).into(),
             "BATCH" => DynamoBundleSpec::new(BundleIdLogic::BatchOptimized).into(),
+            "SETTINGS" => DynamoBundleSpec::new(BundleIdLogic::Singleton).into(),
             "EXCLUDED" => DynamoBundlePolicy::ExcludeSubtree,
             "DENIED" => DynamoBundlePolicy::Reject,
             _ => DynamoBundleSpec::new(BundleIdLogic::Uuid).into(),
@@ -400,18 +401,24 @@ fn import_exclusions_are_the_strict_union_and_require_present_owner_labels() {
         items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
         references: vec![],
     };
-    let effective =
-        effective_import_exclusions(&bundle, &mut BundlePolicyCache::new(&TestAlgorithms)).unwrap();
+    let effective = validate_import_policy(
+        &bundle,
+        &mut BundlePolicyCache::new(&TestAlgorithms),
+        BundleIdLogic::Uuid,
+    )
+    .unwrap();
     assert_eq!(
         effective["ROOTOBJ"],
         BTreeSet::from(["BUNDLE_ONLY".into(), "RECALC".into()])
     );
 
     bundle.exclusions = BTreeMap::from([("ABSENT_OWNER".into(), BTreeSet::from(["CHILD".into()]))]);
-    assert!(
-        effective_import_exclusions(&bundle, &mut BundlePolicyCache::new(&TestAlgorithms),)
-            .is_err()
-    );
+    assert!(validate_import_policy(
+        &bundle,
+        &mut BundlePolicyCache::new(&TestAlgorithms),
+        BundleIdLogic::Uuid,
+    )
+    .is_err());
 }
 
 #[test]
@@ -427,11 +434,64 @@ fn import_rejects_excluded_and_denied_bundle_items() {
             references: vec![],
         };
 
-        assert!(
-            effective_import_exclusions(&bundle, &mut BundlePolicyCache::new(&TestAlgorithms))
-                .is_err()
-        );
+        assert!(validate_import_policy(
+            &bundle,
+            &mut BundlePolicyCache::new(&TestAlgorithms),
+            BundleIdLogic::Uuid,
+        )
+        .is_err());
     }
+}
+
+#[test]
+fn import_rejects_id_logic_metadata_that_disagrees_with_local_policy() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let child = id(1, "CHILD", "CHILD#child");
+    let mut child_item = bundle_item(
+        child,
+        Some(root.clone()),
+        BundleNesting::TopLevel,
+        json!({}),
+    );
+    child_item.id_logic = BundleIdLogic::Timestamp;
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        root: root.clone(),
+        recursive: true,
+        exclusions: BTreeMap::new(),
+        items: vec![
+            bundle_item(root, None, BundleNesting::Root, json!({})),
+            child_item,
+        ],
+        references: vec![],
+    };
+
+    assert!(validate_import_policy(
+        &bundle,
+        &mut BundlePolicyCache::new(&TestAlgorithms),
+        BundleIdLogic::Uuid,
+    )
+    .is_err());
+}
+
+#[test]
+fn import_rejects_root_policy_that_disagrees_with_crud_type() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        root: root.clone(),
+        recursive: false,
+        exclusions: BTreeMap::new(),
+        items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
+        references: vec![],
+    };
+
+    assert!(validate_import_policy(
+        &bundle,
+        &mut BundlePolicyCache::new(&TestAlgorithms),
+        BundleIdLogic::Timestamp,
+    )
+    .is_err());
 }
 
 #[test]
@@ -954,17 +1014,19 @@ async fn replace_deletes_excluded_descendants_when_their_managed_parent_is_remov
 #[allow(clippy::result_large_err)]
 async fn duplicate_rejects_a_conflicting_singleton_root_before_writing() {
     let root = id(0, "SETTINGS", "@SETTINGS");
+    let mut root_item = bundle_item(
+        root.clone(),
+        None,
+        BundleNesting::Root,
+        json!({"value": "settings"}),
+    );
+    root_item.id_logic = BundleIdLogic::Singleton;
     let bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
         root: root.clone(),
         recursive: false,
         exclusions: BTreeMap::new(),
-        items: vec![bundle_item(
-            root,
-            None,
-            BundleNesting::Root,
-            json!({"value": "settings"}),
-        )],
+        items: vec![root_item],
         references: vec![],
     };
     let mut backend = MockDynamoBackend::new();

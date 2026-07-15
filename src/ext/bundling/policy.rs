@@ -4,7 +4,7 @@ use fractic_server_error::ServerError;
 
 use crate::{errors::DynamoInvalidOperation, ext::crud::DynamoCrudAlgorithms};
 
-use super::{DynamoBundle, DynamoBundlePolicy, DynamoBundleSpec};
+use super::{BundleIdLogic, DynamoBundle, DynamoBundlePolicy, DynamoBundleSpec};
 
 /// Loads each label's application configuration at most once per operation.
 pub(crate) struct BundlePolicyCache<'a> {
@@ -42,12 +42,14 @@ impl<'a> BundlePolicyCache<'a> {
     }
 }
 
-/// Combines the portable policy with the current application's policy. The
-/// union is intentionally the stricter policy: neither source can cause a
-/// subtree protected by the other source to be managed by Replace.
-pub(crate) fn effective_import_exclusions(
+/// Validates portable ID behavior against the importing application and
+/// combines both sources' exclusion policies. The exclusion union is
+/// intentionally stricter: neither source can cause a subtree protected by the
+/// other source to be managed by Replace.
+pub(crate) fn validate_import_policy(
     bundle: &DynamoBundle,
     policies: &mut BundlePolicyCache<'_>,
+    root_id_logic: BundleIdLogic,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, ServerError> {
     let labels = bundle
         .items
@@ -68,15 +70,33 @@ pub(crate) fn effective_import_exclusions(
     }
 
     for label in labels {
-        let local = policies
-            .require_included(label)?
-            .excluded_subtrees()
-            .clone();
-        if !local.is_empty() {
+        let local = policies.require_included(label)?;
+        let exclusions = local.excluded_subtrees().clone();
+        if !exclusions.is_empty() {
             effective
                 .entry(label.to_string())
                 .or_default()
-                .extend(local);
+                .extend(exclusions);
+        }
+    }
+
+    for item in &bundle.items {
+        let local_id_logic = policies.require_included(&item.id.label)?.id_logic();
+        let expected = if item.id == bundle.root {
+            if local_id_logic != root_id_logic {
+                return Err(invalid_bundle(&format!(
+                    "root ID logic {root_id_logic:?} did not match local policy {local_id_logic:?}"
+                )));
+            }
+            root_id_logic
+        } else {
+            local_id_logic
+        };
+        if item.id_logic != expected {
+            return Err(invalid_bundle(&format!(
+                "item label `{}` used ID logic {:?}, but the local policy requires {expected:?}",
+                item.id.label, item.id_logic
+            )));
         }
     }
     Ok(effective)

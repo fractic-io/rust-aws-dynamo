@@ -28,7 +28,7 @@ use crate::{
 
 use super::{
     export::{collect_items, export_with_policy, terminal_ref},
-    policy::{effective_import_exclusions, BundlePolicyCache},
+    policy::{validate_import_policy, BundlePolicyCache},
     root_nesting,
     value::{set_value_at_path, value_at_path},
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
@@ -66,10 +66,12 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
             "bundle root type or nesting did not match the importing CRUD wrapper",
         ));
     }
-    let effective_exclusions =
-        effective_import_exclusions(&bundle, &mut BundlePolicyCache::new(algorithms))?;
-
     let root_id_logic = BundleIdLogic::from_object::<O>();
+    let effective_exclusions = validate_import_policy(
+        &bundle,
+        &mut BundlePolicyCache::new(algorithms),
+        root_id_logic,
+    )?;
     let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
     let existing = find_existing(util, &preserved_ids).await?;
     let duplicated = !existing.conflicts.is_empty() && matches!(if_existing, IfExisting::Duplicate);

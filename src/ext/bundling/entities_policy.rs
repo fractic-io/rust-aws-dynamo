@@ -142,16 +142,33 @@ impl DynamoBundleObjectPolicy {
         self
     }
 
-    /// Preserves a same-table `PkSk` when it exists at the destination and
-    /// clears it with a warning when it does not.
-    pub fn external_pksk(&mut self, path: &'static str) -> &mut Self {
+    /// Preserves an out-of-bundle, same-table `PkSk` when it exists at the
+    /// destination and clears it with a warning when it does not.
+    pub fn in_table_pksk(&mut self, path: &'static str) -> &mut Self {
         let path = BundleDataPath::dotted(path);
         self.reference_rules
             .push(DynamoBundleReferenceRule::custom(move |item| {
                 let Some(raw) = item.value_at(&path).and_then(Value::as_str) else {
                     return Ok(Vec::new());
                 };
-                Ok(vec![DynamoBundleReferenceMatch::external(
+                Ok(vec![DynamoBundleReferenceMatch::in_table(
+                    path.clone(),
+                    PkSk::from_string(raw)?,
+                )])
+            }));
+        self
+    }
+
+    /// Preserves an out-of-table `PkSk` on Merge and Replace without checking
+    /// it, and clears it with a warning when importing as New.
+    pub fn out_of_table_pksk(&mut self, path: &'static str) -> &mut Self {
+        let path = BundleDataPath::dotted(path);
+        self.reference_rules
+            .push(DynamoBundleReferenceRule::custom(move |item| {
+                let Some(raw) = item.value_at(&path).and_then(Value::as_str) else {
+                    return Ok(Vec::new());
+                };
+                Ok(vec![DynamoBundleReferenceMatch::out_of_table(
                     path.clone(),
                     PkSk::from_string(raw)?,
                 )])
@@ -187,20 +204,40 @@ impl DynamoBundleReferenceMatch {
         Self::bundled_label(path, encoding, O::id_label().to_owned())
     }
 
-    pub fn external(path: BundleDataPath, lookup_id: PkSk) -> Self {
-        Self::external_clearing(path.clone(), lookup_id, path)
+    pub fn in_table(path: BundleDataPath, lookup_id: PkSk) -> Self {
+        Self::in_table_clearing(path.clone(), lookup_id, path)
     }
 
-    /// Marks an external reference whose absence clears a containing optional
+    /// Marks an in-table reference whose absence clears a containing optional
     /// value, such as an optional tuple holding more than one reference.
-    pub fn external_clearing(
+    pub fn in_table_clearing(
         path: BundleDataPath,
         lookup_id: PkSk,
         clear_path: BundleDataPath,
     ) -> Self {
         Self {
             path,
-            target: DynamoBundleReferenceMatchTarget::External {
+            target: DynamoBundleReferenceMatchTarget::InTable {
+                lookup_id,
+                clear_path,
+            },
+        }
+    }
+
+    pub fn out_of_table(path: BundleDataPath, lookup_id: PkSk) -> Self {
+        Self::out_of_table_clearing(path.clone(), lookup_id, path)
+    }
+
+    /// Marks an out-of-table reference whose containing optional value is
+    /// cleared when importing as New.
+    pub fn out_of_table_clearing(
+        path: BundleDataPath,
+        lookup_id: PkSk,
+        clear_path: BundleDataPath,
+    ) -> Self {
+        Self {
+            path,
+            target: DynamoBundleReferenceMatchTarget::OutOfTable {
                 lookup_id,
                 clear_path,
             },
@@ -217,7 +254,11 @@ pub(crate) enum DynamoBundleReferenceMatchTarget {
         target_label: String,
         encoding: DynamoBundleReferenceEncoding,
     },
-    External {
+    InTable {
+        lookup_id: PkSk,
+        clear_path: BundleDataPath,
+    },
+    OutOfTable {
         lookup_id: PkSk,
         clear_path: BundleDataPath,
     },

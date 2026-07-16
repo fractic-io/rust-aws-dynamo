@@ -52,6 +52,11 @@ struct ExistingState {
     ext_partition_counts: HashMap<PkSk, usize>,
 }
 
+struct ReplacePlan {
+    delete_ids: HashSet<PkSk>,
+    stale_root_count: usize,
+}
+
 // Private interface.
 // ----------------------------------------------------------------------------
 
@@ -137,8 +142,19 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     } else {
         None
     };
+    let replace_plan = match &old {
+        Some(old) => Some(build_replace_plan(util, &policy, parent, old, &id_map).await?),
+        None => None,
+    };
 
-    let warnings = resolve_references(util, &mut bundle, &id_map).await?;
+    let warnings = resolve_references(
+        util,
+        &mut bundle,
+        &id_map,
+        created_new,
+        replace_plan.as_ref().map(|plan| &plan.delete_ids),
+    )
+    .await?;
     if created_new {
         prepare_new_root_data::<O>(util, parent, &mut bundle, new_position).await?;
     }
@@ -152,8 +168,12 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         .await?;
     util.raw_batch_put_item(write_plan.puts).await?;
 
-    let deleted_subtree_roots = match old {
-        Some(old) => replace_stale(util, &policy, parent, &old, &id_map).await?,
+    let deleted_subtree_roots = match replace_plan {
+        Some(plan) => {
+            util.raw_batch_delete_ids(plan.delete_ids.into_iter().collect())
+                .await?;
+            plan.stale_root_count
+        }
         None => 0,
     };
 
@@ -250,25 +270,31 @@ async fn resolve_references(
     util: &DynamoUtil,
     bundle: &mut DynamoBundle,
     id_map: &HashMap<BundleId, PkSk>,
+    created_new: bool,
+    pending_deletes: Option<&HashSet<PkSk>>,
 ) -> Result<Vec<DynamoImportWarning>, ServerError> {
-    let external_ids = bundle
+    let in_table_ids = bundle
         .references
         .iter()
         .filter_map(|reference| match &reference.target {
-            DynamoBundleReferenceTarget::External { lookup_id, .. } => Some(lookup_id.clone()),
-            DynamoBundleReferenceTarget::Bundled { .. } => None,
+            DynamoBundleReferenceTarget::InTable { lookup_id, .. } => Some(lookup_id.clone()),
+            DynamoBundleReferenceTarget::Bundled { .. }
+            | DynamoBundleReferenceTarget::OutOfTable { .. } => None,
         })
         .collect::<HashSet<_>>();
-    let mut existing_external = if external_ids.is_empty() {
+    let mut existing_in_table = if in_table_ids.is_empty() {
         HashSet::new()
     } else {
-        util.raw_batch_get_ids(external_ids.into_iter().collect(), Some("pk, sk".into()))
+        util.raw_batch_get_ids(in_table_ids.into_iter().collect(), Some("pk, sk".into()))
             .await?
             .iter()
             .map(PkSk::from_map)
             .collect::<Result<HashSet<_>, _>>()?
     };
-    existing_external.extend(id_map.values().cloned());
+    if let Some(pending_deletes) = pending_deletes {
+        existing_in_table.retain(|id| !pending_deletes.contains(id));
+    }
+    existing_in_table.extend(id_map.values().cloned());
 
     let source_indexes = bundle
         .items
@@ -298,13 +324,19 @@ async fn resolve_references(
                     }
                 })
             }
-            DynamoBundleReferenceTarget::External { lookup_id, .. }
-                if existing_external.contains(lookup_id) =>
+            DynamoBundleReferenceTarget::InTable { lookup_id, .. }
+                if existing_in_table.contains(lookup_id) =>
             {
                 continue;
             }
-            DynamoBundleReferenceTarget::External { clear_path, .. } => {
-                warnings.push(DynamoImportWarning::MissingExternalReference);
+            DynamoBundleReferenceTarget::InTable { clear_path, .. } => {
+                warnings.push(DynamoImportWarning::ZeroedInTableReference);
+                missing_clears.push((source_index, clear_path));
+                continue;
+            }
+            DynamoBundleReferenceTarget::OutOfTable { .. } if !created_new => continue,
+            DynamoBundleReferenceTarget::OutOfTable { clear_path, .. } => {
+                warnings.push(DynamoImportWarning::ZeroedOutOfTableReference);
                 missing_clears.push((source_index, clear_path));
                 continue;
             }
@@ -451,13 +483,13 @@ async fn prepare_new_root_data<O: DynamoObject>(
     Ok(())
 }
 
-async fn replace_stale(
+async fn build_replace_plan(
     util: &DynamoUtil,
     bundles: &DynamoBundlePolicy,
     parent: Option<&PkSk>,
     old: &DynamoBundle,
     new_ids: &HashMap<BundleId, PkSk>,
-) -> Result<usize, ServerError> {
+) -> Result<ReplacePlan, ServerError> {
     let old_root_id_logic = old
         .items
         .iter()
@@ -511,9 +543,15 @@ async fn replace_stale(
         .buffer_unordered(DELETE_CONCURRENCY)
         .try_collect::<Vec<_>>()
         .await?;
-    util.raw_batch_delete_ids(delete_groups.into_iter().flatten().collect())
-        .await?;
-    Ok(stale_roots.len())
+    let delete_ids = delete_groups
+        .into_iter()
+        .flatten()
+        .filter(|id| !desired.contains(id))
+        .collect::<HashSet<_>>();
+    Ok(ReplacePlan {
+        delete_ids,
+        stale_root_count: stale_roots.len(),
+    })
 }
 
 // Helpers.
@@ -724,13 +762,17 @@ fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
         ) {
             return Err(invalid_bundle("bundle reference target was invalid"));
         }
-        if let DynamoBundleReferenceTarget::External { clear_path, .. } = &reference.target {
-            let is_containing_path = clear_path.is_prefix_of(&reference.path);
-            if !is_containing_path || source.value_at(clear_path).is_none() {
-                return Err(invalid_bundle(
-                    "external reference clear path was not a containing value",
-                ));
-            }
+        let clear_path = match &reference.target {
+            DynamoBundleReferenceTarget::InTable { clear_path, .. }
+            | DynamoBundleReferenceTarget::OutOfTable { clear_path, .. } => Some(clear_path),
+            DynamoBundleReferenceTarget::Bundled { .. } => None,
+        };
+        if clear_path.is_some_and(|clear_path| {
+            !clear_path.is_prefix_of(&reference.path) || source.value_at(clear_path).is_none()
+        }) {
+            return Err(invalid_bundle(
+                "external reference clear path was not a containing value",
+            ));
         }
     }
     Ok(())

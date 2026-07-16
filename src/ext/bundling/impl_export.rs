@@ -275,10 +275,17 @@ fn collect_references(
                         )?;
                         DynamoBundleReferenceTarget::Bundled { id, encoding }
                     }
-                    DynamoBundleReferenceMatchTarget::External {
+                    DynamoBundleReferenceMatchTarget::InTable {
                         lookup_id,
                         clear_path,
-                    } => DynamoBundleReferenceTarget::External {
+                    } => DynamoBundleReferenceTarget::InTable {
+                        lookup_id,
+                        clear_path,
+                    },
+                    DynamoBundleReferenceMatchTarget::OutOfTable {
+                        lookup_id,
+                        clear_path,
+                    } => DynamoBundleReferenceTarget::OutOfTable {
                         lookup_id,
                         clear_path,
                     },

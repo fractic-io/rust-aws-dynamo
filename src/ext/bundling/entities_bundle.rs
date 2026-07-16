@@ -116,11 +116,20 @@ pub enum DynamoBundleReferenceTarget {
         id: BundleId,
         encoding: DynamoBundleReferenceEncoding,
     },
-    /// The target is outside the bundle but in the importing table.
-    External {
+    /// The target is outside the bundle but in the importing table. Import
+    /// preserves the reference when the target exists and clears it otherwise.
+    InTable {
         lookup_id: PkSk,
         /// The reference path itself for scalar options, or a containing path
         /// when one missing member must clear a compound optional value.
+        clear_path: BundleDataPath,
+    },
+    /// The target is stored outside the importing table and cannot be checked.
+    /// Merge and Replace preserve the bundled value; New clears it.
+    OutOfTable {
+        lookup_id: PkSk,
+        /// The reference path itself for scalar options, or a containing path
+        /// when creating a new identity must clear a compound optional value.
         clear_path: BundleDataPath,
     },
 }
@@ -161,7 +170,8 @@ pub struct DynamoImportResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamoImportWarning {
-    MissingExternalReference,
+    ZeroedInTableReference,
+    ZeroedOutOfTableReference,
 }
 
 // Public interface.

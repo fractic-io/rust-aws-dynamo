@@ -650,21 +650,42 @@ fn bundle_config_normalizes_top_level_renames_before_selecting_references() {
     let mut bundles = DynamoBundlePolicy::new();
     bundles
         .include::<TestRenamedRoot>()
-        .external_pksk("canonical_ref");
+        .in_table_pksk("canonical_ref")
+        .out_of_table_pksk("archive_ref");
     let object = bundles.object::<TestRenamedRoot>().unwrap();
     let mut item = bundle_item(
         id(0, "RENAMEDROOT", "RENAMEDROOT#root"),
         None,
         BundleNesting::Root,
-        json!({"legacy_ref": "ROOT|TARGET#one"}),
+        json!({
+            "legacy_ref": "ROOT|TARGET#one",
+            "archive_ref": "ROOT|TARGET#archive"
+        }),
     );
 
     object.normalize_renamed_fields(&mut item.data);
 
-    assert_eq!(item.data, json!({"canonical_ref": "ROOT|TARGET#one"}));
-    let matches = (object.reference_rules()[0].selector)(&item).unwrap();
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].path, BundleDataPath::dotted("canonical_ref"));
+    assert_eq!(
+        item.data,
+        json!({
+            "canonical_ref": "ROOT|TARGET#one",
+            "archive_ref": "ROOT|TARGET#archive"
+        })
+    );
+    let in_table = (object.reference_rules()[0].selector)(&item).unwrap();
+    assert_eq!(in_table.len(), 1);
+    assert_eq!(in_table[0].path, BundleDataPath::dotted("canonical_ref"));
+    assert!(matches!(
+        &in_table[0].target,
+        DynamoBundleReferenceMatchTarget::InTable { .. }
+    ));
+    let out_of_table = (object.reference_rules()[1].selector)(&item).unwrap();
+    assert_eq!(out_of_table.len(), 1);
+    assert_eq!(out_of_table[0].path, BundleDataPath::dotted("archive_ref"));
+    assert!(matches!(
+        &out_of_table[0].target,
+        DynamoBundleReferenceMatchTarget::OutOfTable { .. }
+    ));
 }
 
 #[test]
@@ -1010,7 +1031,7 @@ async fn new_without_an_insertion_position_clears_the_source_sort() {
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
-async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
+async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
     let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
     let target = id(1, "TARGET", "TARGET#old");
     let existing_external = PkSk {
@@ -1020,6 +1041,10 @@ async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
     let missing_external = PkSk {
         pk: "ROOT".into(),
         sk: "EXTERNAL#missing".into(),
+    };
+    let out_of_table = PkSk {
+        pk: "ROOT".into(),
+        sk: "ARCHIVE#outside".into(),
     };
     let bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
@@ -1038,7 +1063,8 @@ async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
                     "local": "old",
                     "kept": existing_external.to_string(),
                     "missing": missing_external.to_string(),
-                    "compound": [missing_external.to_string(), "kept member"]
+                    "compound": [missing_external.to_string(), "kept member"],
+                    "out_of_table": out_of_table.to_string()
                 }),
             ),
             bundle_item(
@@ -1060,7 +1086,7 @@ async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
             DynamoBundleReference {
                 source: root.clone(),
                 path: BundleDataPath::field("kept"),
-                target: DynamoBundleReferenceTarget::External {
+                target: DynamoBundleReferenceTarget::InTable {
                     lookup_id: existing_external.clone(),
                     clear_path: BundleDataPath::field("kept"),
                 },
@@ -1068,17 +1094,25 @@ async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
             DynamoBundleReference {
                 source: root.clone(),
                 path: BundleDataPath::field("missing"),
-                target: DynamoBundleReferenceTarget::External {
+                target: DynamoBundleReferenceTarget::InTable {
                     lookup_id: missing_external.clone(),
                     clear_path: BundleDataPath::field("missing"),
                 },
             },
             DynamoBundleReference {
-                source: root,
+                source: root.clone(),
                 path: BundleDataPath::field("compound").then_index(0),
-                target: DynamoBundleReferenceTarget::External {
+                target: DynamoBundleReferenceTarget::InTable {
                     lookup_id: missing_external,
                     clear_path: BundleDataPath::field("compound"),
+                },
+            },
+            DynamoBundleReference {
+                source: root,
+                path: BundleDataPath::field("out_of_table"),
+                target: DynamoBundleReferenceTarget::OutOfTable {
+                    lookup_id: out_of_table,
+                    clear_path: BundleDataPath::field("out_of_table"),
                 },
             },
         ],
@@ -1120,6 +1154,7 @@ async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
             );
             assert!(!root.contains_key("missing"));
             assert!(!root.contains_key("compound"));
+            assert!(!root.contains_key("out_of_table"));
             Ok(BatchWriteItemOutput::builder().build())
         });
 
@@ -1138,8 +1173,9 @@ async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
     assert_eq!(
         result.warnings,
         vec![
-            DynamoImportWarning::MissingExternalReference,
-            DynamoImportWarning::MissingExternalReference,
+            DynamoImportWarning::ZeroedInTableReference,
+            DynamoImportWarning::ZeroedInTableReference,
+            DynamoImportWarning::ZeroedOutOfTableReference,
         ]
     );
     assert!(result.created_new);
@@ -1179,7 +1215,7 @@ async fn external_reference_to_an_incoming_id_is_not_cleared() {
         references: vec![DynamoBundleReference {
             source: root,
             path: BundleDataPath::field("external"),
-            target: DynamoBundleReferenceTarget::External {
+            target: DynamoBundleReferenceTarget::InTable {
                 lookup_id: target_id.clone(),
                 clear_path: BundleDataPath::field("external"),
             },
@@ -1312,6 +1348,14 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
 #[allow(clippy::result_large_err)]
 async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_removed() {
     let root_id = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let stale_id = PkSk {
+        pk: "ROOTOBJ#root".into(),
+        sk: "STEP#old".into(),
+    };
+    let out_of_table_id = PkSk {
+        pk: "ROOT".into(),
+        sk: "ARCHIVE#pipeline".into(),
+    };
     let bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
         source_root: PkSk {
@@ -1324,25 +1368,47 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
             BTreeSet::from(["RECALC".into()]),
         )]),
         items: vec![bundle_item(
-            root_id,
+            root_id.clone(),
             None,
             BundleNesting::Root,
-            json!({"value": "new"}),
+            json!({
+                "value": "new",
+                "stale_ref": stale_id.to_string(),
+                "out_of_table_ref": out_of_table_id.to_string()
+            }),
         )],
-        references: vec![],
+        references: vec![
+            DynamoBundleReference {
+                source: root_id.clone(),
+                path: BundleDataPath::field("stale_ref"),
+                target: DynamoBundleReferenceTarget::InTable {
+                    lookup_id: stale_id.clone(),
+                    clear_path: BundleDataPath::field("stale_ref"),
+                },
+            },
+            DynamoBundleReference {
+                source: root_id,
+                path: BundleDataPath::field("out_of_table_ref"),
+                target: DynamoBundleReferenceTarget::OutOfTable {
+                    lookup_id: out_of_table_id.clone(),
+                    clear_path: BundleDataPath::field("out_of_table_ref"),
+                },
+            },
+        ],
     };
 
     let mut backend = MockDynamoBackend::new();
     backend
         .expect_batch_get_item()
-        .times(1)
+        .times(2)
         .returning(|table, _, projection| {
-            assert_eq!(projection, None);
+            let rows = if projection.is_none() {
+                vec![row("ROOT", "ROOTOBJ#root")]
+            } else {
+                vec![row("ROOTOBJ#root", "STEP#old")]
+            };
             Ok(BatchGetItemOutput::builder()
-                .set_responses(Some(HashMap::from([(
-                    table,
-                    vec![row("ROOT", "ROOTOBJ#root")],
-                )])))
+                .set_responses(Some(HashMap::from([(table, rows)])))
                 .build())
         });
     backend
@@ -1365,6 +1431,11 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
         .returning(|_, items| {
             assert_eq!(items.len(), 1);
             assert_eq!(items[0]["value"], AttributeValue::S("new".into()));
+            assert!(!items[0].contains_key("stale_ref"));
+            assert_eq!(
+                items[0]["out_of_table_ref"],
+                AttributeValue::S("ROOT|ARCHIVE#pipeline".into())
+            );
             Ok(BatchWriteItemOutput::builder().build())
         });
     backend
@@ -1399,6 +1470,10 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
 
     assert_eq!(result.deleted_subtree_roots, 1);
     assert!(!result.created_new);
+    assert_eq!(
+        result.warnings,
+        vec![DynamoImportWarning::ZeroedInTableReference]
+    );
 }
 
 #[tokio::test]
@@ -1564,7 +1639,7 @@ async fn import_rejects_reference_paths_that_are_not_present() {
         references: vec![DynamoBundleReference {
             source: root,
             path: BundleDataPath::field("missing"),
-            target: DynamoBundleReferenceTarget::External {
+            target: DynamoBundleReferenceTarget::InTable {
                 lookup_id: PkSk {
                     pk: "ROOT".into(),
                     sk: "TARGET#one".into(),

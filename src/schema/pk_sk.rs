@@ -90,12 +90,9 @@ pub(crate) fn id_fields_from_map(map: &DynamoMap) -> Result<(&str, &str), Server
 }
 
 fn split_serialized_id(id: &str) -> Result<(&str, &str), ServerError> {
-    let Some((pk, sk)) = id.split_once('|') else {
-        return Err(DynamoInvalidId::with_debug(
-            "ID was not in `pk|sk` format",
-            &id,
-        ));
-    };
+    let (pk, sk) = id
+        .split_once('|')
+        .ok_or_else(|| DynamoInvalidId::with_debug("ID was not in `pk|sk` format", &id))?;
     if pk.is_empty() || sk.is_empty() {
         return Err(DynamoInvalidId::with_debug(
             "ID contained an empty partition key or sort key",
@@ -164,7 +161,7 @@ mod tests {
     #[test]
     fn test_from_string_valid() {
         // Using from_string:
-        let json_str = r#"test_pk|test_sk"#;
+        let json_str = r"test_pk|test_sk";
         let pksk = PkSk::from_string(json_str).unwrap();
         assert_eq!(pksk.pk, "test_pk");
         assert_eq!(pksk.sk, "test_sk");
@@ -182,7 +179,7 @@ mod tests {
     #[test]
     fn test_from_string_invalid() {
         // Using from_string:
-        let json_str = r#"invalid_format"#;
+        let json_str = r"invalid_format";
         assert!(PkSk::from_string(json_str).is_err());
         // Using Deserialize:
         let json_str = r#""invalid_format""#; // Extra quotes.
@@ -212,7 +209,7 @@ mod tests {
             sk: "test_sk".to_string(),
         };
         // Using display:
-        assert_eq!(format!("{}", pksk), "test_pk|test_sk");
+        assert_eq!(format!("{pksk}"), "test_pk|test_sk");
         // Using Serialize:
         let serialized = serde_json::to_string(&pksk).unwrap();
         assert_eq!(serialized, r#""test_pk|test_sk""#); // Extra quotes.

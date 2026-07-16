@@ -465,12 +465,10 @@ impl DynamoBundleObjectPolicy {
         {
             return;
         }
-        let topology = DynamoBundleTopology::from_nesting(O::nesting_logic());
-        let validate_data = Arc::new(|item: &DynamoBundleItem| validate_item_data::<O>(item));
         self.schema_variants.push(DynamoBundleSchemaVariant {
             type_name,
-            topology,
-            validate_data,
+            topology: DynamoBundleTopology::from_nesting(O::nesting_logic()),
+            validate_data: Arc::new(validate_item_data::<O>),
         });
     }
 
@@ -482,26 +480,26 @@ impl DynamoBundleObjectPolicy {
         if self.schema_variants.is_empty() {
             return Ok(());
         }
-        let mut matched_topology = false;
-        let mut errors = Vec::new();
-        for variant in self
+        let mut variants = self
             .schema_variants
             .iter()
             .filter(|variant| variant.topology.matches(item.nesting, parent))
-        {
-            matched_topology = true;
-            match (variant.validate_data)(item) {
-                Ok(()) => return Ok(()),
-                Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
-            }
-        }
-        if !matched_topology {
+            .peekable();
+        if variants.peek().is_none() {
             return Err(DynamoInvalidBundle::new(&format!(
                 "item label `{}` used {:?} nesting below {}, which does not match any local schema",
                 item.id.label,
                 item.nesting,
                 parent.description(),
             )));
+        }
+
+        let mut errors = Vec::new();
+        for variant in variants {
+            match (variant.validate_data)(item) {
+                Ok(()) => return Ok(()),
+                Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
+            }
         }
 
         Err(DynamoInvalidBundle::new(&format!(
@@ -583,7 +581,7 @@ impl<'a> BundleItemParent<'a> {
 
 fn validate_item_data<O: DynamoObject>(item: &DynamoBundleItem) -> Result<(), String> {
     if matches!(O::id_logic(), IdLogic::BatchOptimized { .. }) {
-        let values = item
+        return item
             .data
             .get(EXPAND_DATA_RESERVED_KEY)
             .and_then(Value::as_array)
@@ -591,12 +589,13 @@ fn validate_item_data<O: DynamoObject>(item: &DynamoBundleItem) -> Result<(), St
                 format!(
                     "batch-optimized data did not contain an `{EXPAND_DATA_RESERVED_KEY}` array"
                 )
-            })?;
-        for (index, value) in values.iter().enumerate() {
-            validate_data_value::<O>(value)
-                .map_err(|error| format!("batch member {index} was invalid: {error}"))?;
-        }
-        return Ok(());
+            })?
+            .iter()
+            .enumerate()
+            .try_for_each(|(index, value)| {
+                validate_data_value::<O>(value)
+                    .map_err(|error| format!("batch member {index} was invalid: {error}"))
+            });
     }
     validate_data_value::<O>(&item.data)
 }
@@ -621,10 +620,10 @@ fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRenam
         if renamed.is_noop() {
             continue;
         }
-        if data.contains_key(renamed.to) {
-            data.remove(renamed.from);
-        } else if let Some(value) = data.remove(renamed.from) {
-            data.insert(renamed.to.to_owned(), value);
+        if let Some(value) = data.remove(renamed.from) {
+            if !data.contains_key(renamed.to) {
+                data.insert(renamed.to.to_owned(), value);
+            }
         }
     }
 }

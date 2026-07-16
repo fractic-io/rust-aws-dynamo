@@ -74,13 +74,10 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
 
     // Search for all IDs for existing items of this type by creating an example
     // ID and stripping the ID UUID / timestamp off the end.
-    let PkSk {
-        pk: example_pk,
-        sk: example_sk,
-    } = generate_id::<T>(data, parent_id)?;
+    let example = generate_id::<T>(data, parent_id)?;
     let search_id = PkSk {
-        pk: example_pk,
-        sk: sk_strip_tail::<T>(T::id_logic(), example_sk)?,
+        pk: example.pk,
+        sk: sk_strip_tail::<T>(T::id_logic(), example.sk)?,
     };
     let query = util
         .query::<T>(None, search_id, DynamoQueryMatchType::BeginsWith)
@@ -98,12 +95,11 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
         .collect::<Vec<_>>();
     existing_vals.sort_unstable();
 
-    Ok(match &insert_position {
+    Ok(match insert_position {
         DynamoInsertPosition::First => {
             let min_val = existing_vals
                 .first()
-                .map(|item| item.sort)
-                .unwrap_or(sort_value_init);
+                .map_or(sort_value_init, |item| item.sort);
             (0..num)
                 .map(|i| min_val - sort_value_default_gap * (i as f64 + 1.0))
                 .rev()
@@ -112,20 +108,19 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
         DynamoInsertPosition::Last => {
             let max_val = existing_vals
                 .last()
-                .map(|item| item.sort)
-                .unwrap_or(sort_value_init);
+                .map_or(sort_value_init, |item| item.sort);
             (0..num)
                 .map(|i| max_val + sort_value_default_gap * (i as f64 + 1.0))
                 .collect()
         }
         DynamoInsertPosition::After(id) => {
-            let insert_after_index = existing_vals.iter().position(|item| item.id == id).ok_or(
+            let insert_after_index = existing_vals.iter().position(|item| item.id == &id).ok_or(
                 DynamoInvalidOperation::new(
                     "the ID provided in DynamoInsertPosition::After(id) does not exist as a \
                      sorted item of type T in the database",
                 ),
             )?;
-            let insert_after = existing_vals.get(insert_after_index).unwrap();
+            let insert_after = &existing_vals[insert_after_index];
             let insert_before = existing_vals.get(insert_after_index + 1);
             match insert_before {
                 // Insert in between two items by calculating evenly spaced

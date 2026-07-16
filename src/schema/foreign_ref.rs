@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_foreign_ref_serde_roundtrip_empty() {
-        let r = ForeignRef(Cow::Owned("".to_string()));
+        let r = ForeignRef(Cow::Owned(String::new()));
         let s = serde_json::to_string(&r).unwrap();
         assert_eq!(s, r#""""#);
         let back: ForeignRef<'static> = serde_json::from_str(&s).unwrap();

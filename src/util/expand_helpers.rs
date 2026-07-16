@@ -49,7 +49,7 @@ pub(crate) fn expand_batched_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
 
 pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
     parent_id: &PkSk,
-    data: Vec<T::Data>,
+    data: &[T::Data],
     batch_size: usize,
 ) -> Result<Vec<DynamoMap>, ServerError> {
     let num_batches = data.len().div_ceil(batch_size);
@@ -83,7 +83,7 @@ pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
                     (AUTO_FIELDS_TTL, Box::new(None::<i64>)),
                 ]),
             )
-            .map(|res| res.0)
+            .map(|(map, _)| map)
         })
         .collect::<Result<_, _>>()
         .map_err(|e| {

@@ -81,7 +81,7 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
     }
 
     pub async fn get(&self, id: PkSk) -> Result<O, ServerError> {
-        self.find(id).await?.ok_or_else(|| DynamoNotFound::new())
+        self.find(id).await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn add(&self, data: O::Data) -> Result<O, ServerError> {
@@ -176,7 +176,7 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
     }
 
     pub async fn get(&self, id: PkSk) -> Result<O, ServerError> {
-        self.find(id).await?.ok_or_else(|| DynamoNotFound::new())
+        self.find(id).await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn add(&self, data: O::Data) -> Result<O, ServerError> {
@@ -284,11 +284,11 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     // -----------------------------------------------------------------------
 
     pub async fn find(&self) -> Result<Option<O>, ServerError> {
-        self.dynamo_util.get_item::<O>(self.id_for()).await
+        self.dynamo_util.get_item::<O>(Self::id_for()).await
     }
 
     pub async fn get(&self) -> Result<O, ServerError> {
-        self.find().await?.ok_or_else(|| DynamoNotFound::new())
+        self.find().await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn set(&self, data: O::Data) -> Result<O, ServerError> {
@@ -296,7 +296,7 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     }
 
     pub async fn delete(&self) -> Result<(), ServerError> {
-        self.dynamo_util.delete_item::<O>(self.id_for()).await
+        self.dynamo_util.delete_item::<O>(Self::id_for()).await
     }
 
     // Bundling operations:
@@ -320,7 +320,7 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     // Helpers:
     // -----------------------------------------------------------------------
 
-    fn id_for(&self) -> PkSk {
+    fn id_for() -> PkSk {
         place_terminal_segment::<O>(PkSk::root(), &format!("@{}", O::id_label()))
     }
 }
@@ -349,11 +349,11 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     // -----------------------------------------------------------------------
 
     pub async fn find(&self, key: &str) -> Result<Option<O>, ServerError> {
-        self.dynamo_util.get_item::<O>(self.id_for(key)).await
+        self.dynamo_util.get_item::<O>(Self::id_for(key)).await
     }
 
     pub async fn get(&self, key: &str) -> Result<O, ServerError> {
-        self.find(key).await?.ok_or_else(|| DynamoNotFound::new())
+        self.find(key).await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn set(&self, data: O::Data) -> Result<O, ServerError> {
@@ -367,12 +367,12 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     }
 
     pub async fn delete(&self, key: &str) -> Result<(), ServerError> {
-        self.dynamo_util.delete_item::<O>(self.id_for(key)).await
+        self.dynamo_util.delete_item::<O>(Self::id_for(key)).await
     }
 
     pub async fn batch_delete(&self, keys: Vec<&str>) -> Result<(), ServerError> {
         self.dynamo_util
-            .batch_delete_item::<O>(keys.iter().map(|k| self.id_for(k)).collect())
+            .batch_delete_item::<O>(keys.iter().map(|key| Self::id_for(key)).collect())
             .await
     }
 
@@ -408,7 +408,7 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     // Helpers:
     // -----------------------------------------------------------------------
 
-    fn id_for(&self, key: &str) -> PkSk {
+    fn id_for(key: &str) -> PkSk {
         place_terminal_segment::<O>(PkSk::root(), &format!("@{}[{key}]", O::id_label()))
     }
 }
@@ -443,7 +443,7 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
     }
 
     pub async fn get(&self, id: PkSk) -> Result<O, ServerError> {
-        self.find(id).await?.ok_or_else(|| DynamoNotFound::new())
+        self.find(id).await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn add<P>(
@@ -455,10 +455,9 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        let insert_position = match after {
-            Some(a) => DynamoInsertPosition::After(a.id().clone()),
-            None => DynamoInsertPosition::Last,
-        };
+        let insert_position = after.map_or(DynamoInsertPosition::Last, |item| {
+            DynamoInsertPosition::After(item.id().clone())
+        });
         self.dynamo_util
             .create_item_ordered::<O>(parent.id(), data, insert_position)
             .await
@@ -473,10 +472,9 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        let insert_position = match after {
-            Some(a) => DynamoInsertPosition::After(a.id().clone()),
-            None => DynamoInsertPosition::Last,
-        };
+        let insert_position = after.map_or(DynamoInsertPosition::Last, |item| {
+            DynamoInsertPosition::After(item.id().clone())
+        });
         self.dynamo_util
             .batch_create_item_ordered::<O>(parent.id(), data, insert_position)
             .await
@@ -516,10 +514,9 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        let position = match after {
-            Some(item) => DynamoInsertPosition::After(item.id().clone()),
-            None => DynamoInsertPosition::Last,
-        };
+        let position = after.map_or(DynamoInsertPosition::Last, |item| {
+            DynamoInsertPosition::After(item.id().clone())
+        });
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
             .import::<O>(
                 Some(parent.id()),
@@ -593,7 +590,7 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
     }
 
     pub async fn get(&self, id: PkSk) -> Result<O, ServerError> {
-        self.find(id).await?.ok_or_else(|| DynamoNotFound::new())
+        self.find(id).await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn add<P>(
@@ -605,10 +602,9 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        let insert_position = match after {
-            Some(a) => DynamoInsertPosition::After(a.id().clone()),
-            None => DynamoInsertPosition::Last,
-        };
+        let insert_position = after.map_or(DynamoInsertPosition::Last, |item| {
+            DynamoInsertPosition::After(item.id().clone())
+        });
         self.dynamo_util
             .create_item_ordered::<O>(parent.id(), data, insert_position)
             .await
@@ -623,10 +619,9 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        let insert_position = match after {
-            Some(a) => DynamoInsertPosition::After(a.id().clone()),
-            None => DynamoInsertPosition::Last,
-        };
+        let insert_position = after.map_or(DynamoInsertPosition::Last, |item| {
+            DynamoInsertPosition::After(item.id().clone())
+        });
         self.dynamo_util
             .batch_create_item_ordered::<O>(parent.id(), data, insert_position)
             .await
@@ -682,10 +677,9 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        let position = match after {
-            Some(item) => DynamoInsertPosition::After(item.id().clone()),
-            None => DynamoInsertPosition::Last,
-        };
+        let position = after.map_or(DynamoInsertPosition::Last, |item| {
+            DynamoInsertPosition::After(item.id().clone())
+        });
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
             .import::<O>(
                 Some(parent.id()),
@@ -758,7 +752,7 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
     }
 
     pub async fn get(&self, id: PkSk) -> Result<O, ServerError> {
-        self.find(id).await?.ok_or_else(|| DynamoNotFound::new())
+        self.find(id).await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn add<P>(&self, parent: &P, data: O::Data) -> Result<O, ServerError>
@@ -881,7 +875,7 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
     }
 
     pub async fn get(&self, id: PkSk) -> Result<O, ServerError> {
-        self.find(id).await?.ok_or_else(|| DynamoNotFound::new())
+        self.find(id).await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn add<P>(&self, parent: &P, data: O::Data) -> Result<O, ServerError>
@@ -1104,16 +1098,14 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util.get_item::<O>(self.id_for(parent)).await
+        self.dynamo_util.get_item::<O>(Self::id_for(parent)).await
     }
 
     pub async fn get<P>(&self, parent: &P) -> Result<O, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.find(parent)
-            .await?
-            .ok_or_else(|| DynamoNotFound::new())
+        self.find(parent).await?.ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn set<P>(&self, parent: &P, data: O::Data) -> Result<O, ServerError>
@@ -1127,7 +1119,9 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        self.dynamo_util.delete_item::<O>(self.id_for(parent)).await
+        self.dynamo_util
+            .delete_item::<O>(Self::id_for(parent))
+            .await
     }
 
     // Bundling operations:
@@ -1172,7 +1166,7 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
     // Helpers:
     // -----------------------------------------------------------------------
 
-    fn id_for<P>(&self, parent: &P) -> PkSk
+    fn id_for<P>(parent: &P) -> PkSk
     where
         P: DynamoObject + ParentOf<O>,
     {
@@ -1208,7 +1202,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .get_item::<O>(self.id_for(parent, key))
+            .get_item::<O>(Self::id_for(parent, key))
             .await
     }
 
@@ -1218,7 +1212,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
     {
         self.find(parent, key)
             .await?
-            .ok_or_else(|| DynamoNotFound::new())
+            .ok_or_else(DynamoNotFound::new)
     }
 
     pub async fn set<P>(&self, parent: &P, data: O::Data) -> Result<O, ServerError>
@@ -1242,7 +1236,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .delete_item::<O>(self.id_for(parent, key))
+            .delete_item::<O>(Self::id_for(parent, key))
             .await
     }
 
@@ -1251,7 +1245,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util
-            .batch_delete_item::<O>(keys.iter().map(|k| self.id_for(parent, k)).collect())
+            .batch_delete_item::<O>(keys.iter().map(|key| Self::id_for(parent, key)).collect())
             .await
     }
 
@@ -1314,7 +1308,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
     // Helpers:
     // -----------------------------------------------------------------------
 
-    fn id_for<P>(&self, parent: &P, key: &str) -> PkSk
+    fn id_for<P>(parent: &P, key: &str) -> PkSk
     where
         P: DynamoObject + ParentOf<O>,
     {

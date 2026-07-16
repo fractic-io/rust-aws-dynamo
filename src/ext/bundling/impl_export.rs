@@ -131,16 +131,13 @@ async fn export_bundle(
             label,
             original_sk: item.id.sk.clone(),
         };
-        let parent = item
-            .parent
-            .as_ref()
-            .map(|parent| {
-                by_pk_sk
-                    .get(parent)
-                    .cloned()
-                    .ok_or_else(|| DynamoInvalidBundle::new("bundle item preceded its parent"))
-            })
-            .transpose()?;
+        let parent = item.parent.as_ref().map_or(Ok(None), |parent| {
+            by_pk_sk
+                .get(parent)
+                .cloned()
+                .map(Some)
+                .ok_or_else(|| DynamoInvalidBundle::new("bundle item preceded its parent"))
+        })?;
         by_pk_sk.insert(item.id, id.clone());
         items.push(DynamoBundleItem {
             id,
@@ -211,7 +208,7 @@ pub(crate) async fn collect_bundle_items(
     let mut frontier = (0..collected.len()).collect::<Vec<_>>();
     while !frontier.is_empty() {
         let collected_ref = &collected;
-        let mut results = stream::iter(frontier.drain(..))
+        let mut results = stream::iter(std::mem::take(&mut frontier))
             .map(move |owner_index| async move {
                 let rows = raw_query(util, &collected_ref[owner_index].id.sk, None).await?;
                 Ok::<_, ServerError>((owner_index, group_logical_rows(rows)?))
@@ -308,11 +305,11 @@ fn omissions_for(
     if let Some(fixed) = fixed {
         return fixed.get(label).cloned().unwrap_or_default();
     }
-    let omissions = object.omitted_descendants().clone();
+    let omissions = object.omitted_descendants();
     if !omissions.is_empty() {
-        recorded.insert(label.to_string(), omissions.clone());
+        recorded.insert(label.to_owned(), omissions.clone());
     }
-    omissions
+    omissions.clone()
 }
 
 fn append_partition_groups(
@@ -516,5 +513,5 @@ async fn raw_query(
 
 fn is_inline_descendant(sk: &str, parent_sk: &str) -> bool {
     sk.strip_prefix(parent_sk)
-        .is_some_and(|suffix| suffix.starts_with('#') || suffix.starts_with('@'))
+        .is_some_and(|suffix| suffix.starts_with(['#', '@']))
 }

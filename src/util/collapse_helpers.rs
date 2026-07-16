@@ -267,23 +267,15 @@ fn partition_metadata(ttl: Option<i64>) -> Vec<(&'static str, Box<dyn erased_ser
 
 /// Uses the minimum number of digits to represent all partition indices.
 fn build_partition_ids(base_id: &PkSk, total_partitions: usize) -> Vec<PkSk> {
-    fn partition_digits(total_partitions: usize) -> usize {
-        match total_partitions {
-            0 | 1 => 1,
-            n => (n - 1).ilog10() as usize + 1,
-        }
-    }
-
-    fn partition_id(base_id: &PkSk, idx: usize, total_partitions: usize) -> PkSk {
-        let digits = partition_digits(total_partitions);
-        PkSk {
-            pk: base_id.pk.clone(),
-            sk: format!("{}+{:0digits$}", base_id.sk, idx),
-        }
-    }
-
+    let digits = match total_partitions {
+        0 | 1 => 1,
+        n => (n - 1).ilog10() as usize + 1,
+    };
     (0..total_partitions)
-        .map(|idx| partition_id(base_id, idx, total_partitions))
+        .map(|index| PkSk {
+            pk: base_id.pk.clone(),
+            sk: format!("{}+{index:0digits$}", base_id.sk),
+        })
         .collect()
 }
 
@@ -383,15 +375,12 @@ pub(crate) async fn expand_partition_delete_ids<T: DynamoObject>(
         return Ok(ids);
     }
 
-    let mut base_ids = Vec::new();
     let mut seen = HashSet::new();
-    for id in ids {
-        let base_id = ext_base_id(&id);
-        if !seen.insert(base_id.clone()) {
-            continue;
-        }
-        base_ids.push(base_id);
-    }
+    let base_ids = ids
+        .into_iter()
+        .map(|id| ext_base_id(&id))
+        .filter(|id| seen.insert(id.clone()))
+        .collect::<Vec<_>>();
 
     let partition_counts = fetch_num_partitions_batch(util, &base_ids).await?;
     let mut out = Vec::new();

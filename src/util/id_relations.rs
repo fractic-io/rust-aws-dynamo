@@ -18,8 +18,7 @@ pub fn validate_object_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError>
     let raw_path = RawIdPath::new(&id.sk);
     if id.sk != raw_path.logical_path() {
         return Err(DynamoInvalidOperation::new(&format!(
-            "ID must be a logical object ID, not an ext-partition row ID: '{}'",
-            id
+            "ID must be a logical object ID, not an ext-partition row ID: '{id}'"
         )));
     }
     let parsed: ParsedIdPath<'_> = raw_path.parse()?;

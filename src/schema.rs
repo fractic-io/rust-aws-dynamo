@@ -134,7 +134,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     Phantom,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NestingLogic {
     /// Warning:
     ///   All Root objects are stored under the 'ROOT' pk, so this key will

@@ -64,8 +64,8 @@ pub(crate) fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> 
             AUTO_FIELDS_CREATED_AT,
             AUTO_FIELDS_UPDATED_AT,
         ]
-        .iter()
-        .any(|reserved| data.contains_key(*reserved))
+        .into_iter()
+        .any(|reserved| data.contains_key(reserved))
         {
             return Err(DynamoInvalidBundle::new(
                 "bundle item data contained a reserved or regenerated field",

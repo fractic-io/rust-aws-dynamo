@@ -99,7 +99,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let policy = configured_bundle_policy(algorithms);
     let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic, parent)?;
-    let replacing = matches!(&mode, ImportMode::Replace);
+    let replacing = matches!(mode, ImportMode::Replace);
     let (id_map, existing, created_new, new_position) = match mode {
         ImportMode::New { position } => {
             let ids = build_id_map(&bundle, parent, true, root_id_logic)?;
@@ -392,10 +392,8 @@ fn partition_payload(data: &Value) -> Result<(String, Option<f64>, Option<i64>),
             "partitioned item data was not an object",
         ));
     };
-    let sort = object
-        .get(AUTO_FIELDS_SORT)
-        .and_then(|value| value.as_f64());
-    let ttl = object.get(AUTO_FIELDS_TTL).and_then(|value| value.as_i64());
+    let sort = object.get(AUTO_FIELDS_SORT).and_then(Value::as_f64);
+    let ttl = object.get(AUTO_FIELDS_TTL).and_then(Value::as_i64);
     Ok((
         serde_json::to_string(&PartitionPayload(object)).map_err(|error| {
             DynamoInvalidOperation::with_debug(
@@ -419,16 +417,10 @@ async fn prepare_new_root_data<O: DynamoObject>(
         .iter_mut()
         .find(|item| item.id == bundle.root)
         .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
-    match &mut root.data {
-        Value::Object(root_data) => {
-            root_data.remove(AUTO_FIELDS_SORT);
-        }
-        _ => {
-            return Err(DynamoInvalidBundle::new(
-                "bundle root data was not an object",
-            ))
-        }
-    }
+    root.data
+        .as_object_mut()
+        .ok_or_else(|| DynamoInvalidBundle::new("bundle root data was not an object"))?
+        .remove(AUTO_FIELDS_SORT);
     let Some(position) = position else {
         return Ok(());
     };
@@ -450,18 +442,16 @@ async fn prepare_new_root_data<O: DynamoObject>(
         .ok_or_else(|| {
             CriticalError::new("ordered bundle root sort calculation returned no value")
         })?;
-    let Value::Object(root_data) = &mut root.data else {
-        return Err(DynamoInvalidBundle::new(
-            "bundle root data was not an object",
-        ));
-    };
-    root_data.insert(
-        AUTO_FIELDS_SORT.to_owned(),
-        Value::Number(
-            serde_json::Number::from_f64(sort)
-                .ok_or_else(|| CriticalError::new("ordered bundle root sort was not finite"))?,
-        ),
-    );
+    root.data
+        .as_object_mut()
+        .expect("bundle root data was validated above")
+        .insert(
+            AUTO_FIELDS_SORT.to_owned(),
+            Value::Number(
+                serde_json::Number::from_f64(sort)
+                    .ok_or_else(|| CriticalError::new("ordered bundle root sort was not finite"))?,
+            ),
+        );
     Ok(())
 }
 
@@ -494,11 +484,11 @@ async fn build_replace_plan(
         old.items
             .iter()
             .filter(|item| {
-                stale.contains(&&item.id)
+                stale.contains(&item.id)
                     && item
                         .parent
                         .as_ref()
-                        .is_none_or(|parent| !stale.contains(&parent))
+                        .is_none_or(|parent| !stale.contains(parent))
             })
             .map(|item| {
                 Ok((

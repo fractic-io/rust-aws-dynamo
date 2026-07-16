@@ -392,15 +392,14 @@ impl DynamoUtil {
 
         // Sort by sort key. Since 'sort_by' is stable, ID-based ordering is
         // preserved for items without a sort key.
+        let sort = |item: &DynamoMap| {
+            item.get(AUTO_FIELDS_SORT)
+                .and_then(|value| value.as_n().ok())
+                .and_then(|value| value.parse::<f64>().ok())
+        };
         items.sort_by(|a, b| {
-            let a_sort = a
-                .get(AUTO_FIELDS_SORT)
-                .and_then(|v| v.as_n().ok().map(|n| n.parse::<f64>().ok()))
-                .flatten();
-            let b_sort = b
-                .get(AUTO_FIELDS_SORT)
-                .and_then(|v| v.as_n().ok().map(|n| n.parse::<f64>().ok()))
-                .flatten();
+            let a_sort = sort(a);
+            let b_sort = sort(b);
             match (a_sort, b_sort) {
                 (Some(a), Some(b)) => a.partial_cmp(&b).unwrap(),
                 (Some(_), None) => std::cmp::Ordering::Less,
@@ -462,11 +461,10 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
-        self.create_token_opt(parent_id, data, IdGenerationOptions::default())
+        Self::create_token_opt(parent_id, data, IdGenerationOptions::default())
     }
 
     fn create_token_opt<T: DynamoObject>(
-        &self,
         parent_id: &PkSk,
         data: &T::Data,
         options: IdGenerationOptions,
@@ -578,9 +576,8 @@ impl DynamoUtil {
                         .ok_or_else(|| CriticalError::new("batch timestamp ID overflowed i64"))
                 })
                 .transpose()?;
-            Ok(self
-                .create_token_opt::<T>(parent_id, data, IdGenerationOptions { timestamp_millis })?
-                .id)
+            Self::create_token_opt::<T>(parent_id, data, IdGenerationOptions { timestamp_millis })
+                .map(|token| token.id)
         };
         if is_partitioned_id_logic::<T>() {
             let pending_writes = data_and_options
@@ -1122,7 +1119,7 @@ impl DynamoUtil {
         // For batch-optimized ID logic, group the data into expandable batches.
         // -------------------------------------------------------------------
         req_not_none!(batch_size, CriticalError);
-        let maps = build_expandable_batch_maps::<T>(parent_id, data, batch_size)?;
+        let maps = build_expandable_batch_maps::<T>(parent_id, &data, batch_size)?;
 
         self.raw_batch_put_item(maps).await
     }

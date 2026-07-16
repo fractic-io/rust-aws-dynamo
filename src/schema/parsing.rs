@@ -67,7 +67,7 @@ pub(crate) fn build_dynamo_map_internal<T: Serialize>(
     let mut attribute_values: HashMap<String, AttributeValue> = HashMap::new();
     match json_value {
         serde_json::Value::Object(map) => {
-            for (key, value) in map.into_iter() {
+            for (key, value) in map {
                 if key == "id" {
                     // ID key is handled explicitly to avoid accidental issues,
                     // and properly set pk/sk separately.
@@ -82,8 +82,7 @@ pub(crate) fn build_dynamo_map_internal<T: Serialize>(
         }
         unsupported => {
             return Err(DynamoItemParsingError::new(&format!(
-                "can't build DynamoMap from type '{:?}'",
-                unsupported
+                "can't build DynamoMap from type '{unsupported:?}'"
             )))
         }
     }
@@ -98,7 +97,7 @@ pub(crate) fn build_dynamo_map_internal<T: Serialize>(
 
     // Set overrides.
     if let Some(overrides) = overrides {
-        for (key, value) in overrides.into_iter() {
+        for (key, value) in overrides {
             let json_value = serde_json::to_value(&value).map_err(|e| {
                 DynamoItemParsingError::with_debug("failed to serialize override object", &e)
             })?;
@@ -115,17 +114,13 @@ pub(crate) fn build_dynamo_map_internal<T: Serialize>(
 
 pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerError> {
     // DynamoMap -> Serde value.
-    let mut serde_map: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
-    for (key, value) in map.iter() {
-        if (key == "pk") || (key == "sk") {
-            // ID keys are handled explicitly to avoid accidental issues, and
-            // properly pk/sk into id field.
-            continue;
-        }
-        if let Some(v) = attribute_value_to_serde_value(value.clone())? {
-            serde_map.insert(key.clone(), v);
-        }
-    }
+    let Value::Object(mut serde_map) = dynamo_map_to_serde_value(map)? else {
+        unreachable!("DynamoMap conversion always returns an object")
+    };
+    // ID keys are handled explicitly to avoid accidental issues, and to
+    // properly combine pk/sk into the object's `id` field.
+    serde_map.remove("pk");
+    serde_map.remove("sk");
 
     // Set ID key from pk/sk.
     serde_map.insert(
@@ -166,19 +161,50 @@ where
 
     let value: serde_json::Value = serde_json::from_str(&json)
         .map_err(|e| DynamoItemParsingError::with_debug("failed to parse partition json", &e))?;
-    let serde_json::Value::Object(map) = value else {
-        return Err(DynamoItemParsingError::new(
-            "partition json did not decode to an object",
-        ));
-    };
-    map.into_iter()
-        .filter_map(|(k, v)| Some((k, serde_value_to_attribute_value(v).transpose()?)))
-        .map(|(k, v)| Ok((k, v?)))
-        .collect::<Result<DynamoMap, ServerError>>()
+    serde_value_into_dynamo_map(value)
 }
 
-// Inner recursive functions.
+// Generic Serde/Dynamo conversion.
 // ----------------------------------------------------------------------------
+
+/// Converts an object-shaped Serde value into a Dynamo map.
+///
+/// Null object fields are omitted, matching normal Serde `Option::None`
+/// persistence. Explicit nulls inside arrays are retained.
+#[cfg(test)]
+pub(crate) fn serde_value_to_dynamo_map(value: &Value) -> Result<DynamoMap, ServerError> {
+    serde_value_into_dynamo_map(value.clone())
+}
+
+fn serde_value_into_dynamo_map(value: Value) -> Result<DynamoMap, ServerError> {
+    let Value::Object(map) = value else {
+        return Err(DynamoItemParsingError::new(&format!(
+            "can't build DynamoMap from type '{value:?}'"
+        )));
+    };
+    map.into_iter()
+        .map(|(key, value)| {
+            serde_value_to_attribute_value(value).map(|value| value.map(|value| (key, value)))
+        })
+        .filter_map(Result::transpose)
+        .collect()
+}
+
+/// Converts a Dynamo map into an object-shaped Serde value.
+///
+/// Dynamo null map fields are omitted and null list entries are retained. Set
+/// and binary values are rejected because they have no unambiguous JSON form.
+pub(crate) fn dynamo_map_to_serde_value(map: &DynamoMap) -> Result<Value, ServerError> {
+    Ok(Value::Object(
+        map.iter()
+            .map(|(key, value)| {
+                attribute_value_to_serde_value(value)
+                    .map(|value| value.map(|value| (key.clone(), value)))
+            })
+            .filter_map(Result::transpose)
+            .collect::<Result<Map<_, _>, ServerError>>()?,
+    ))
+}
 
 fn serde_value_to_attribute_value(
     value: serde_json::Value,
@@ -190,23 +216,21 @@ fn serde_value_to_attribute_value(
         serde_json::Value::Bool(b) => Ok(Some(AttributeValue::Bool(b))),
         serde_json::Value::Object(map) => Ok(Some(AttributeValue::M(
             map.into_iter()
-                // Convert SerdeValue to AttributeValue for each key-value pair,
-                // filtering all pairs where value is None.
-                .filter_map(|(k, v)| Some((k, serde_value_to_attribute_value(v).transpose()?)))
-                // Catch any conversion errors.
-                .map(|(k, v)| Ok((k, v?)))
+                .map(|(key, value)| {
+                    serde_value_to_attribute_value(value)
+                        .map(|value| value.map(|value| (key, value)))
+                })
+                .filter_map(Result::transpose)
                 .collect::<Result<HashMap<String, AttributeValue>, ServerError>>()?,
         ))),
         serde_json::Value::Array(array) => {
             Ok(Some(AttributeValue::L(
                 array
                     .into_iter()
-                    .map(|v| {
-                        serde_value_to_attribute_value(v).map(|v| match v {
-                            Some(v) => v,
-                            // For arrays, we want to keep explicit nulls:
-                            None => AttributeValue::Null(true),
-                        })
+                    .map(|value| {
+                        serde_value_to_attribute_value(value)
+                            // Arrays retain explicit nulls.
+                            .map(|value| value.unwrap_or(AttributeValue::Null(true)))
                     })
                     .collect::<Result<Vec<_>, ServerError>>()?,
             )))
@@ -214,42 +238,39 @@ fn serde_value_to_attribute_value(
     }
 }
 
-fn attribute_value_to_serde_value(
-    value: AttributeValue,
+pub(crate) fn attribute_value_to_serde_value(
+    value: &AttributeValue,
 ) -> Result<Option<serde_json::Value>, ServerError> {
     match value {
         AttributeValue::Null(_) => Ok(None),
-        AttributeValue::S(s) => Ok(Some(serde_json::Value::String(s))),
+        AttributeValue::S(s) => Ok(Some(serde_json::Value::String(s.clone()))),
         AttributeValue::N(n) => {
             Ok(Some(serde_json::Value::Number(n.parse().map_err(|e| {
                 DynamoItemParsingError::with_debug("failed to parse number", &e)
             })?)))
         }
-        AttributeValue::Bool(b) => Ok(Some(serde_json::Value::Bool(b))),
+        AttributeValue::Bool(b) => Ok(Some(serde_json::Value::Bool(*b))),
         AttributeValue::M(map) => Ok(Some(serde_json::Value::Object(
-            map.into_iter()
-                // Convert AttributeValue to SerdeValue for each key-value pair,
-                // filtering all pairs where value is None.
-                .filter_map(|(k, v)| Some((k, attribute_value_to_serde_value(v).transpose()?)))
-                // Catch any conversion errors.
-                .map(|(k, v)| Ok((k, v?)))
+            map.iter()
+                .map(|(key, value)| {
+                    attribute_value_to_serde_value(value)
+                        .map(|value| value.map(|value| (key.clone(), value)))
+                })
+                .filter_map(Result::transpose)
                 .collect::<Result<serde_json::Map<String, serde_json::Value>, ServerError>>()?,
         ))),
         AttributeValue::L(array) => Ok(Some(serde_json::Value::Array(
             array
-                .into_iter()
-                .map(|v| {
-                    attribute_value_to_serde_value(v).map(|v| match v {
-                        Some(v) => v,
-                        // For arrays, we want to keep explicit nulls:
-                        None => serde_json::Value::Null,
-                    })
+                .iter()
+                .map(|value| {
+                    attribute_value_to_serde_value(value)
+                        // Arrays retain explicit nulls.
+                        .map(|value| value.unwrap_or(Value::Null))
                 })
                 .collect::<Result<Vec<_>, ServerError>>()?,
         ))),
         unsupported => Err(DynamoItemParsingError::new(&format!(
-            "unsupported AttributeValue type '{:?}'",
-            unsupported
+            "unsupported AttributeValue type '{unsupported:?}'"
         ))),
     }
 }

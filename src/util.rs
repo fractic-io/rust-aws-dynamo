@@ -11,25 +11,24 @@ use aws_sdk_dynamodb::{
     types::AttributeValue,
 };
 use backend::DynamoBackend;
-use calculate_sort::calculate_sort_values;
+pub(crate) use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
 use fractic_core::{collection, req_not_none};
 use fractic_server_error::{CriticalError, ServerError};
 
 use crate::{
     errors::{
-        DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidExtIdUsage,
-        DynamoInvalidOperation, DynamoInvalidPhantomObjectUsage, DynamoNotFound,
-        DynamoUnexpectedItemCount,
+        DynamoBatchReadRetriesExhausted, DynamoBatchWriteRetriesExhausted, DynamoCalloutError,
+        DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidExtIdUsage, DynamoInvalidOperation,
+        DynamoInvalidPhantomObjectUsage, DynamoNotFound, DynamoUnexpectedItemCount,
     },
     schema::{
-        id_calculations::{
-            generate_pk_sk_opt, get_object_type, get_pk_sk_from_map, IdGenerationOptions,
-        },
+        identifiers::{generate_id_with_options, IdGenerationOptions, RawIdPath},
         parsing::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
             build_dynamo_map_internal, parse_dynamo_map, IdKeys,
         },
+        pk_sk::id_fields_from_map,
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
     util::{
@@ -38,7 +37,7 @@ use crate::{
             ext_base_id, fetch_num_partitions, fetch_num_partitions_batch, is_partitioned_id_logic,
         },
         expand_helpers::{build_expandable_batch_maps, expand_batched_items},
-        id_relations::{child_search_prefix, validate_id, validate_parent_id},
+        id_relations::{child_query_prefix, validate_object_id, validate_parent_for},
         rename_safety_helpers::{
             add_legacy_field_removals, rename_aware_comparison_condition,
             rename_aware_presence_condition,
@@ -50,10 +49,11 @@ use crate::{
 
 pub mod backend;
 mod calculate_sort;
-mod collapse_helpers;
+pub(crate) mod collapse_helpers;
 mod expand_helpers;
 mod id_relations;
 mod metadata_helpers;
+mod raw_batch_helpers;
 mod rename_safety_helpers;
 mod test;
 mod update_helpers;
@@ -77,6 +77,11 @@ pub const EXPAND_DATA_RESERVED_KEY: &str = "..";
 /// WARNING: Also hardcoded in `collapse_helpers.rs`.
 pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
 pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
+
+use raw_batch_helpers::{
+    unprocessed_delete_keys, unprocessed_put_items, wait_before_batch_retry,
+    MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES,
+};
 
 #[derive(Debug, PartialEq)]
 pub enum DynamoQueryMatchType {
@@ -104,7 +109,8 @@ pub enum DynamoQueryMatchType {
     UntilInclusive(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DynamoInsertPosition {
     First,
     Last,
@@ -245,20 +251,10 @@ impl DynamoUtil {
             .await?
             .into_iter()
             .filter_map(|item| {
-                let (pk, sk) =
-                    get_pk_sk_from_map(&item).expect("query result item did not have pk/sk.");
-                match get_object_type(pk, sk) {
-                    Ok(label) if label == T::id_label() => {
-                        // Item is of type T.
-                        Some(parse_dynamo_map::<T>(&item))
-                    }
-                    _ => {
-                        // Item is not of type T, but instead an inline child (of a
-                        // different type), which will be skipped. Use query_dynamic
-                        // to access objects of type T and their inline children.
-                        None
-                    }
-                }
+                let (_, sk) =
+                    id_fields_from_map(&item).expect("query result item did not have pk/sk.");
+                (RawIdPath::new(sk).object_label().ok()? == T::id_label())
+                    .then(|| parse_dynamo_map::<T>(&item))
             })
             .collect::<Result<Vec<T>, ServerError>>()
     }
@@ -269,10 +265,10 @@ impl DynamoUtil {
         &self,
         parent_id: &PkSk,
     ) -> Result<Vec<T>, ServerError> {
-        validate_parent_id::<T>(parent_id)?;
+        validate_parent_for::<T>(parent_id)?;
         self.query::<T>(
             None,
-            child_search_prefix::<T>(parent_id),
+            child_query_prefix::<T>(parent_id),
             DynamoQueryMatchType::BeginsWith,
         )
         .await
@@ -286,7 +282,7 @@ impl DynamoUtil {
     ) -> Result<Vec<DynamoMap>, ServerError> {
         let (index_name, partition_field, sort_field) = match index {
             Some(index) => (
-                Some(index.name.to_string()),
+                Some(index.name.to_owned()),
                 index.partition_field,
                 index.sort_field,
             ),
@@ -294,53 +290,34 @@ impl DynamoUtil {
         };
         let condition = match match_type {
             DynamoQueryMatchType::BeginsWith if id.sk.is_empty() => {
-                format!("{} = :pk_val", partition_field)
+                format!("{partition_field} = :pk_val")
             }
-            DynamoQueryMatchType::BeginsWith => format!(
-                "{} = :pk_val AND begins_with({}, :sk_val)",
-                partition_field, sort_field
-            ),
+            DynamoQueryMatchType::BeginsWith => {
+                format!("{partition_field} = :pk_val AND begins_with({sort_field}, :sk_val)")
+            }
             DynamoQueryMatchType::Equals => {
-                format!("{} = :pk_val AND {} = :sk_val", partition_field, sort_field)
+                format!("{partition_field} = :pk_val AND {sort_field} = :sk_val")
             }
             DynamoQueryMatchType::GreaterThan => {
-                format!("{} = :pk_val AND {} > :sk_val", partition_field, sort_field)
+                format!("{partition_field} = :pk_val AND {sort_field} > :sk_val")
             }
             DynamoQueryMatchType::GreaterThanOrEquals => {
-                format!(
-                    "{} = :pk_val AND {} >= :sk_val",
-                    partition_field, sort_field
-                )
+                format!("{partition_field} = :pk_val AND {sort_field} >= :sk_val")
             }
             DynamoQueryMatchType::LessThan => {
-                format!("{} = :pk_val AND {} < :sk_val", partition_field, sort_field)
+                format!("{partition_field} = :pk_val AND {sort_field} < :sk_val")
             }
             DynamoQueryMatchType::LessThanOrEquals => {
-                format!(
-                    "{} = :pk_val AND {} <= :sk_val",
-                    partition_field, sort_field
-                )
+                format!("{partition_field} = :pk_val AND {sort_field} <= :sk_val")
             }
-            DynamoQueryMatchType::SuffixGreaterThanOrEquals(_) => {
-                format!(
-                    "{} = :pk_val AND {} BETWEEN :sk_val AND :sk_max",
-                    partition_field, sort_field
-                )
+            DynamoQueryMatchType::SuffixGreaterThanOrEquals(_)
+            | DynamoQueryMatchType::UntilInclusive(_) => {
+                format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_val AND :sk_max")
             }
             DynamoQueryMatchType::SuffixLessThanOrEquals(_) => {
-                format!(
-                    "{} = :pk_val AND {} BETWEEN :sk_min AND :sk_val",
-                    partition_field, sort_field
-                )
+                format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_min AND :sk_val")
             }
-            DynamoQueryMatchType::UntilInclusive(_) => {
-                format!(
-                    "{} = :pk_val AND {} BETWEEN :sk_val AND :sk_max",
-                    partition_field, sort_field
-                )
-            }
-        }
-        .to_string();
+        };
         let mut attribute_values = HashMap::new();
         attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
         match match_type {
@@ -415,15 +392,14 @@ impl DynamoUtil {
 
         // Sort by sort key. Since 'sort_by' is stable, ID-based ordering is
         // preserved for items without a sort key.
+        let sort = |item: &DynamoMap| {
+            item.get(AUTO_FIELDS_SORT)
+                .and_then(|value| value.as_n().ok())
+                .and_then(|value| value.parse::<f64>().ok())
+        };
         items.sort_by(|a, b| {
-            let a_sort = a
-                .get(AUTO_FIELDS_SORT)
-                .and_then(|v| v.as_n().ok().map(|n| n.parse::<f64>().ok()))
-                .flatten();
-            let b_sort = b
-                .get(AUTO_FIELDS_SORT)
-                .and_then(|v| v.as_n().ok().map(|n| n.parse::<f64>().ok()))
-                .flatten();
+            let a_sort = sort(a);
+            let b_sort = sort(b);
             match (a_sort, b_sort) {
                 (Some(a), Some(b)) => a.partial_cmp(&b).unwrap(),
                 (Some(_), None) => std::cmp::Ordering::Less,
@@ -436,7 +412,7 @@ impl DynamoUtil {
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {
         reject_batch_optimized_ids::<T>()?;
-        validate_id::<T>(&id)?;
+        validate_object_id::<T>(&id)?;
         if is_partitioned_id_logic::<T>() {
             let items = self
                 .query::<T>(None, ext_base_id(&id), DynamoQueryMatchType::BeginsWith)
@@ -485,18 +461,16 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
-        self.create_token_opt(parent_id, data, IdGenerationOptions::default())
+        Self::create_token_opt(parent_id, data, IdGenerationOptions::default())
     }
 
     fn create_token_opt<T: DynamoObject>(
-        &self,
         parent_id: &PkSk,
         data: &T::Data,
         options: IdGenerationOptions,
     ) -> Result<CreateToken<T>, ServerError> {
-        let (pk, sk) = generate_pk_sk_opt::<T>(data, &parent_id.pk, &parent_id.sk, options)?;
         Ok(CreateToken {
-            id: PkSk { pk, sk },
+            id: generate_id_with_options::<T>(data, parent_id, options)?,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -602,9 +576,8 @@ impl DynamoUtil {
                         .ok_or_else(|| CriticalError::new("batch timestamp ID overflowed i64"))
                 })
                 .transpose()?;
-            Ok(self
-                .create_token_opt::<T>(parent_id, data, IdGenerationOptions { timestamp_millis })?
-                .id)
+            Self::create_token_opt::<T>(parent_id, data, IdGenerationOptions { timestamp_millis })
+                .map(|token| token.id)
         };
         if is_partitioned_id_logic::<T>() {
             let pending_writes = data_and_options
@@ -621,20 +594,19 @@ impl DynamoUtil {
                 })
                 .collect::<Result<Vec<_>, ServerError>>()?;
 
-            let mut unique_logical_ids = Vec::new();
             let mut seen_logical_ids = HashSet::new();
-            for (logical_id, _, _, _) in &pending_writes {
-                if seen_logical_ids.insert(logical_id.clone()) {
-                    unique_logical_ids.push(logical_id.clone());
-                }
-            }
+            let unique_logical_ids = pending_writes
+                .iter()
+                .filter(|(logical_id, _, _, _)| seen_logical_ids.insert(logical_id))
+                .map(|(logical_id, _, _, _)| logical_id.clone())
+                .collect::<Vec<_>>();
             let existing_partition_counts =
                 fetch_num_partitions_batch(self, &unique_logical_ids).await?;
 
             let mut items = Vec::new();
             let mut stale_delete_ids = Vec::new();
             let mut created = Vec::new();
-            for (logical_id, data, sort, ttl) in pending_writes.into_iter() {
+            for (logical_id, data, sort, ttl) in pending_writes {
                 let plan = build_partition_write_plan::<T>(
                     &logical_id,
                     &data,
@@ -656,7 +628,7 @@ impl DynamoUtil {
                 .map(|(idx, (data, options))| {
                     let PkSk { pk, sk } = create_batch_id(data, options.token.as_ref(), idx)?;
                     let sort: Option<f64> = options.custom_sort;
-                    let ttl: Option<i64> = options.ttl.as_ref().map(|ttl| ttl.compute_timestamp());
+                    let ttl: Option<i64> = options.ttl.as_ref().map(TtlConfig::compute_timestamp);
                     let now = Timestamp::now();
                     Ok((
                         build_dynamo_map_for_new_obj::<T>(
@@ -821,7 +793,7 @@ impl DynamoUtil {
                 Self::ITEM_DOES_NOT_EXIST_CONDITION.to_string(),
             ),
         };
-        let object_after = T::new(id, op(object_before.map(|o| o.into_data()))?);
+        let object_after = T::new(id, op(object_before.map(DynamoObject::into_data))?);
         self.update_item_internal::<T>(
             &object_after,
             map_before
@@ -886,8 +858,7 @@ impl DynamoUtil {
                         .find(|(_, v)| !matches!(v, AttributeValue::N(_)))
                     {
                         return Err(DynamoInvalidOperation::new(&format!(
-                            "non-numeric value provided for numeric comparison on '{}'",
-                            bad_k
+                            "non-numeric value provided for numeric comparison on '{bad_k}'"
                         )));
                     }
                     cmp_attribute_conditions.extend(
@@ -948,7 +919,7 @@ impl DynamoUtil {
         mut expression_attribute_names: HashMap<String, String>,
         mut expression_attribute_values: HashMap<String, AttributeValue>,
     ) -> Result<(), ServerError> {
-        validate_id::<T>(object.id())?;
+        validate_object_id::<T>(object.id())?;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
@@ -961,41 +932,39 @@ impl DynamoUtil {
         add_legacy_field_removals::<T>(&map, &mut null_keys);
 
         // Build update expression.
-        let set_expression = match map.is_empty() {
-            true => "".to_string(),
-            false => {
-                "SET ".to_string()
-                    + &map
-                        .into_iter()
-                        .enumerate()
-                        .map(|(idx, (key, value))| {
-                            let key_placeholder = format!("#k{}", idx + 1);
-                            let value_placeholder = format!(":v{}", idx + 1);
-                            expression_attribute_names.insert(key_placeholder.clone(), key);
-                            expression_attribute_values.insert(value_placeholder.clone(), value);
-                            format!("{} = {}", key_placeholder, value_placeholder)
-                        })
-                        .collect::<Vec<String>>()
-                        .join(", ")
-            }
+        let set_expression = if map.is_empty() {
+            String::new()
+        } else {
+            "SET ".to_string()
+                + &map
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (key, value))| {
+                        let key_placeholder = format!("#k{}", idx + 1);
+                        let value_placeholder = format!(":v{}", idx + 1);
+                        expression_attribute_names.insert(key_placeholder.clone(), key);
+                        expression_attribute_values.insert(value_placeholder.clone(), value);
+                        format!("{key_placeholder} = {value_placeholder}")
+                    })
+                    .collect::<Vec<String>>()
+                    .join(", ")
         };
-        let remove_expression = match null_keys.is_empty() {
-            true => "".to_string(),
-            false => {
-                "REMOVE ".to_string()
-                    + &null_keys
-                        .into_iter()
-                        .enumerate()
-                        .map(|(idx, key)| {
-                            let key_placeholder = format!("#rmk{}", idx + 1);
-                            expression_attribute_names.insert(key_placeholder.clone(), key);
-                            key_placeholder
-                        })
-                        .collect::<Vec<String>>()
-                        .join(", ")
-            }
+        let remove_expression = if null_keys.is_empty() {
+            String::new()
+        } else {
+            "REMOVE ".to_string()
+                + &null_keys
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, key)| {
+                        let key_placeholder = format!("#rmk{}", idx + 1);
+                        expression_attribute_names.insert(key_placeholder.clone(), key);
+                        key_placeholder
+                    })
+                    .collect::<Vec<String>>()
+                    .join(", ")
         };
-        let update_expression = format!("{} {}", set_expression, remove_expression);
+        let update_expression = format!("{set_expression} {remove_expression}");
 
         // Build custom conditions & attribute equality conditions.
         let condition_expression = custom_conditions
@@ -1040,7 +1009,7 @@ impl DynamoUtil {
     pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), ServerError> {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
-        validate_id::<T>(&id)?;
+        validate_object_id::<T>(&id)?;
         if is_partitioned_id_logic::<T>() {
             let ids = expand_partition_delete_ids::<T>(self, vec![id]).await?;
             self.raw_batch_delete_ids(ids).await
@@ -1067,7 +1036,7 @@ impl DynamoUtil {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
         for key in &keys {
-            validate_id::<T>(key)?;
+            validate_object_id::<T>(key)?;
         }
         self.raw_batch_delete_ids(expand_partition_delete_ids::<T>(self, keys).await?)
             .await
@@ -1079,8 +1048,8 @@ impl DynamoUtil {
         parent_id: &PkSk,
     ) -> Result<(), ServerError> {
         reject_phantom_objects::<T>()?;
-        validate_parent_id::<T>(parent_id)?;
-        let search_prefix = child_search_prefix::<T>(parent_id);
+        validate_parent_for::<T>(parent_id)?;
+        let search_prefix = child_query_prefix::<T>(parent_id);
         let response = self
             .backend
             .query(
@@ -1099,9 +1068,9 @@ impl DynamoUtil {
             .into_iter()
             .flat_map(|page| page.items.unwrap_or_default().into_iter())
             .filter_map(|item| {
-                let (pk, sk) =
-                    get_pk_sk_from_map(&item).expect("query result item did not have pk/sk.");
-                match get_object_type(pk, sk) {
+                let (_, sk) =
+                    id_fields_from_map(&item).expect("query result item did not have pk/sk.");
+                match RawIdPath::new(sk).object_label() {
                     Ok(label) if label == T::id_label() => Some(PkSk::from_map(&item)),
                     _ => None,
                 }
@@ -1121,7 +1090,7 @@ impl DynamoUtil {
     ) -> Result<(), ServerError> {
         reject_phantom_objects::<T>()?;
         // Validations.
-        validate_parent_id::<T>(parent_id)?;
+        validate_parent_for::<T>(parent_id)?;
         let batch_size = match T::id_logic() {
             IdLogic::BatchOptimized { batch_size } => {
                 if batch_size == 0 {
@@ -1150,7 +1119,7 @@ impl DynamoUtil {
         // For batch-optimized ID logic, group the data into expandable batches.
         // -------------------------------------------------------------------
         req_not_none!(batch_size, CriticalError);
-        let maps = build_expandable_batch_maps::<T>(parent_id, data, batch_size)?;
+        let maps = build_expandable_batch_maps::<T>(parent_id, &data, batch_size)?;
 
         self.raw_batch_put_item(maps).await
     }
@@ -1194,7 +1163,7 @@ impl DynamoUtil {
                     }
                 })
                 .collect::<Vec<_>>();
-            while !pending_keys.is_empty() {
+            for attempt in 0..=MAX_BATCH_READ_RETRIES {
                 let response = self
                     .backend
                     .batch_get_item(
@@ -1215,6 +1184,16 @@ impl DynamoUtil {
                     .and_then(|keys| keys.get(&self.table))
                     .map(|keys| keys.keys().to_vec())
                     .unwrap_or_default();
+                if pending_keys.is_empty() {
+                    break;
+                }
+                if attempt == MAX_BATCH_READ_RETRIES {
+                    return Err(DynamoBatchReadRetriesExhausted::new(
+                        pending_keys.len(),
+                        MAX_BATCH_READ_RETRIES,
+                    ));
+                }
+                wait_before_batch_retry(attempt).await;
             }
         }
         Ok(items)
@@ -1237,13 +1216,29 @@ impl DynamoUtil {
 
         // Split into 25-item batches (max supported by DynamoDB).
         for batch in items.chunks(25) {
-            self.backend
-                .batch_delete_item(self.table.clone(), batch.to_vec())
-                .await
-                .map_err(|e| match e.into_service_error() {
-                    BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
-                    other => DynamoCalloutError::with_debug(&other),
-                })?;
+            let mut pending = batch.to_vec();
+            for attempt in 0..=MAX_BATCH_WRITE_RETRIES {
+                let response = self
+                    .backend
+                    .batch_delete_item(self.table.clone(), pending)
+                    .await
+                    .map_err(|e| match e.into_service_error() {
+                        BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
+                        other => DynamoCalloutError::with_debug(&other),
+                    })?;
+                pending = unprocessed_delete_keys(&response, &self.table)?;
+                if pending.is_empty() {
+                    break;
+                }
+                if attempt == MAX_BATCH_WRITE_RETRIES {
+                    return Err(DynamoBatchWriteRetriesExhausted::new(
+                        "delete",
+                        pending.len(),
+                        MAX_BATCH_WRITE_RETRIES,
+                    ));
+                }
+                wait_before_batch_retry(attempt).await;
+            }
         }
         Ok(())
     }
@@ -1263,10 +1258,26 @@ impl DynamoUtil {
 
         // Split into 25-item batches (max supported by DynamoDB).
         for batch in items.chunks(25) {
-            self.backend
-                .batch_put_item(self.table.clone(), batch.to_vec())
-                .await
-                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+            let mut pending = batch.to_vec();
+            for attempt in 0..=MAX_BATCH_WRITE_RETRIES {
+                let response = self
+                    .backend
+                    .batch_put_item(self.table.clone(), pending)
+                    .await
+                    .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+                pending = unprocessed_put_items(&response, &self.table)?;
+                if pending.is_empty() {
+                    break;
+                }
+                if attempt == MAX_BATCH_WRITE_RETRIES {
+                    return Err(DynamoBatchWriteRetriesExhausted::new(
+                        "put",
+                        pending.len(),
+                        MAX_BATCH_WRITE_RETRIES,
+                    ));
+                }
+                wait_before_batch_retry(attempt).await;
+            }
         }
         Ok(())
     }

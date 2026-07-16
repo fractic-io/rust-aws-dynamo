@@ -2,7 +2,10 @@ use fractic_server_error::{CriticalError, ServerError};
 use serde::Serialize;
 
 use crate::{
-    schema::{parsing::build_dynamo_map_internal, DynamoObject, NestingLogic, PkSk, Timestamp},
+    schema::{
+        identifiers::place_terminal_segment, parsing::build_dynamo_map_internal, DynamoObject,
+        PkSk, Timestamp,
+    },
     util::{
         metadata_helpers::WithMetadataFrom as _, DynamoMap, AUTO_FIELDS_CREATED_AT,
         AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, EXPAND_DATA_RESERVED_KEY,
@@ -15,31 +18,30 @@ use crate::{
 /// Wrapper struct used to store a batch of items that should be expanded on
 /// query.
 #[derive(Serialize)]
-struct ExpandableBatch<T: DynamoObject> {
+struct ExpandableBatch<'a, T: DynamoObject> {
     #[serde(rename = "..")]
-    items: Vec<T::Data>,
+    items: &'a [T::Data],
 }
 
 // Read logic.
 // ----------------------------------------------------------------------------
 
 pub(crate) fn expand_batched_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
-    items
-        .into_iter()
-        .flat_map(|mut item| match item.remove(EXPAND_DATA_RESERVED_KEY) {
-            Some(aws_sdk_dynamodb::types::AttributeValue::L(children)) => children
-                .into_iter()
-                .filter_map(|child| {
-                    if let aws_sdk_dynamodb::types::AttributeValue::M(inner_map) = child {
+    let mut expanded = Vec::with_capacity(items.len());
+    for mut item in items {
+        match item.remove(EXPAND_DATA_RESERVED_KEY) {
+            Some(aws_sdk_dynamodb::types::AttributeValue::L(children)) => {
+                expanded.extend(children.into_iter().filter_map(|child| match child {
+                    aws_sdk_dynamodb::types::AttributeValue::M(inner_map) => {
                         Some(inner_map.with_metadata_from(&item))
-                    } else {
-                        None
                     }
-                })
-                .collect::<Vec<_>>(),
-            _ => vec![item],
-        })
-        .collect()
+                    _ => None,
+                }));
+            }
+            _ => expanded.push(item),
+        }
+    }
+    expanded
 }
 
 // Write logic.
@@ -47,7 +49,7 @@ pub(crate) fn expand_batched_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
 
 pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
     parent_id: &PkSk,
-    data: Vec<T::Data>,
+    data: &[T::Data],
     batch_size: usize,
 ) -> Result<Vec<DynamoMap>, ServerError> {
     let num_batches = data.len().div_ceil(batch_size);
@@ -66,20 +68,9 @@ pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
             } else {
                 format!("{}#{i:0index_digits$}", T::id_label())
             };
-            let (pk, sk) = match T::nesting_logic() {
-                NestingLogic::Root => ("ROOT".to_string(), new_obj_id),
-                NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
-                    (parent_id.sk.clone(), new_obj_id)
-                }
-                NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => (
-                    parent_id.pk.clone(),
-                    format!("{}#{}", parent_id.sk, new_obj_id),
-                ),
-            };
+            let PkSk { pk, sk } = place_terminal_segment::<T>(parent_id, &new_obj_id);
 
-            let expandable_batch = ExpandableBatch::<T> {
-                items: batch.to_vec(),
-            };
+            let expandable_batch = ExpandableBatch::<T> { items: batch };
             let now = Timestamp::now();
             build_dynamo_map_internal::<ExpandableBatch<T>>(
                 &expandable_batch,
@@ -92,7 +83,7 @@ pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
                     (AUTO_FIELDS_TTL, Box::new(None::<i64>)),
                 ]),
             )
-            .map(|res| res.0)
+            .map(|(map, _)| map)
         })
         .collect::<Result<_, _>>()
         .map_err(|e| {

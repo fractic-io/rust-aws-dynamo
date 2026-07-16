@@ -24,16 +24,18 @@ mod tests {
             delete_item::DeleteItemOutput, get_item::GetItemOutput, put_item::PutItemOutput,
             query::QueryOutput, scan::ScanOutput, update_item::UpdateItemOutput,
         },
-        types::AttributeValue,
+        types::{AttributeValue, DeleteRequest, KeysAndAttributes, PutRequest, WriteRequest},
     };
     use chrono::{DateTime, Utc};
-    use core::panic;
     use fractic_core::collection;
     use mockall::predicate::*;
     use serde::{Deserialize, Serialize};
     use std::borrow::Cow;
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
     pub struct TestDynamoObjectData {
@@ -156,13 +158,13 @@ mod tests {
                     pk: "ROOT".to_string(),
                     sk: "GROUP#123#TEST#1".to_string(),
                 },
-                auto_fields: Default::default(),
+                auto_fields: AutoFields::default(),
                 data: TestDynamoObjectData::default(),
             },
             collection! {
                 "pk".to_string() => AttributeValue::S("ROOT".to_string()),
                 "sk".to_string() => AttributeValue::S("GROUP#123#TEST#1".to_string()),
-                "val_non_null".to_string() => AttributeValue::S("".to_string()),
+                "val_non_null".to_string() => AttributeValue::S(String::new()),
                 // "val_nullable" should not be present, since keys with null
                 // values are skipped.
             },
@@ -1118,7 +1120,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "TEST#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: TestDynamoObjectData {
                 val_non_null: "new_data".into(),
                 val_nullable: None,
@@ -1165,7 +1167,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "TEST#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: TestDynamoObjectData {
                 val_non_null: "new_data".into(),
                 val_nullable: Some("non_null".into()),
@@ -1205,7 +1207,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedUpdateObjectData {
                 name: Some("new_data".into()),
             },
@@ -1244,7 +1246,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedUpdateObjectData { name: None },
         };
 
@@ -1346,7 +1348,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedUpdateObjectData {
                 name: Some("new_data".into()),
             },
@@ -1391,7 +1393,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDNESTEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedNestedUpdateObjectData {
                 profile: Some(RenamedNestedProfile {
                     name: Some("new_data".into()),
@@ -1437,7 +1439,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "RENAMEDNESTEDUPDATE#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: RenamedNestedUpdateObjectData {
                 profile: Some(RenamedNestedProfile { name: None }),
             },
@@ -1516,7 +1518,7 @@ mod tests {
                 pk: "ABC#123".to_string(),
                 sk: "TEST#321".to_string(),
             },
-            auto_fields: Default::default(),
+            auto_fields: AutoFields::default(),
             data: TestDynamoObjectData {
                 val_non_null: "new_data".into(),
                 val_nullable: Some("claimed".into()),
@@ -1658,9 +1660,7 @@ mod tests {
                     sk: "TEST#321".to_string(),
                 },
                 |item| {
-                    if item.is_some() {
-                        panic!("Item should not exist");
-                    }
+                    assert!(item.is_none(), "Item should not exist");
                     Ok(TestDynamoObjectData {
                         val_non_null: "new_data".into(),
                         val_nullable: Some("non_null".into()),
@@ -2252,7 +2252,7 @@ mod tests {
 
         let new_items = (0..32)
             .map(|i| BatchOptInlineDynamoObjectData {
-                val: format!("n{}", i),
+                val: format!("n{i}"),
             })
             .collect::<Vec<_>>();
 
@@ -2400,5 +2400,237 @@ mod tests {
             second.get(EXPAND_DATA_RESERVED_KEY).unwrap(),
             AttributeValue::L(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_raw_batch_put_retries_only_unprocessed_items() {
+        let first = build_item_low_sort().1;
+        let second = build_item_high_sort().1;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut backend = MockDynamoBackend::new();
+        backend.expect_batch_put_item().times(2).returning({
+            let calls = calls.clone();
+            let second = second.clone();
+            move |table, items| {
+                let call = calls.fetch_add(1, Ordering::Relaxed);
+                if call == 0 {
+                    assert_eq!(items.len(), 2);
+                    let request = WriteRequest::builder()
+                        .put_request(
+                            PutRequest::builder()
+                                .set_item(Some(second.clone()))
+                                .build()
+                                .unwrap(),
+                        )
+                        .build();
+                    Ok(BatchWriteItemOutput::builder()
+                        .set_unprocessed_items(Some(HashMap::from([(table, vec![request])])))
+                        .build())
+                } else {
+                    assert_eq!(items, vec![second.clone()]);
+                    Ok(BatchWriteItemOutput::builder().build())
+                }
+            }
+        });
+
+        build_util(backend)
+            .await
+            .raw_batch_put_item(vec![first, second])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_raw_batch_get_retries_only_unprocessed_items() {
+        let first = PkSk {
+            pk: "ROOT".into(),
+            sk: "TEST#first".into(),
+        };
+        let second = PkSk {
+            pk: "ROOT".into(),
+            sk: "TEST#second".into(),
+        };
+        let second_key: HashMap<String, AttributeValue> = collection! {
+            "pk".to_string() => AttributeValue::S(second.pk.clone()),
+            "sk".to_string() => AttributeValue::S(second.sk.clone()),
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut backend = MockDynamoBackend::new();
+        backend.expect_batch_get_item().times(2).returning({
+            let calls = calls.clone();
+            let second_key = second_key.clone();
+            move |table, keys, _| {
+                let call = calls.fetch_add(1, Ordering::Relaxed);
+                if call == 0 {
+                    assert_eq!(keys.len(), 2);
+                    Ok(BatchGetItemOutput::builder()
+                        .set_unprocessed_keys(Some(HashMap::from([(
+                            table,
+                            KeysAndAttributes::builder()
+                                .set_keys(Some(vec![second_key.clone()]))
+                                .build()
+                                .unwrap(),
+                        )])))
+                        .build())
+                } else {
+                    assert_eq!(keys, vec![second_key.clone()]);
+                    Ok(BatchGetItemOutput::builder().build())
+                }
+            }
+        });
+
+        build_util(backend)
+            .await
+            .raw_batch_get_ids(vec![first, second], None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_raw_batch_delete_retries_only_unprocessed_items() {
+        let first = PkSk {
+            pk: "ROOT".into(),
+            sk: "TEST#first".into(),
+        };
+        let second = PkSk {
+            pk: "ROOT".into(),
+            sk: "TEST#second".into(),
+        };
+        let second_key: HashMap<String, AttributeValue> = collection! {
+            "pk".to_string() => AttributeValue::S(second.pk.clone()),
+            "sk".to_string() => AttributeValue::S(second.sk.clone()),
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut backend = MockDynamoBackend::new();
+        backend.expect_batch_delete_item().times(2).returning({
+            let calls = calls.clone();
+            let second_key = second_key.clone();
+            move |table, keys| {
+                let call = calls.fetch_add(1, Ordering::Relaxed);
+                if call == 0 {
+                    assert_eq!(keys.len(), 2);
+                    let request = WriteRequest::builder()
+                        .delete_request(
+                            DeleteRequest::builder()
+                                .set_key(Some(second_key.clone()))
+                                .build()
+                                .unwrap(),
+                        )
+                        .build();
+                    Ok(BatchWriteItemOutput::builder()
+                        .set_unprocessed_items(Some(HashMap::from([(table, vec![request])])))
+                        .build())
+                } else {
+                    assert_eq!(keys, vec![second_key.clone()]);
+                    Ok(BatchWriteItemOutput::builder().build())
+                }
+            }
+        });
+
+        build_util(backend)
+            .await
+            .raw_batch_delete_ids(vec![first, second])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_raw_batch_put_errors_after_three_unprocessed_retries() {
+        let item = build_item_low_sort().1;
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_batch_put_item()
+            .times(4)
+            .returning(|table, items| {
+                let request = WriteRequest::builder()
+                    .put_request(
+                        PutRequest::builder()
+                            .set_item(Some(items[0].clone()))
+                            .build()
+                            .unwrap(),
+                    )
+                    .build();
+                Ok(BatchWriteItemOutput::builder()
+                    .set_unprocessed_items(Some(HashMap::from([(table, vec![request])])))
+                    .build())
+            });
+
+        let error = build_util(backend)
+            .await
+            .raw_batch_put_item(vec![item])
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("batch put still had 1 unprocessed items after 3 retries"));
+    }
+
+    #[tokio::test]
+    async fn test_raw_batch_get_errors_after_three_unprocessed_retries() {
+        let id = PkSk {
+            pk: "ROOT".into(),
+            sk: "TEST#one".into(),
+        };
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_batch_get_item()
+            .times(4)
+            .returning(|table, keys, _| {
+                Ok(BatchGetItemOutput::builder()
+                    .set_unprocessed_keys(Some(HashMap::from([(
+                        table,
+                        KeysAndAttributes::builder()
+                            .set_keys(Some(keys))
+                            .build()
+                            .unwrap(),
+                    )])))
+                    .build())
+            });
+
+        let error = build_util(backend)
+            .await
+            .raw_batch_get_ids(vec![id], None)
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("batch read still had 1 unprocessed items after 3 retries"));
+    }
+
+    #[tokio::test]
+    async fn test_raw_batch_delete_errors_after_three_unprocessed_retries() {
+        let id = PkSk {
+            pk: "ROOT".into(),
+            sk: "TEST#one".into(),
+        };
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_batch_delete_item()
+            .times(4)
+            .returning(|table, keys| {
+                let request = WriteRequest::builder()
+                    .delete_request(
+                        DeleteRequest::builder()
+                            .set_key(Some(keys[0].clone()))
+                            .build()
+                            .unwrap(),
+                    )
+                    .build();
+                Ok(BatchWriteItemOutput::builder()
+                    .set_unprocessed_items(Some(HashMap::from([(table, vec![request])])))
+                    .build())
+            });
+
+        let error = build_util(backend)
+            .await
+            .raw_batch_delete_ids(vec![id])
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("batch delete still had 1 unprocessed items after 3 retries"));
     }
 }

@@ -19,7 +19,8 @@ pub fn validate_object_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError>
             id
         )));
     }
-    if sort_key.object_label()? != T::id_label() {
+    let parsed = sort_key.parse()?;
+    if parsed.object_label() != T::id_label() {
         return Err(DynamoInvalidOperation::new(&format!(
             "ID does not match object type; expected object type '{}', got ID '{}'",
             T::id_label(),
@@ -37,7 +38,7 @@ pub fn validate_object_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError>
         IdLogic::Phantom => None,
     };
     if let Some(expected) = expected_kind {
-        if sort_key.terminal_kind()? != expected {
+        if parsed.terminal_kind() != expected {
             return Err(DynamoInvalidOperation::new(&format!(
                 "ID syntax does not match the configured ID logic for object type '{}': '{}'",
                 T::id_label(),

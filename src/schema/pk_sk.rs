@@ -59,13 +59,8 @@ impl PkSk {
     }
 
     /// Returns the terminal object's configured ID label.
-    pub fn object_label(&self) -> Result<&str, ServerError> {
-        SortKey::new(&self.sk).object_label()
-    }
-
-    /// Backwards-compatible alias for [`PkSk::object_label`].
     pub fn object_type(&self) -> Result<&str, ServerError> {
-        self.object_label()
+        SortKey::new(&self.sk).object_label()
     }
 
     /// Whether the terminal object uses singleton ID syntax.

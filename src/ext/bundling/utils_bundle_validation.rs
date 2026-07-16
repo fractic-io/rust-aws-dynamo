@@ -50,7 +50,8 @@ pub(crate) fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> 
             return Err(DynamoInvalidBundle::new("bundle item shape was invalid"));
         }
         let sort_key = SortKey::new(&item.id.original_sk);
-        if sort_key.logical() != item.id.original_sk || sort_key.object_label()? != item.id.label {
+        let parsed = sort_key.parse()?;
+        if sort_key.logical() != item.id.original_sk || parsed.object_label() != item.id.label {
             return Err(DynamoInvalidBundle::new(
                 "bundle item ID metadata was invalid",
             ));
@@ -79,9 +80,10 @@ pub(crate) fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> 
         .get(&bundle.root)
         .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
     let root_sort_key = SortKey::new(&bundle.source_root.sk);
+    let parsed_root_sort_key = root_sort_key.parse()?;
     if root_sort_key.logical() != bundle.source_root.sk
         || bundle.source_root.sk != root.id.original_sk
-        || root_sort_key.object_label()? != root.id.label
+        || parsed_root_sort_key.object_label() != root.id.label
         || (root.nesting == BundleNesting::Root && bundle.source_root.pk != ROOT_KEY)
     {
         return Err(DynamoInvalidBundle::new(

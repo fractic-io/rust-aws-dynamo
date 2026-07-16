@@ -23,7 +23,7 @@ use crate::{
         DynamoNotFound, DynamoUnexpectedItemCount,
     },
     schema::{
-        identifiers::{generate_id_with_options, IdGenerationOptions, SortKey},
+        identifiers::{generate_id_with_options, IdGenerationOptions, RawIdPath},
         parsing::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
             build_dynamo_map_internal, parse_dynamo_map, IdKeys,
@@ -253,7 +253,7 @@ impl DynamoUtil {
             .filter_map(|item| {
                 let (_, sk) =
                     fields_from_map(&item).expect("query result item did not have pk/sk.");
-                match SortKey::new(sk).object_label() {
+                match RawIdPath::new(sk).object_label() {
                     Ok(label) if label == T::id_label() => {
                         // Item is of type T.
                         Some(parse_dynamo_map::<T>(&item))
@@ -1085,7 +1085,7 @@ impl DynamoUtil {
             .filter_map(|item| {
                 let (_, sk) =
                     fields_from_map(&item).expect("query result item did not have pk/sk.");
-                match SortKey::new(sk).object_label() {
+                match RawIdPath::new(sk).object_label() {
                     Ok(label) if label == T::id_label() => Some(PkSk::from_map(&item)),
                     _ => None,
                 }

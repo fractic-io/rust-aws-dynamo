@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{identifiers::SortKey, ForeignRef, PkSk};
+use super::{identifiers::RawIdPath, ForeignRef, PkSk};
 
 impl<'a> ForeignRef<'a> {
     /// Returns the raw internal reference string.
@@ -88,17 +88,17 @@ impl<'de> Deserialize<'de> for ForeignRef<'static> {
 /// 4) otherwise => treat them as an already-minimal reference
 fn normalize_ref(raw: &str) -> &str {
     if let Some((_, sk)) = raw.split_once('|') {
-        return SortKey::new(sk).foreign_ref_value();
+        return RawIdPath::new(sk).foreign_ref_value();
     }
     if raw.contains('#') || raw.starts_with('@') {
-        return SortKey::new(raw).foreign_ref_value();
+        return RawIdPath::new(raw).foreign_ref_value();
     }
     raw
 }
 
 /// Extracts the minimal reference string from a full Dynamo sk.
 fn extract_ref_from_sk(sk: &str) -> &str {
-    SortKey::new(sk).foreign_ref_value()
+    RawIdPath::new(sk).foreign_ref_value()
 }
 
 // Tests.

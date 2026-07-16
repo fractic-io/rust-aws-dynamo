@@ -5,7 +5,7 @@ use fractic_server_error::{CriticalError, ServerError};
 
 use crate::errors::DynamoInvalidBundle;
 use crate::schema::{
-    identifiers::{place_object, regenerate_timestamp, regenerate_uuid, IdPlacement, SortKey},
+    identifiers::{place_object, regenerate_timestamp, regenerate_uuid, IdPlacement, RawIdPath},
     PkSk,
 };
 
@@ -99,10 +99,9 @@ fn place_root(
         BundleNesting::Inline => {
             let parent =
                 parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
-            let component =
-                SortKey::new(&item.id.original_sk).terminal_component(&item.id.label)?;
-            let component = destination_object_sk(component, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_object(parent, &component, IdPlacement::Inline))
+            let segment = RawIdPath::new(&item.id.original_sk).terminal_segment(&item.id.label)?;
+            let segment = destination_object_sk(segment, duplicate, id_logic, duplicate_ids)?;
+            Ok(place_object(parent, &segment, IdPlacement::Inline))
         }
     }
 }
@@ -125,8 +124,8 @@ fn place_child(
                 .parent
                 .as_ref()
                 .ok_or_else(|| DynamoInvalidBundle::new("inline child had no parent"))?;
-            let relative = SortKey::new(&item.id.original_sk)
-                .relative_to(SortKey::new(&original_parent.original_sk))?;
+            let relative = RawIdPath::new(&item.id.original_sk)
+                .relative_to(RawIdPath::new(&original_parent.original_sk))?;
             let relative = destination_object_sk(relative, duplicate, id_logic, duplicate_ids)?;
             Ok(place_object(parent, &relative, IdPlacement::Inline))
         }
@@ -172,7 +171,7 @@ fn destination_object_sk(
     duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<String, ServerError> {
     if !duplicate {
-        return Ok(SortKey::new(original_sk).logical().to_string());
+        return Ok(RawIdPath::new(original_sk).logical_path().to_string());
     }
     match id_logic {
         BundleIdLogic::Uuid => regenerate_uuid(original_sk),
@@ -183,7 +182,9 @@ fn destination_object_sk(
         | BundleIdLogic::IndexedSingleton
         | BundleIdLogic::BatchOptimized
         | BundleIdLogic::SingletonExt
-        | BundleIdLogic::IndexedSingletonExt => Ok(SortKey::new(original_sk).logical().to_string()),
+        | BundleIdLogic::IndexedSingletonExt => {
+            Ok(RawIdPath::new(original_sk).logical_path().to_string())
+        }
         BundleIdLogic::Phantom => Err(DynamoInvalidBundle::new(
             "persisted bundle item used phantom ID logic",
         )),

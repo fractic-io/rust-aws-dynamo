@@ -10,7 +10,7 @@ use serde::{
 use crate::{errors::DynamoInvalidId, util::DynamoMap};
 
 use super::{
-    identifiers::{generate_id, SortKey, ROOT_KEY},
+    identifiers::{generate_id, RawIdPath, ROOT_KEY},
     DynamoObject, ForeignRef, PkSk,
 };
 
@@ -60,12 +60,12 @@ impl PkSk {
 
     /// Returns the terminal object's configured ID label.
     pub fn object_type(&self) -> Result<&str, ServerError> {
-        SortKey::new(&self.sk).object_label()
+        RawIdPath::new(&self.sk).object_label()
     }
 
     /// Whether the terminal object uses singleton ID syntax.
     pub fn is_singleton(&self) -> bool {
-        SortKey::new(&self.sk).is_singleton()
+        RawIdPath::new(&self.sk).is_singleton()
     }
 
     pub fn build_ref<'a>(&'a self) -> ForeignRef<'a> {

@@ -93,7 +93,7 @@ dynamo_object!(
 );
 
 #[test]
-fn generates_each_terminal_shape() {
+fn generates_each_terminal_segment_shape() {
     let uuid = generate_id::<RootUuid>(&RootUuidData {}, PkSk::root()).unwrap();
     assert_eq!(uuid.pk, ROOT_KEY);
     assert!(uuid.sk.starts_with("ROOTOBJ#"));
@@ -177,7 +177,7 @@ fn generation_enforces_parent_relationships() {
 }
 
 #[test]
-fn regenerates_only_non_singleton_terminal_values() {
+fn regenerates_only_non_singleton_segment_values() {
     let regenerated = regenerate_uuid("PARENT#old#CHILD#old").unwrap();
     assert!(regenerated.starts_with("PARENT#old#CHILD#"));
     assert_ne!(regenerated, "PARENT#old#CHILD#old");

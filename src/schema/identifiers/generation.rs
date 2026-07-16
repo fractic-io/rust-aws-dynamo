@@ -5,7 +5,7 @@ use crate::{
     schema::{DynamoObject, IdLogic, PkSk},
 };
 
-use super::{placement::place_for, relations::validate_parent_relation, sort_key::SortKey};
+use super::{id_path::RawIdPath, placement::place_for, relations::validate_parent_relation};
 
 const ID_VALUE_WIDTH: usize = 16;
 const MAX_TIMESTAMP_ID: i64 = 9_999_999_999_999_999;
@@ -36,7 +36,7 @@ pub(crate) fn generate_id_with_options<T: DynamoObject>(
         .map_err(|error| DynamoInvalidParent::new(&error.to_string()))?;
     validate_configured_label(T::id_label())?;
 
-    let object_sk =
+    let terminal_segment =
         match T::id_logic() {
             IdLogic::Phantom => return Err(CriticalError::new(
                 "IDs for IdLogic::Phantom must be constructed manually; phantom objects cannot be \
@@ -62,21 +62,21 @@ pub(crate) fn generate_id_with_options<T: DynamoObject>(
             }
         };
 
-    Ok(place_for::<T>(parent, &object_sk))
+    Ok(place_for::<T>(parent, &terminal_segment))
 }
 
-/// Regenerates the terminal value of a UUID ID.
+/// Regenerates the terminal segment value of a UUID ID.
 pub(crate) fn regenerate_uuid(sk: &str) -> Result<String, ServerError> {
-    Ok(SortKey::new(sk)
+    Ok(RawIdPath::new(sk)
         .parse()?
-        .with_terminal_value(&new_uuid_value()))
+        .with_terminal_segment_value(&new_uuid_value()))
 }
 
-/// Regenerates the terminal value of a timestamp ID.
+/// Regenerates the terminal segment value of a timestamp ID.
 pub(crate) fn regenerate_timestamp(sk: &str, timestamp_millis: i64) -> Result<String, ServerError> {
-    Ok(SortKey::new(sk)
+    Ok(RawIdPath::new(sk)
         .parse()?
-        .with_terminal_value(&timestamp_value(timestamp_millis)?))
+        .with_terminal_segment_value(&timestamp_value(timestamp_millis)?))
 }
 
 fn validate_configured_label(label: &str) -> Result<(), ServerError> {

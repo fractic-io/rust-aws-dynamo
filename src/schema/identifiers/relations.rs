@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::schema::{DynamoObject, NestingLogic, PkSk};
 
-use super::sort_key::SortKey;
+use super::id_path::RawIdPath;
 
 /// Describes why a candidate parent cannot contain an object type.
 #[derive(Debug, Eq, PartialEq)]
@@ -48,7 +48,7 @@ pub(crate) fn validate_parent_relation<T: DynamoObject>(
             Err(ParentRelationError::RootRequired)
         };
     }
-    if SortKey::new(&parent.sk).is_singleton() {
+    if RawIdPath::new(&parent.sk).is_singleton() {
         return Err(ParentRelationError::SingletonCannotHaveChildren);
     }
 
@@ -57,7 +57,7 @@ pub(crate) fn validate_parent_relation<T: DynamoObject>(
         NestingLogic::TopLevelChildOfAny | NestingLogic::InlineChildOfAny => return Ok(()),
         NestingLogic::Root => unreachable!("handled above"),
     };
-    let actual = SortKey::new(&parent.sk)
+    let actual = RawIdPath::new(&parent.sk)
         .parse()
         .map_err(|error| ParentRelationError::InvalidParentId(error.to_string()))?
         .object_label();

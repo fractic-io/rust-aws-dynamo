@@ -3,7 +3,9 @@ use fractic_server_error::ServerError;
 use crate::{
     errors::DynamoInvalidOperation,
     schema::{
-        identifiers::{place_for, validate_parent_relation, SortKey, TerminalKind},
+        identifiers::{
+            place_for, validate_parent_relation, ParsedIdPath, RawIdPath, TerminalSegmentKind,
+        },
         DynamoObject, IdLogic, PkSk,
     },
 };
@@ -12,14 +14,14 @@ use crate::{
 /// physical ext-partition row.
 #[track_caller]
 pub fn validate_object_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError> {
-    let sort_key = SortKey::new(&id.sk);
-    if id.sk != sort_key.logical() {
+    let raw_path = RawIdPath::new(&id.sk);
+    if id.sk != raw_path.logical_path() {
         return Err(DynamoInvalidOperation::new(&format!(
             "ID must be a logical object ID, not an ext-partition row ID: '{}'",
             id
         )));
     }
-    let parsed = sort_key.parse()?;
+    let parsed: ParsedIdPath<'_> = raw_path.parse()?;
     if parsed.object_label() != T::id_label() {
         return Err(DynamoInvalidOperation::new(&format!(
             "ID does not match object type; expected object type '{}', got ID '{}'",
@@ -28,17 +30,17 @@ pub fn validate_object_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError>
         )));
     }
     let expected_kind = match T::id_logic() {
-        IdLogic::Singleton | IdLogic::SingletonExt => Some(TerminalKind::Singleton),
+        IdLogic::Singleton | IdLogic::SingletonExt => Some(TerminalSegmentKind::Singleton),
         IdLogic::IndexedSingleton(_) | IdLogic::IndexedSingletonExt(_) => {
-            Some(TerminalKind::IndexedSingleton)
+            Some(TerminalSegmentKind::IndexedSingleton)
         }
         IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {
-            Some(TerminalKind::Regular)
+            Some(TerminalSegmentKind::Regular)
         }
         IdLogic::Phantom => None,
     };
     if let Some(expected) = expected_kind {
-        if parsed.terminal_kind() != expected {
+        if parsed.terminal_segment_kind() != expected {
             return Err(DynamoInvalidOperation::new(&format!(
                 "ID syntax does not match the configured ID logic for object type '{}': '{}'",
                 T::id_label(),

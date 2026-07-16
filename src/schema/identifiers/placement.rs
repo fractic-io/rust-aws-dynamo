@@ -1,10 +1,10 @@
 use crate::schema::{DynamoObject, NestingLogic, PkSk};
 
-use super::sort_key::SortKey;
+use super::id_path::RawIdPath;
 
 pub(crate) const ROOT_KEY: &str = "ROOT";
 
-/// The three ways an object's terminal sort key can be placed in DynamoDB.
+/// The three ways an object's terminal segment can be placed in DynamoDB.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IdPlacement {
     Root,
@@ -12,27 +12,27 @@ pub(crate) enum IdPlacement {
     Inline,
 }
 
-/// Places an object's sort-key component using `T`'s declared nesting logic.
-pub(crate) fn place_for<T: DynamoObject>(parent: &PkSk, object_sk: &str) -> PkSk {
-    place_object(parent, object_sk, placement_for(T::nesting_logic()))
+/// Places an object's ID-path segment using `T`'s declared nesting logic.
+pub(crate) fn place_for<T: DynamoObject>(parent: &PkSk, path: &str) -> PkSk {
+    place_object(parent, path, placement_for(T::nesting_logic()))
 }
 
-/// Places a logical terminal or relative sort key according to the requested
+/// Places a terminal segment or relative ID path according to the requested
 /// storage relationship.
-pub(crate) fn place_object(parent: &PkSk, object_sk: &str, placement: IdPlacement) -> PkSk {
-    let object_sk = SortKey::new(object_sk).logical();
+pub(crate) fn place_object(parent: &PkSk, path: &str, placement: IdPlacement) -> PkSk {
+    let logical_path = RawIdPath::new(path).logical_path();
     match placement {
         IdPlacement::Root => PkSk {
             pk: ROOT_KEY.to_string(),
-            sk: object_sk.to_string(),
+            sk: logical_path.to_string(),
         },
         IdPlacement::TopLevel => PkSk {
             pk: parent.sk.clone(),
-            sk: object_sk.to_string(),
+            sk: logical_path.to_string(),
         },
         IdPlacement::Inline => PkSk {
             pk: parent.pk.clone(),
-            sk: join_inline_child(&parent.sk, object_sk),
+            sk: join_inline_child(&parent.sk, logical_path),
         },
     }
 }

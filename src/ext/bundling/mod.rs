@@ -73,6 +73,26 @@ impl<'a> Bundler<'a> {
             parent,
             bundle,
             if_existing,
+            false,
+        )
+        .await
+    }
+
+    /// Imports an ordered child bundle, placing a successful duplicate last
+    /// among existing siblings. Merge and Replace retain the bundled sort.
+    pub async fn import_ordered<O: DynamoObject>(
+        &self,
+        parent: &PkSk,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError> {
+        impl_import::import_bundle::<O>(
+            self.dynamo_util,
+            self.crud_algorithms,
+            Some(parent),
+            bundle,
+            if_existing,
+            true,
         )
         .await
     }

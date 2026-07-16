@@ -500,7 +500,7 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .import_ordered::<O>(parent.id(), bundle, if_existing)
             .await
     }
 
@@ -643,7 +643,7 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .import_ordered::<O>(parent.id(), bundle, if_existing)
             .await
     }
 

@@ -101,7 +101,7 @@ pub(crate) fn append_child_sk(parent_sk: &str, child_sk: &str) -> String {
 /// object without access to its original parent.
 pub(crate) fn object_sk_component<'a>(sk: &'a str, label: &str) -> Result<&'a str, ServerError> {
     let sk = strip_ext_suffix(sk);
-    if let Some(at) = sk.rfind('@') {
+    if let Some(at) = sk.find('@') {
         return Ok(&sk[at..]);
     }
     let marker = format!("#{label}#");
@@ -444,6 +444,10 @@ mod tests {
         assert_eq!(
             object_sk_component("PARENT#old@SETTINGS[key]", "SETTINGS").unwrap(),
             "@SETTINGS[key]"
+        );
+        assert_eq!(
+            object_sk_component("PARENT#old@SETTINGS[user@example.com]", "SETTINGS").unwrap(),
+            "@SETTINGS[user@example.com]"
         );
         assert_eq!(
             relative_child_sk("PARENT#old#CHILD#old", "PARENT#old").unwrap(),

@@ -165,6 +165,7 @@ async fn export_bundle(
         .ok_or_else(|| invalid_bundle("source root was not returned by DynamoDB"))?;
     let mut bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
+        source_root: root_id,
         root,
         recursive: options.recursive,
         omitted_descendants,
@@ -186,7 +187,7 @@ pub(crate) fn logical_base_id(id: &PkSk) -> PkSk {
 
 pub(crate) fn terminal_ref(sk: &str) -> &str {
     let sk = strip_ext_suffix(sk);
-    if let Some(at) = sk.rfind('@') {
+    if let Some(at) = sk.find('@') {
         let singleton = &sk[at + 1..];
         if let (Some(open), Some(close)) = (singleton.find('['), singleton.find(']')) {
             return &singleton[open + 1..close];
@@ -303,6 +304,8 @@ fn collect_references(
                         let id = find_bundled_target(
                             bundle,
                             original_ids,
+                            item,
+                            &matched.path,
                             &original,
                             encoding,
                             Some(&target_label),
@@ -432,6 +435,8 @@ fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
 fn find_bundled_target(
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
+    source: &DynamoBundleItem,
+    path: &super::BundleDataPath,
     value: &Value,
     encoding: DynamoBundleReferenceEncoding,
     target_label: Option<&str>,
@@ -445,7 +450,7 @@ fn find_bundled_target(
         let target = original_ids
             .get(&id)
             .filter(|target| target_label.is_none_or(|label| target.label == label))
-            .ok_or_else(|| invalid_bundle("bundled reference target was absent"))?;
+            .ok_or_else(|| missing_internal_target(bundle, source, path, raw, target_label))?;
         return Ok(target.clone());
     }
 
@@ -457,11 +462,28 @@ fn find_bundled_target(
     });
     let target = matches
         .next()
-        .ok_or_else(|| invalid_bundle("bundled reference target was absent"))?;
+        .ok_or_else(|| missing_internal_target(bundle, source, path, raw, target_label))?;
     if matches.next().is_some() {
         return Err(invalid_bundle("bundled reference target was ambiguous"));
     }
     Ok(target.id.clone())
+}
+
+fn missing_internal_target(
+    bundle: &DynamoBundle,
+    source: &DynamoBundleItem,
+    path: &super::BundleDataPath,
+    raw_target: &str,
+    target_label: Option<&str>,
+) -> ServerError {
+    invalid_bundle(&format!(
+        "portable export rooted at `{}` was not closed: `{}` item `{}` path `{path}` requires \
+         internal {}target `{raw_target}`, but that target was outside the exported scope",
+        bundle.source_root,
+        source.id.label,
+        source.id.original_sk,
+        target_label.map_or_else(String::new, |label| format!("`{label}` ")),
+    ))
 }
 
 fn group_logical_rows(rows: Vec<DynamoMap>) -> Result<HashMap<PkSk, Vec<DynamoMap>>, ServerError> {

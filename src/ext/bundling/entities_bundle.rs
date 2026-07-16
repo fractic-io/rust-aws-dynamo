@@ -43,6 +43,8 @@ pub enum BundleIdLogic {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamoBundle {
     pub version: u32,
+    /// Original logical database placement of the bundle root.
+    pub source_root: PkSk,
     pub root: BundleId,
     #[serde(default)]
     pub recursive: bool,
@@ -125,8 +127,11 @@ pub enum DynamoBundleReferenceTarget {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IfExisting {
+    /// Upserts the bundle at its original source placement.
     Merge,
+    /// Reconciles the stored subtree at its original source placement.
     Replace,
+    /// Always creates a distinct root identity, allowing a different parent.
     #[default]
     Duplicate,
 }

@@ -10,19 +10,20 @@ use crate::{
     ext::crud::DynamoCrudAlgorithms,
     schema::{
         id_calculations::{
-            freshen_object_sk, freshen_timestamp_object_sk, get_object_type, is_singleton,
-            object_sk_component, place_inline_id, place_root_id, place_top_level_id,
-            relative_child_sk, strip_ext_suffix,
+            freshen_object_sk, freshen_timestamp_object_sk, get_object_type, object_sk_component,
+            place_inline_id, place_root_id, place_top_level_id, relative_child_sk,
+            strip_ext_suffix,
         },
         parsing::build_dynamo_map_internal,
         DynamoObject, PkSk, Timestamp,
     },
     util::{
+        calculate_sort_values,
         collapse_helpers::{
             build_partition_write_plan_from_serialized_at, ext_partition_ids_for_count,
         },
-        DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL,
-        AUTO_FIELDS_UPDATED_AT, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        DynamoInsertPosition, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT,
+        AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
     },
 };
 
@@ -60,6 +61,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     parent: Option<&PkSk>,
     mut bundle: DynamoBundle,
     if_existing: IfExisting,
+    ordered_root: bool,
 ) -> Result<DynamoImportResult, ServerError> {
     validate_bundle(&bundle)?;
     let root_item = bundle
@@ -76,22 +78,39 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     let policy = configured_bundle_policy(algorithms);
     let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic)?;
     let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
-    let existing = find_existing(util, &preserved_ids).await?;
-    let duplicated = !existing.conflicts.is_empty() && matches!(if_existing, IfExisting::Duplicate);
-    if duplicated && is_singleton("", &bundle.root.original_sk) {
-        return Err(DynamoInvalidOperation::new(
-            "a singleton bundle root cannot be duplicated below the same parent",
-        ));
-    }
-    if duplicated && root_id_logic == BundleIdLogic::BatchOptimized {
-        return Err(DynamoInvalidOperation::new(
-            "a batch-optimized bundle root cannot be duplicated below the same parent",
-        ));
-    }
-    let id_map = if duplicated {
-        build_id_map(&bundle, parent, true, root_id_logic)?
-    } else {
-        preserved_ids
+    let preserved_root_id = preserved_ids
+        .get(&bundle.root)
+        .ok_or_else(|| invalid_bundle("bundle root had no preserved destination ID"))?;
+    let (id_map, existing, duplicated) = match if_existing {
+        IfExisting::Duplicate => {
+            let ids = build_id_map(&bundle, parent, true, root_id_logic)?;
+            let destination_root = ids
+                .get(&bundle.root)
+                .ok_or_else(|| invalid_bundle("bundle root had no duplicate destination ID"))?;
+            if destination_root == &bundle.source_root {
+                return Err(DynamoInvalidOperation::new(
+                    "bundle root has a fixed identity at this placement and cannot be duplicated; \
+                     use Merge or Replace",
+                ));
+            }
+            let existing = find_existing(util, &ids).await?;
+            if !existing.conflicts.is_empty() {
+                return Err(DynamoInvalidOperation::new(
+                    "one or more generated duplicate destination IDs already exist",
+                ));
+            }
+            (ids, existing, true)
+        }
+        IfExisting::Merge | IfExisting::Replace => {
+            if preserved_root_id != &bundle.source_root {
+                return Err(DynamoInvalidOperation::new(
+                    "bundle reparenting is not supported for Merge or Replace; use Duplicate to \
+                     import below a different parent",
+                ));
+            }
+            let existing = find_existing(util, &preserved_ids).await?;
+            (preserved_ids, existing, false)
+        }
     };
     if id_map.values().collect::<HashSet<_>>().len() != id_map.len() {
         return Err(invalid_bundle(
@@ -121,6 +140,9 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     };
 
     let warnings = resolve_references(util, &mut bundle, &id_map).await?;
+    if duplicated && ordered_root {
+        place_duplicate_root_last::<O>(util, parent, &mut bundle).await?;
+    }
     let existing_partition_counts = if duplicated {
         HashMap::new()
     } else {
@@ -375,6 +397,45 @@ fn partition_payload(data: &Value) -> Result<(String, Option<f64>, Option<i64>),
     ))
 }
 
+async fn place_duplicate_root_last<O: DynamoObject>(
+    util: &DynamoUtil,
+    parent: Option<&PkSk>,
+    bundle: &mut DynamoBundle,
+) -> Result<(), ServerError> {
+    let parent = parent.ok_or_else(|| {
+        invalid_bundle("ordered bundle root required a destination parent for sort placement")
+    })?;
+    let root = bundle
+        .items
+        .iter_mut()
+        .find(|item| item.id == bundle.root)
+        .ok_or_else(|| invalid_bundle("bundle root item was missing"))?;
+    let data = serde_json::from_value::<O::Data>(root.data.clone()).map_err(|error| {
+        DynamoInvalidOperation::with_debug(
+            "ordered bundle root data could not be read for destination sort placement",
+            &error,
+        )
+    })?;
+    let sort = calculate_sort_values::<O>(util, parent, &data, DynamoInsertPosition::Last, 1)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            CriticalError::new("ordered bundle root sort calculation returned no value")
+        })?;
+    let Value::Object(data) = &mut root.data else {
+        return Err(invalid_bundle("ordered bundle root data was not an object"));
+    };
+    data.insert(
+        AUTO_FIELDS_SORT.to_owned(),
+        Value::Number(
+            serde_json::Number::from_f64(sort)
+                .ok_or_else(|| CriticalError::new("ordered bundle root sort was not finite"))?,
+        ),
+    );
+    Ok(())
+}
+
 async fn replace_stale(
     util: &DynamoUtil,
     bundles: &DynamoBundlePolicy,
@@ -615,6 +676,16 @@ fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
         .iter()
         .map(|item| (&item.id, item))
         .collect::<HashMap<_, _>>();
+    let root = items
+        .get(&bundle.root)
+        .ok_or_else(|| invalid_bundle("bundle root item was missing"))?;
+    if strip_ext_suffix(&bundle.source_root.sk) != bundle.source_root.sk
+        || bundle.source_root.sk != root.id.original_sk
+        || get_object_type(&bundle.source_root.pk, &bundle.source_root.sk)? != root.id.label
+        || (root.nesting == BundleNesting::Root && bundle.source_root.pk != "ROOT")
+    {
+        return Err(invalid_bundle("bundle source root metadata was invalid"));
+    }
     let mut reference_paths = HashSet::new();
     for reference in &bundle.references {
         let Some(source) = items.get(&reference.source) else {

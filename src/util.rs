@@ -11,7 +11,7 @@ use aws_sdk_dynamodb::{
     types::AttributeValue,
 };
 use backend::DynamoBackend;
-use calculate_sort::calculate_sort_values;
+pub(crate) use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
 use fractic_core::{collection, req_not_none};
 use fractic_server_error::{CriticalError, ServerError};

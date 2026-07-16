@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -187,6 +187,32 @@ impl DynamoCrudAlgorithms for RequiredReferenceAlgorithms {
             .bundled_pksk::<TestOrdered>("required_target")
             .omit_descendants::<TestOrdered>();
         bundles.include::<TestOrdered>();
+    }
+}
+
+struct CleanupAlgorithms {
+    stale_ids: Arc<Mutex<Vec<PkSk>>>,
+}
+
+#[async_trait]
+impl DynamoCrudAlgorithms for CleanupAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    async fn bundle_import_outoftable_cleanup(
+        &self,
+        stale_rows: &[DynamoMap],
+    ) -> Result<(), ServerError> {
+        let mut stale_ids = self.stale_ids.lock().unwrap();
+        for row in stale_rows {
+            stale_ids.push(PkSk::from_map(row)?);
+        }
+        Ok(())
+    }
+
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
+        TestAlgorithms.bundle_policy(bundles);
     }
 }
 
@@ -1535,6 +1561,10 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
 #[tokio::test]
 #[allow(clippy::result_large_err)]
 async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_removed() {
+    let stale_ids_seen = Arc::new(Mutex::new(Vec::new()));
+    let algorithms = CleanupAlgorithms {
+        stale_ids: stale_ids_seen.clone(),
+    };
     let root_id = id(0, "ROOTOBJ", "ROOTOBJ#root");
     let stale_id = PkSk {
         pk: "ROOTOBJ#root".into(),
@@ -1648,7 +1678,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
 
     let result = import_bundle::<TestRoot>(
         &util(backend),
-        &TestAlgorithms,
+        &algorithms,
         None,
         bundle,
         ImportMode::Replace,
@@ -1662,6 +1692,15 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
         result.warnings,
         vec![DynamoImportWarning::ZeroedInTableReference]
     );
+    let stale_ids_seen = stale_ids_seen.lock().unwrap();
+    assert!(stale_ids_seen.contains(&PkSk {
+        pk: "ROOTOBJ#root".into(),
+        sk: "STEP#old".into(),
+    }));
+    assert!(stale_ids_seen.contains(&PkSk {
+        pk: "STEP#old".into(),
+        sk: "RECALC#history".into(),
+    }));
 }
 
 #[tokio::test]

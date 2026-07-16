@@ -54,6 +54,7 @@ struct ExistingState {
 
 struct ReplacePlan {
     delete_ids: HashSet<PkSk>,
+    stale_rows: Vec<DynamoMap>,
     stale_root_count: usize,
 }
 
@@ -170,6 +171,11 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
 
     let deleted_subtree_roots = match replace_plan {
         Some(plan) => {
+            if !plan.stale_rows.is_empty() {
+                algorithms
+                    .bundle_import_outoftable_cleanup(&plan.stale_rows)
+                    .await?;
+            }
             util.raw_batch_delete_ids(plan.delete_ids.into_iter().collect())
                 .await?;
             plan.stale_root_count
@@ -542,19 +548,28 @@ async fn build_replace_plan(
             items
                 .into_iter()
                 .flat_map(|item| item.rows)
-                .map(|row| PkSk::from_map(&row))
+                .map(|row| Ok((PkSk::from_map(&row)?, row)))
                 .collect::<Result<Vec<_>, ServerError>>()
         })
         .buffer_unordered(DELETE_CONCURRENCY)
         .try_collect::<Vec<_>>()
         .await?;
-    let delete_ids = delete_groups
-        .into_iter()
-        .flatten()
-        .filter(|id| !desired.contains(id))
+    let mut delete_rows = HashMap::new();
+    for (id, row) in delete_groups.into_iter().flatten() {
+        if !desired.contains(&id) {
+            delete_rows.insert(id, row);
+        }
+    }
+    let mut delete_rows = delete_rows.into_iter().collect::<Vec<_>>();
+    delete_rows.sort_by(|(a, _), (b, _)| a.pk.cmp(&b.pk).then_with(|| a.sk.cmp(&b.sk)));
+    let delete_ids = delete_rows
+        .iter()
+        .map(|(id, _)| id.clone())
         .collect::<HashSet<_>>();
+    let stale_rows = delete_rows.into_iter().map(|(_, row)| row).collect();
     Ok(ReplacePlan {
         delete_ids,
+        stale_rows,
         stale_root_count: stale_roots.len(),
     })
 }

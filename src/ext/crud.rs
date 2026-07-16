@@ -9,7 +9,7 @@ use crate::{
     errors::DynamoNotFound,
     ext::bundling::{Bundler, DynamoBundle, DynamoBundlePolicy, DynamoImportResult, ImportMode},
     schema::{DynamoObject, NestingLogic, PkSk},
-    util::{DynamoInsertPosition, DynamoUtil},
+    util::{DynamoInsertPosition, DynamoMap, DynamoUtil},
 };
 
 /// Trait that must be implemented to use type-safe CRUD operation wrappers.
@@ -20,6 +20,16 @@ pub trait DynamoCrudAlgorithms: Send + Sync {
     async fn recursive_delete_archived(&self, id: PkSk) -> Result<(), ServerError> {
         // Default implementation: redirect to standard recursive delete.
         self.recursive_delete(id).await
+    }
+
+    /// Performs additional out-of-table cleanup for raw rows that Replace
+    /// plans to delete. The importing table rows are still deleted by the
+    /// bundler after this hook succeeds.
+    async fn bundle_import_outoftable_cleanup(
+        &self,
+        _stale_rows: &[DynamoMap],
+    ) -> Result<(), ServerError> {
+        Ok(())
     }
 
     /// Registers the objects and relationships allowed in Dynamo bundles.

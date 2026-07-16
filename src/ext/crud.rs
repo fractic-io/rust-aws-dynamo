@@ -1033,42 +1033,6 @@ impl<O: DynamoObject> ManageChildBatch<O> {
             .batch_replace_all_ordered::<O>(parent.id(), data)
             .await
     }
-
-    // Bundling operations:
-    // -----------------------------------------------------------------------
-
-    /// Imports a bundle below `parent`. Batch-optimized objects deliberately do
-    /// not expose item-level export because their logical items share physical
-    /// rows; export their owning object recursively instead.
-    pub async fn import<P>(
-        &self,
-        parent: &P,
-        bundle: DynamoBundle,
-    ) -> Result<DynamoImportResult, ServerError>
-    where
-        P: DynamoObject + ParentOf<O>,
-    {
-        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(
-                Some(parent.id()),
-                bundle,
-                ImportMode::New { position: None },
-            )
-            .await
-    }
-
-    pub async fn import_replace<P>(
-        &self,
-        parent: &P,
-        bundle: DynamoBundle,
-    ) -> Result<DynamoImportResult, ServerError>
-    where
-        P: DynamoObject + ParentOf<O>,
-    {
-        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
-            .await
-    }
 }
 
 /// Type-safe accessor for CRUD operations on a singleton child object.

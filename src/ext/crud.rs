@@ -987,19 +987,19 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
 /// IdLogic::BatchOptimized.
 pub struct ManageChildBatch<O: DynamoObject> {
     dynamo_util: Arc<DynamoUtil>,
-    crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+    _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
     _phantom: PhantomData<O>,
 }
 
 impl<O: DynamoObject> ManageChildBatch<O> {
     pub fn new(
         dynamo_util: Arc<DynamoUtil>,
-        crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
+        _crud_algorithms: Arc<dyn DynamoCrudAlgorithms>,
         _use_archive_algorithms: bool,
     ) -> Self {
         Self {
             dynamo_util,
-            crud_algorithms,
+            _crud_algorithms,
             _phantom: PhantomData::<O>,
         }
     }

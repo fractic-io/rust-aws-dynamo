@@ -13,6 +13,14 @@ define_internal_error!(
     }
 );
 define_internal_error!(
+    DynamoBatchReadRetriesExhausted,
+    "DynamoDB batch read still had {remaining_items} unprocessed items after {retries} retries.",
+    {
+        remaining_items: usize,
+        retries: usize,
+    }
+);
+define_internal_error!(
     DynamoItemParsingError,
     "DynamoDB item parsing error: {details}.",
     { details: &str }

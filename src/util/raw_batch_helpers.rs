@@ -4,7 +4,8 @@ use fractic_server_error::{CriticalError, ServerError};
 use super::DynamoMap;
 
 pub(super) const MAX_BATCH_WRITE_RETRIES: usize = 3;
-const BATCH_WRITE_RETRY_BASE_DELAY_MS: u64 = 25;
+pub(super) const MAX_BATCH_READ_RETRIES: usize = 3;
+const BATCH_RETRY_BASE_DELAY_MS: u64 = 25;
 
 pub(super) fn unprocessed_delete_keys(
     response: &BatchWriteItemOutput,
@@ -50,9 +51,9 @@ pub(super) fn unprocessed_put_items(
         .collect()
 }
 
-pub(super) async fn wait_before_batch_write_retry(attempt: usize) {
+pub(super) async fn wait_before_batch_retry(attempt: usize) {
     tokio::time::sleep(std::time::Duration::from_millis(
-        BATCH_WRITE_RETRY_BASE_DELAY_MS * (1_u64 << attempt),
+        BATCH_RETRY_BASE_DELAY_MS * (1_u64 << attempt),
     ))
     .await;
 }

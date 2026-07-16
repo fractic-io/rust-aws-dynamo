@@ -18,9 +18,9 @@ use fractic_server_error::{CriticalError, ServerError};
 
 use crate::{
     errors::{
-        DynamoBatchWriteRetriesExhausted, DynamoCalloutError, DynamoInvalidBatchOptimizedIdUsage,
-        DynamoInvalidExtIdUsage, DynamoInvalidOperation, DynamoInvalidPhantomObjectUsage,
-        DynamoNotFound, DynamoUnexpectedItemCount,
+        DynamoBatchReadRetriesExhausted, DynamoBatchWriteRetriesExhausted, DynamoCalloutError,
+        DynamoInvalidBatchOptimizedIdUsage, DynamoInvalidExtIdUsage, DynamoInvalidOperation,
+        DynamoInvalidPhantomObjectUsage, DynamoNotFound, DynamoUnexpectedItemCount,
     },
     schema::{
         identifiers::{generate_id_with_options, IdGenerationOptions, RawIdPath},
@@ -79,8 +79,8 @@ pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
 pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
 
 use raw_batch_helpers::{
-    unprocessed_delete_keys, unprocessed_put_items, wait_before_batch_write_retry,
-    MAX_BATCH_WRITE_RETRIES,
+    unprocessed_delete_keys, unprocessed_put_items, wait_before_batch_retry,
+    MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES,
 };
 
 #[derive(Debug, PartialEq)]
@@ -1163,7 +1163,7 @@ impl DynamoUtil {
                     }
                 })
                 .collect::<Vec<_>>();
-            while !pending_keys.is_empty() {
+            for attempt in 0..=MAX_BATCH_READ_RETRIES {
                 let response = self
                     .backend
                     .batch_get_item(
@@ -1184,6 +1184,16 @@ impl DynamoUtil {
                     .and_then(|keys| keys.get(&self.table))
                     .map(|keys| keys.keys().to_vec())
                     .unwrap_or_default();
+                if pending_keys.is_empty() {
+                    break;
+                }
+                if attempt == MAX_BATCH_READ_RETRIES {
+                    return Err(DynamoBatchReadRetriesExhausted::new(
+                        pending_keys.len(),
+                        MAX_BATCH_READ_RETRIES,
+                    ));
+                }
+                wait_before_batch_retry(attempt).await;
             }
         }
         Ok(items)
@@ -1227,7 +1237,7 @@ impl DynamoUtil {
                         MAX_BATCH_WRITE_RETRIES,
                     ));
                 }
-                wait_before_batch_write_retry(attempt).await;
+                wait_before_batch_retry(attempt).await;
             }
         }
         Ok(())
@@ -1266,7 +1276,7 @@ impl DynamoUtil {
                         MAX_BATCH_WRITE_RETRIES,
                     ));
                 }
-                wait_before_batch_write_retry(attempt).await;
+                wait_before_batch_retry(attempt).await;
             }
         }
         Ok(())

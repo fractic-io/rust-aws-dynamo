@@ -8,7 +8,10 @@ use serde_json::Value;
 use crate::{
     errors::{DynamoInvalidBundle, DynamoInvalidOperation},
     ext::crud::DynamoCrudAlgorithms,
-    schema::{parsing::build_dynamo_map_internal, DynamoObject, PkSk, Timestamp},
+    schema::{
+        identifiers::validate_parent_relation, parsing::build_dynamo_map_internal, DynamoObject,
+        PkSk, Timestamp,
+    },
     util::{
         calculate_sort_values,
         collapse_helpers::{
@@ -74,6 +77,10 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         return Err(DynamoInvalidBundle::new(
             "bundle root type or nesting did not match the importing CRUD wrapper",
         ));
+    }
+    if let Some(parent) = parent {
+        validate_parent_relation::<O>(parent)
+            .map_err(|error| DynamoInvalidOperation::new(&error.to_string()))?;
     }
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let policy = configured_bundle_policy(algorithms);

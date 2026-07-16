@@ -1125,6 +1125,44 @@ async fn merge_and_replace_reject_reparenting_before_database_access() {
 }
 
 #[tokio::test]
+async fn import_rejects_singleton_destination_parents_before_database_access() {
+    let root = id(0, "ORDERED", "ORDERED#source");
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOTOBJ#source-parent".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![bundle_item(
+            root,
+            None,
+            BundleNesting::TopLevel,
+            json!({"name": "item"}),
+        )],
+        references: vec![],
+    };
+
+    let error = import_bundle::<TestOrdered>(
+        &util(MockDynamoBackend::new()),
+        &TestAlgorithms,
+        Some(&PkSk {
+            pk: "ROOT".into(),
+            sk: "@SETTINGS".into(),
+        }),
+        bundle,
+        ImportMode::New { position: None },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("singleton objects cannot have children"));
+}
+
+#[tokio::test]
 #[allow(clippy::result_large_err)]
 async fn ordered_new_gets_a_fresh_id_and_is_placed_last() {
     let parent = PkSk {

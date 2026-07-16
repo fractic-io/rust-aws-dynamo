@@ -149,12 +149,6 @@ pub enum ImportMode {
     },
 }
 
-impl Default for ImportMode {
-    fn default() -> Self {
-        Self::New { position: None }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamoImportResult {
     pub root_id: PkSk,
@@ -176,6 +170,12 @@ pub enum DynamoImportWarning {
 
 // Public interface.
 // ----------------------------------------------------------------------------
+
+impl Default for ImportMode {
+    fn default() -> Self {
+        Self::New { position: None }
+    }
+}
 
 impl BundleIdLogic {
     pub fn from_object<O: DynamoObject>() -> Self {

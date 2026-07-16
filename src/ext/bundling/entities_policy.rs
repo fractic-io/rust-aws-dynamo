@@ -403,6 +403,110 @@ impl DynamoBundleObjectPolicy {
     }
 }
 
+pub(crate) fn configured_bundle_policy(
+    algorithms: &dyn DynamoCrudAlgorithms,
+) -> DynamoBundlePolicy {
+    let mut policy = DynamoBundlePolicy::new();
+    algorithms.bundle_policy(&mut policy);
+    policy
+}
+
+/// Validates portable ID behavior against the importing application and
+/// combines both sources' omission policies. The union is intentionally
+/// stricter: neither source can cause a subtree protected by the other source
+/// to be managed by Replace.
+pub(crate) fn validate_import_policy(
+    bundle: &DynamoBundle,
+    policy: &DynamoBundlePolicy,
+    root_id_logic: BundleIdLogic,
+    destination_parent: Option<&PkSk>,
+) -> Result<BTreeMap<String, BTreeSet<String>>, ServerError> {
+    let labels = bundle
+        .items
+        .iter()
+        .map(|item| item.id.label.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut effective = bundle.omitted_descendants.clone();
+
+    for (owner, omissions) in &bundle.omitted_descendants {
+        if !labels.contains(owner.as_str()) {
+            return Err(invalid_bundle(
+                "omission policy referenced an owner label absent from the bundle",
+            ));
+        }
+        if owner.is_empty() || omissions.iter().any(String::is_empty) {
+            return Err(invalid_bundle("omission policy contained an empty label"));
+        }
+    }
+
+    for label in labels {
+        let local = policy.require(label)?;
+        if !local.omitted_descendants().is_empty() {
+            effective
+                .entry(label.to_owned())
+                .or_default()
+                .extend(local.omitted_descendants().iter().cloned());
+        }
+    }
+
+    let items = bundle
+        .items
+        .iter()
+        .map(|item| (&item.id, item))
+        .collect::<HashMap<&BundleId, &DynamoBundleItem>>();
+    for item in &bundle.items {
+        let local = policy.require(&item.id.label)?;
+        let local_id_logic = local.id_logic();
+        let expected = if item.id == bundle.root {
+            if local_id_logic != root_id_logic {
+                return Err(invalid_bundle(&format!(
+                    "root ID logic {root_id_logic:?} did not match local policy {local_id_logic:?}"
+                )));
+            }
+            root_id_logic
+        } else {
+            local_id_logic
+        };
+        if item.id_logic != expected {
+            return Err(invalid_bundle(&format!(
+                "item label `{}` used ID logic {:?}, but the local policy requires {expected:?}",
+                item.id.label, item.id_logic
+            )));
+        }
+        let parent = if item.id == bundle.root {
+            destination_parent.map_or(BundleItemParent::None, BundleItemParent::External)
+        } else {
+            let parent = item
+                .parent
+                .as_ref()
+                .and_then(|parent| items.get(parent))
+                .ok_or_else(|| invalid_bundle("bundle item parent was missing"))?;
+            BundleItemParent::Bundled(&parent.id.label)
+        };
+        local.validate_schema(item, parent)?;
+    }
+    Ok(effective)
+}
+
+impl DynamoBundleReferenceMatch {
+    pub(crate) fn bundled_label(
+        path: BundleDataPath,
+        encoding: DynamoBundleReferenceEncoding,
+        target_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            path,
+            target: DynamoBundleReferenceMatchTarget::Bundled {
+                target_label: target_label.into(),
+                encoding,
+            },
+        }
+    }
+}
+
+// Helpers.
+// ----------------------------------------------------------------------------
+
 impl DynamoBundleTopology {
     fn from_nesting(nesting: NestingLogic) -> Self {
         match nesting {
@@ -516,110 +620,6 @@ fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRenam
         }
     }
 }
-
-pub(crate) fn configured_bundle_policy(
-    algorithms: &dyn DynamoCrudAlgorithms,
-) -> DynamoBundlePolicy {
-    let mut policy = DynamoBundlePolicy::new();
-    algorithms.bundle_policy(&mut policy);
-    policy
-}
-
-/// Validates portable ID behavior against the importing application and
-/// combines both sources' omission policies. The union is intentionally
-/// stricter: neither source can cause a subtree protected by the other source
-/// to be managed by Replace.
-pub(crate) fn validate_import_policy(
-    bundle: &DynamoBundle,
-    policy: &DynamoBundlePolicy,
-    root_id_logic: BundleIdLogic,
-    destination_parent: Option<&PkSk>,
-) -> Result<BTreeMap<String, BTreeSet<String>>, ServerError> {
-    let labels = bundle
-        .items
-        .iter()
-        .map(|item| item.id.label.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut effective = bundle.omitted_descendants.clone();
-
-    for (owner, omissions) in &bundle.omitted_descendants {
-        if !labels.contains(owner.as_str()) {
-            return Err(invalid_bundle(
-                "omission policy referenced an owner label absent from the bundle",
-            ));
-        }
-        if owner.is_empty() || omissions.iter().any(String::is_empty) {
-            return Err(invalid_bundle("omission policy contained an empty label"));
-        }
-    }
-
-    for label in labels {
-        let local = policy.require(label)?;
-        if !local.omitted_descendants().is_empty() {
-            effective
-                .entry(label.to_owned())
-                .or_default()
-                .extend(local.omitted_descendants().iter().cloned());
-        }
-    }
-
-    let items = bundle
-        .items
-        .iter()
-        .map(|item| (&item.id, item))
-        .collect::<HashMap<&BundleId, &DynamoBundleItem>>();
-    for item in &bundle.items {
-        let local = policy.require(&item.id.label)?;
-        let local_id_logic = local.id_logic();
-        let expected = if item.id == bundle.root {
-            if local_id_logic != root_id_logic {
-                return Err(invalid_bundle(&format!(
-                    "root ID logic {root_id_logic:?} did not match local policy {local_id_logic:?}"
-                )));
-            }
-            root_id_logic
-        } else {
-            local_id_logic
-        };
-        if item.id_logic != expected {
-            return Err(invalid_bundle(&format!(
-                "item label `{}` used ID logic {:?}, but the local policy requires {expected:?}",
-                item.id.label, item.id_logic
-            )));
-        }
-        let parent = if item.id == bundle.root {
-            destination_parent.map_or(BundleItemParent::None, BundleItemParent::External)
-        } else {
-            let parent = item
-                .parent
-                .as_ref()
-                .and_then(|parent| items.get(parent))
-                .ok_or_else(|| invalid_bundle("bundle item parent was missing"))?;
-            BundleItemParent::Bundled(&parent.id.label)
-        };
-        local.validate_schema(item, parent)?;
-    }
-    Ok(effective)
-}
-
-impl DynamoBundleReferenceMatch {
-    pub(crate) fn bundled_label(
-        path: BundleDataPath,
-        encoding: DynamoBundleReferenceEncoding,
-        target_label: impl Into<String>,
-    ) -> Self {
-        Self {
-            path,
-            target: DynamoBundleReferenceMatchTarget::Bundled {
-                target_label: target_label.into(),
-                encoding,
-            },
-        }
-    }
-}
-
-// Helpers.
-// ----------------------------------------------------------------------------
 
 impl DynamoBundleObjectPolicy {
     fn bundled_reference<O: DynamoObject>(

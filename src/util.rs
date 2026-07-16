@@ -28,7 +28,7 @@ use crate::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
             build_dynamo_map_internal, parse_dynamo_map, IdKeys,
         },
-        pk_sk::fields_from_map,
+        pk_sk::id_fields_from_map,
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
     util::{
@@ -252,7 +252,7 @@ impl DynamoUtil {
             .into_iter()
             .filter_map(|item| {
                 let (_, sk) =
-                    fields_from_map(&item).expect("query result item did not have pk/sk.");
+                    id_fields_from_map(&item).expect("query result item did not have pk/sk.");
                 match RawIdPath::new(sk).object_label() {
                     Ok(label) if label == T::id_label() => {
                         // Item is of type T.
@@ -1084,7 +1084,7 @@ impl DynamoUtil {
             .flat_map(|page| page.items.unwrap_or_default().into_iter())
             .filter_map(|item| {
                 let (_, sk) =
-                    fields_from_map(&item).expect("query result item did not have pk/sk.");
+                    id_fields_from_map(&item).expect("query result item did not have pk/sk.");
                 match RawIdPath::new(sk).object_label() {
                     Ok(label) if label == T::id_label() => Some(PkSk::from_map(&item)),
                     _ => None,

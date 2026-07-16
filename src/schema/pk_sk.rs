@@ -34,9 +34,6 @@ impl PkSk {
     }
 
     /// Parses the client-facing `pk|sk` representation.
-    ///
-    /// Only the first `|` is structural; sort keys containing `|` remain
-    /// supported for backwards compatibility.
     pub fn from_string(s: &str) -> Result<PkSk, ServerError> {
         let (pk, sk) = split_serialized_id(s)?;
         Ok(PkSk {
@@ -46,7 +43,7 @@ impl PkSk {
     }
 
     pub fn from_map(map: &DynamoMap) -> Result<PkSk, ServerError> {
-        let (pk, sk) = fields_from_map(map)?;
+        let (pk, sk) = id_fields_from_map(map)?;
         Ok(PkSk {
             pk: pk.to_string(),
             sk: sk.to_string(),
@@ -77,7 +74,7 @@ impl PkSk {
     }
 }
 
-pub(crate) fn fields_from_map(map: &DynamoMap) -> Result<(&str, &str), ServerError> {
+pub(crate) fn id_fields_from_map(map: &DynamoMap) -> Result<(&str, &str), ServerError> {
     let field = |name| {
         map.get(name)
             .ok_or_else(|| {

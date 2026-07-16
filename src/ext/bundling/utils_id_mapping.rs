@@ -80,44 +80,35 @@ fn place_root(
     id_logic: BundleIdLogic,
     duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<PkSk, ServerError> {
-    match item.nesting {
+    let (parent, original_sk, placement) = match item.nesting {
         BundleNesting::Root => {
             if parent.is_some() {
                 return Err(DynamoInvalidBundle::new(
                     "root object cannot be imported below a parent",
                 ));
             }
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_terminal_segment_with(
+            (
                 PkSk::root(),
-                &object_sk,
+                item.id.original_sk.as_str(),
                 IdPlacement::Root,
-            ))
+            )
         }
-        BundleNesting::TopLevel => {
-            let parent =
-                parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_terminal_segment_with(
-                parent,
-                &object_sk,
-                IdPlacement::TopLevel,
-            ))
-        }
-        BundleNesting::Inline => {
-            let parent =
-                parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
-            let segment = RawIdPath::new(&item.id.original_sk).terminal_segment(&item.id.label)?;
-            let segment = destination_object_sk(segment, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_terminal_segment_with(
-                parent,
-                &segment,
-                IdPlacement::Inline,
-            ))
-        }
-    }
+        BundleNesting::TopLevel => (
+            parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?,
+            item.id.original_sk.as_str(),
+            IdPlacement::TopLevel,
+        ),
+        BundleNesting::Inline => (
+            parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?,
+            RawIdPath::new(&item.id.original_sk).terminal_segment(&item.id.label)?,
+            IdPlacement::Inline,
+        ),
+    };
+    Ok(place_terminal_segment_with(
+        parent,
+        &destination_object_sk(original_sk, duplicate, id_logic, duplicate_ids)?,
+        placement,
+    ))
 }
 
 fn place_child(
@@ -127,32 +118,28 @@ fn place_child(
     id_logic: BundleIdLogic,
     duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<PkSk, ServerError> {
-    match item.nesting {
-        BundleNesting::TopLevel => {
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_terminal_segment_with(
-                parent,
-                &object_sk,
-                IdPlacement::TopLevel,
-            ))
-        }
+    let (original_sk, placement) = match item.nesting {
+        BundleNesting::TopLevel => (item.id.original_sk.as_str(), IdPlacement::TopLevel),
         BundleNesting::Inline => {
             let original_parent = item
                 .parent
                 .as_ref()
                 .ok_or_else(|| DynamoInvalidBundle::new("inline child had no parent"))?;
-            let relative = RawIdPath::new(&item.id.original_sk)
-                .relative_to(RawIdPath::new(&original_parent.original_sk))?;
-            let relative = destination_object_sk(relative, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_terminal_segment_with(
-                parent,
-                &relative,
+            (
+                RawIdPath::new(&item.id.original_sk)
+                    .relative_to(RawIdPath::new(&original_parent.original_sk))?,
                 IdPlacement::Inline,
-            ))
+            )
         }
-        BundleNesting::Root => Err(DynamoInvalidBundle::new("non-root item had root nesting")),
-    }
+        BundleNesting::Root => {
+            return Err(DynamoInvalidBundle::new("non-root item had root nesting"))
+        }
+    };
+    Ok(place_terminal_segment_with(
+        parent,
+        &destination_object_sk(original_sk, duplicate, id_logic, duplicate_ids)?,
+        placement,
+    ))
 }
 
 // Helpers.

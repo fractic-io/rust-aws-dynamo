@@ -32,12 +32,11 @@ pub(crate) fn expand_batched_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
         .flat_map(|mut item| match item.remove(EXPAND_DATA_RESERVED_KEY) {
             Some(aws_sdk_dynamodb::types::AttributeValue::L(children)) => children
                 .into_iter()
-                .filter_map(|child| {
-                    if let aws_sdk_dynamodb::types::AttributeValue::M(inner_map) = child {
+                .filter_map(|child| match child {
+                    aws_sdk_dynamodb::types::AttributeValue::M(inner_map) => {
                         Some(inner_map.with_metadata_from(&item))
-                    } else {
-                        None
                     }
+                    _ => None,
                 })
                 .collect::<Vec<_>>(),
             _ => vec![item],

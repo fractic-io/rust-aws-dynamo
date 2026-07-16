@@ -964,7 +964,7 @@ fn serde_values_omit_null_object_fields_and_reject_dynamo_only_values() {
 #[test]
 fn indexed_singleton_reference_values_allow_at_signs_in_keys() {
     assert_eq!(
-        crate::schema::identifiers::RawIdPath::new("PARENT#old@SETTINGS[user@example.com]",)
+        crate::schema::identifiers::RawIdPath::new("PARENT#old@SETTINGS[user@example.com]")
             .foreign_ref_value(),
         "user@example.com"
     );

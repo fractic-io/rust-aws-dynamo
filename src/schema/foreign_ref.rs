@@ -87,13 +87,13 @@ impl<'de> Deserialize<'de> for ForeignRef<'static> {
 /// 3) if they start with `@` => treat them as a singleton `sk`
 /// 4) otherwise => treat them as an already-minimal reference
 fn normalize_ref(raw: &str) -> &str {
-    if let Some((_, sk)) = raw.split_once('|') {
-        return RawIdPath::new(sk).foreign_ref_value();
+    match raw.split_once('|') {
+        Some((_, sk)) => RawIdPath::new(sk).foreign_ref_value(),
+        None if raw.contains('#') || raw.starts_with('@') => {
+            RawIdPath::new(raw).foreign_ref_value()
+        }
+        None => raw,
     }
-    if raw.contains('#') || raw.starts_with('@') {
-        return RawIdPath::new(raw).foreign_ref_value();
-    }
-    raw
 }
 
 /// Extracts the minimal reference string from a full Dynamo sk.

@@ -45,7 +45,7 @@ impl<'a> RawIdPath<'a> {
 
     /// Returns the label of the final object represented by this ID path.
     pub(crate) fn object_label(self) -> Result<&'a str, ServerError> {
-        Ok(self.parse()?.object_label())
+        self.parse().map(ParsedIdPath::object_label)
     }
 
     /// Returns the final self-contained segment for the path's object.
@@ -68,12 +68,10 @@ impl<'a> RawIdPath<'a> {
         let sk = self.logical_path();
         if let Some(singleton_start) = sk.find('@') {
             let singleton = &sk[singleton_start + 1..];
-            if let (Some(open), Some(close)) = (singleton.find('['), singleton.rfind(']')) {
-                if open < close {
-                    return &singleton[open + 1..close];
-                }
-            }
-            return "";
+            return match (singleton.find('['), singleton.rfind(']')) {
+                (Some(open), Some(close)) if open < close => &singleton[open + 1..close],
+                _ => "",
+            };
         }
         sk.rsplit_once('#').map_or(sk, |(_, value)| value)
     }
@@ -249,10 +247,7 @@ fn split_ext_suffix(sk: &str) -> (&str, Option<usize>) {
         .iter()
         .rposition(|byte| !byte.is_ascii_digit())
         .map_or(0, |index| index + 1);
-    if digits_start == bytes.len() {
-        return (sk, None);
-    }
-    if digits_start == 0 || bytes[digits_start - 1] != b'+' {
+    if digits_start == bytes.len() || digits_start == 0 || bytes[digits_start - 1] != b'+' {
         return (sk, None);
     }
     let Ok(index) = sk[digits_start..].parse::<usize>() else {

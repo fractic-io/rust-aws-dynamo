@@ -40,14 +40,12 @@ pub fn validate_object_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError>
         }
         IdLogic::Phantom => None,
     };
-    if let Some(expected) = expected_kind {
-        if parsed.terminal_segment_kind() != expected {
-            return Err(DynamoInvalidOperation::new(&format!(
-                "ID syntax does not match the configured ID logic for object type '{}': '{}'",
-                T::id_label(),
-                id
-            )));
-        }
+    if expected_kind.is_some_and(|expected| parsed.terminal_segment_kind() != expected) {
+        return Err(DynamoInvalidOperation::new(&format!(
+            "ID syntax does not match the configured ID logic for object type '{}': '{}'",
+            T::id_label(),
+            id
+        )));
     }
     Ok(())
 }

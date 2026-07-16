@@ -77,15 +77,9 @@ impl PkSk {
 pub(crate) fn id_fields_from_map(map: &DynamoMap) -> Result<(&str, &str), ServerError> {
     let field = |name| {
         map.get(name)
-            .ok_or_else(|| {
-                DynamoInvalidId::with_debug(
-                    "DynamoDB item did not contain both string `pk` and `sk` fields",
-                    &name,
-                )
-            })?
-            .as_s()
+            .and_then(|value| value.as_s().ok())
             .map(String::as_str)
-            .map_err(|_| {
+            .ok_or_else(|| {
                 DynamoInvalidId::with_debug(
                     "DynamoDB item did not contain both string `pk` and `sk` fields",
                     &name,

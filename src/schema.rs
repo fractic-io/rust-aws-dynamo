@@ -151,8 +151,7 @@ pub enum NestingLogic {
     ///   used kind of like a placement indicator for the ID-generation logic,
     ///   but may be a phantom object (i.e. not actually written to database).
     ///
-    /// Objects are placed under 'ROOT' partition (regardless of parent IDs
-    /// provided).
+    /// Objects are placed under 'ROOT' partition.
     ///   pk: ROOT
     ///   sk: <new-obj-id>
     Root,

@@ -253,18 +253,8 @@ impl DynamoUtil {
             .filter_map(|item| {
                 let (_, sk) =
                     id_fields_from_map(&item).expect("query result item did not have pk/sk.");
-                match RawIdPath::new(sk).object_label() {
-                    Ok(label) if label == T::id_label() => {
-                        // Item is of type T.
-                        Some(parse_dynamo_map::<T>(&item))
-                    }
-                    _ => {
-                        // Item is not of type T, but instead an inline child (of a
-                        // different type), which will be skipped. Use query_dynamic
-                        // to access objects of type T and their inline children.
-                        None
-                    }
-                }
+                (RawIdPath::new(sk).object_label().ok()? == T::id_label())
+                    .then(|| parse_dynamo_map::<T>(&item))
             })
             .collect::<Result<Vec<T>, ServerError>>()
     }

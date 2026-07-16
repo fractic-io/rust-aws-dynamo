@@ -79,23 +79,18 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
     let query = util
         .query::<T>(None, search_id, DynamoQueryMatchType::BeginsWith)
         .await?;
-    let existing_vals = {
-        let mut v = query
-            .iter()
-            .filter_map(|item| {
-                if let Some(Ok(sort)) = item.sort().map(NotNan::new) {
-                    Some(OrderedItem {
-                        id: item.id(),
-                        sort,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<OrderedItem>>();
-        v.sort();
-        v
-    };
+    let mut existing_vals = query
+        .iter()
+        .filter_map(|item| {
+            item.sort()
+                .and_then(|sort| NotNan::new(sort).ok())
+                .map(|sort| OrderedItem {
+                    id: item.id(),
+                    sort,
+                })
+        })
+        .collect::<Vec<_>>();
+    existing_vals.sort();
 
     Ok(match &insert_position {
         DynamoInsertPosition::First => {

@@ -6,7 +6,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::schema::{DynamoObject, IdLogic, PkSk};
+use crate::{
+    schema::{DynamoObject, IdLogic, PkSk},
+    util::DynamoInsertPosition,
+};
 
 // Definitions.
 // ----------------------------------------------------------------------------
@@ -46,8 +49,6 @@ pub struct DynamoBundle {
     /// Original logical database placement of the bundle root.
     pub source_root: PkSk,
     pub root: BundleId,
-    #[serde(default)]
-    pub recursive: bool,
     /// Omitted descendant labels keyed by the owning object label.
     #[serde(default)]
     pub omitted_descendants: BTreeMap<String, BTreeSet<String>>,
@@ -124,16 +125,25 @@ pub enum DynamoBundleReferenceTarget {
     },
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum IfExisting {
+pub enum ImportMode {
     /// Upserts the bundle at its original source placement.
     Merge,
     /// Reconciles the stored subtree at its original source placement.
     Replace,
     /// Always creates a distinct root identity, allowing a different parent.
-    #[default]
-    Duplicate,
+    New {
+        /// Optional destination ordering. Ordered CRUD wrappers always provide
+        /// an explicit position; unordered wrappers leave this unset.
+        after: Option<DynamoInsertPosition>,
+    },
+}
+
+impl Default for ImportMode {
+    fn default() -> Self {
+        Self::New { after: None }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

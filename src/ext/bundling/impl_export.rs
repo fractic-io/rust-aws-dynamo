@@ -47,7 +47,6 @@ pub(crate) struct CollectedItem {
 struct ExportOptions<'a> {
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
-    recursive: bool,
     fixed_omissions: Option<&'a BTreeMap<String, BTreeSet<String>>>,
     include_references: bool,
 }
@@ -61,7 +60,6 @@ pub(crate) async fn export_from_config(
     root: PkSk,
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
-    recursive: bool,
 ) -> Result<DynamoBundle, ServerError> {
     let policy = configured_bundle_policy(algorithms);
     export_bundle(
@@ -71,7 +69,6 @@ pub(crate) async fn export_from_config(
         ExportOptions {
             root_nesting,
             root_id_logic,
-            recursive,
             fixed_omissions: None,
             include_references: true,
         },
@@ -86,7 +83,6 @@ pub(crate) async fn export_with_omissions(
     root: &PkSk,
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
-    recursive: bool,
     omissions: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<DynamoBundle, ServerError> {
     export_bundle(
@@ -96,7 +92,6 @@ pub(crate) async fn export_with_omissions(
         ExportOptions {
             root_nesting,
             root_id_logic,
-            recursive,
             fixed_omissions: Some(omissions),
             include_references: false,
         },
@@ -115,7 +110,6 @@ async fn export_bundle(
         bundles,
         root,
         options.root_nesting,
-        options.recursive,
         options.fixed_omissions,
     )
     .await?;
@@ -167,7 +161,6 @@ async fn export_bundle(
         version: DynamoBundle::VERSION,
         source_root: root_id,
         root,
-        recursive: options.recursive,
         omitted_descendants,
         items,
         references: Vec::new(),
@@ -205,7 +198,6 @@ pub(crate) async fn collect_bundle_items(
     bundles: &DynamoBundlePolicy,
     root: &PkSk,
     root_nesting: BundleNesting,
-    recursive: bool,
     fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
     let root = logical_base_id(root);
@@ -225,9 +217,6 @@ pub(crate) async fn collect_bundle_items(
         rows: root_rows,
         omitted_descendants: root_omissions.clone(),
     }];
-    if !recursive {
-        return Ok((collected, recorded));
-    }
 
     initial_groups.retain(|id, _| is_inline_descendant(&id.sk, &root.sk));
     append_partition_groups(

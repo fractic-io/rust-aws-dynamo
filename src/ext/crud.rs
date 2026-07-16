@@ -7,7 +7,7 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoNotFound,
-    ext::bundling::{Bundler, DynamoBundle, DynamoBundlePolicy, DynamoImportResult, IfExisting},
+    ext::bundling::{Bundler, DynamoBundle, DynamoBundlePolicy, DynamoImportResult, ImportMode},
     schema::{DynamoObject, NestingLogic, PkSk},
     util::{DynamoInsertPosition, DynamoUtil},
 };
@@ -107,13 +107,18 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
             .await
     }
 
-    pub async fn import(
+    pub async fn import(&self, bundle: DynamoBundle) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(None, bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_replace(
         &self,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, if_existing)
+            .import::<O>(None, bundle, ImportMode::Replace)
             .await
     }
 
@@ -209,17 +214,25 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
 
     pub async fn export_deep(&self, item: O) -> Result<DynamoBundle, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .export_deep(item)
+            .export(item)
             .await
     }
 
-    pub async fn import(
+    pub async fn import_deep(
         &self,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, if_existing)
+            .import::<O>(None, bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_deep_replace(
+        &self,
+        bundle: DynamoBundle,
+    ) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(None, bundle, ImportMode::Replace)
             .await
     }
 
@@ -283,13 +296,18 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
             .await
     }
 
-    pub async fn import(
+    pub async fn import(&self, bundle: DynamoBundle) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(None, bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_replace(
         &self,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, if_existing)
+            .import::<O>(None, bundle, ImportMode::Replace)
             .await
     }
 
@@ -364,13 +382,18 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
             .await
     }
 
-    pub async fn import(
+    pub async fn import(&self, bundle: DynamoBundle) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(None, bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_replace(
         &self,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, if_existing)
+            .import::<O>(None, bundle, ImportMode::Replace)
             .await
     }
 
@@ -494,13 +517,36 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
+        after: Option<&O>,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        let position = match after {
+            Some(item) => DynamoInsertPosition::After(item.id().clone()),
+            None => DynamoInsertPosition::Last,
+        };
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(
+                Some(parent.id()),
+                bundle,
+                ImportMode::New {
+                    after: Some(position),
+                },
+            )
+            .await
+    }
+
+    pub async fn import_replace<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import_ordered::<O>(parent.id(), bundle, if_existing)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
             .await
     }
 
@@ -629,21 +675,44 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
 
     pub async fn export_deep(&self, item: O) -> Result<DynamoBundle, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .export_deep(item)
+            .export(item)
             .await
     }
 
-    pub async fn import<P>(
+    pub async fn import_deep<P>(
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
+        after: Option<&O>,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        let position = match after {
+            Some(item) => DynamoInsertPosition::After(item.id().clone()),
+            None => DynamoInsertPosition::Last,
+        };
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(
+                Some(parent.id()),
+                bundle,
+                ImportMode::New {
+                    after: Some(position),
+                },
+            )
+            .await
+    }
+
+    pub async fn import_deep_replace<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import_ordered::<O>(parent.id(), bundle, if_existing)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
             .await
     }
 
@@ -743,13 +812,25 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_replace<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
             .await
     }
 
@@ -858,21 +939,33 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
 
     pub async fn export_deep(&self, item: O) -> Result<DynamoBundle, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .export_deep(item)
+            .export(item)
             .await
     }
 
-    pub async fn import<P>(
+    pub async fn import_deep<P>(
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_deep_replace<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
             .await
     }
 
@@ -955,13 +1048,25 @@ impl<O: DynamoObject> ManageChildBatch<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_replace<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
             .await
     }
 }
@@ -1032,13 +1137,25 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_replace<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
             .await
     }
 
@@ -1152,13 +1269,25 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::New { after: None })
+            .await
+    }
+
+    pub async fn import_replace<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
             .await
     }
 

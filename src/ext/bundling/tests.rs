@@ -26,8 +26,9 @@ use crate::{
         DynamoObject, IdLogic, NestingLogic, PkSk,
     },
     util::{
-        backend::MockDynamoBackend, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
-        AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        backend::MockDynamoBackend, DynamoInsertPosition, DynamoMap, DynamoUtil,
+        AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY,
+        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
     },
 };
 
@@ -39,7 +40,7 @@ use super::{
     impl_import::{build_id_map, import_bundle},
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
     DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
-    DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportWarning, IfExisting,
+    DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportWarning, ImportMode,
 };
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -145,7 +146,8 @@ impl DynamoCrudAlgorithms for RequiredReferenceAlgorithms {
     fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
         bundles
             .include::<TestRoot>()
-            .bundled_pksk::<TestOrdered>("required_target");
+            .bundled_pksk::<TestOrdered>("required_target")
+            .omit_descendants::<TestOrdered>();
         bundles.include::<TestOrdered>();
     }
 }
@@ -291,7 +293,6 @@ async fn recursive_export_scopes_omissions_and_normalizes_ext_partitioning() {
         },
         BundleNesting::Root,
         BundleIdLogic::Uuid,
-        true,
     )
     .await
     .unwrap();
@@ -388,7 +389,6 @@ async fn recursive_export_omits_configured_subtrees_and_records_the_omission() {
         },
         BundleNesting::Root,
         BundleIdLogic::Uuid,
-        true,
     )
     .await
     .unwrap();
@@ -427,7 +427,6 @@ async fn recursive_export_rejects_denied_descendants() {
         },
         BundleNesting::Root,
         BundleIdLogic::Uuid,
-        true,
     )
     .await
     .unwrap_err();
@@ -446,16 +445,22 @@ async fn export_reports_required_internal_targets_outside_the_scope() {
     let mut backend = MockDynamoBackend::new();
     backend
         .expect_query()
-        .times(1)
-        .returning(move |_, _, _, _, _| {
-            let mut root = row("ROOT", root_sk);
-            root.insert(
-                "required_target".into(),
-                AttributeValue::S(target.to_string()),
-            );
-            Ok(vec![QueryOutput::builder()
-                .set_items(Some(vec![root]))
-                .build()])
+        .times(2)
+        .returning(move |_, _, _, values, _| {
+            let pk = values.get(":pk").unwrap().as_s().unwrap();
+            let rows = match pk.as_str() {
+                "ROOT" => {
+                    let mut root = row("ROOT", root_sk);
+                    root.insert(
+                        "required_target".into(),
+                        AttributeValue::S(target.to_string()),
+                    );
+                    vec![root]
+                }
+                "ROOTOBJ#root" => vec![row(root_sk, "ORDERED#outside")],
+                unexpected => panic!("unexpected partition query: {unexpected}"),
+            };
+            Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
         });
 
     let error = export_from_config(
@@ -467,7 +472,6 @@ async fn export_reports_required_internal_targets_outside_the_scope() {
         },
         BundleNesting::Root,
         BundleIdLogic::Uuid,
-        false,
     )
     .await
     .unwrap_err();
@@ -485,11 +489,18 @@ async fn export_reports_required_internal_targets_outside_the_scope() {
 async fn export_loads_bundle_configuration_once() {
     let algorithms = CountingAlgorithms(AtomicUsize::new(0));
     let mut backend = MockDynamoBackend::new();
-    backend.expect_query().times(1).returning(|_, _, _, _, _| {
-        Ok(vec![QueryOutput::builder()
-            .set_items(Some(vec![row("ROOT", "ROOTOBJ#root")]))
-            .build()])
-    });
+    backend
+        .expect_query()
+        .times(2)
+        .returning(|_, _, _, values, _| {
+            let pk = values.get(":pk").unwrap().as_s().unwrap();
+            let rows = match pk.as_str() {
+                "ROOT" => vec![row("ROOT", "ROOTOBJ#root")],
+                "ROOTOBJ#root" => vec![],
+                unexpected => panic!("unexpected partition query: {unexpected}"),
+            };
+            Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
+        });
 
     export_from_config(
         &util(backend),
@@ -500,7 +511,6 @@ async fn export_loads_bundle_configuration_once() {
         },
         BundleNesting::Root,
         BundleIdLogic::Uuid,
-        false,
     )
     .await
     .unwrap();
@@ -518,7 +528,6 @@ fn import_omissions_are_the_strict_union_and_require_present_owner_labels() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: true,
         omitted_descendants: BTreeMap::from([(
             "ROOTOBJ".into(),
             BTreeSet::from(["BUNDLE_ONLY".into()]),
@@ -558,7 +567,6 @@ fn import_rejects_unconfigured_bundle_items() {
                 sk: root.original_sk.clone(),
             },
             root: root.clone(),
-            recursive: false,
             omitted_descendants: BTreeMap::new(),
             items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
             references: vec![],
@@ -591,7 +599,6 @@ fn import_rejects_id_logic_metadata_that_disagrees_with_local_policy() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: true,
         omitted_descendants: BTreeMap::new(),
         items: vec![
             bundle_item(root, None, BundleNesting::Root, json!({})),
@@ -618,7 +625,6 @@ fn import_rejects_root_policy_that_disagrees_with_crud_type() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: false,
         omitted_descendants: BTreeMap::new(),
         items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
         references: vec![],
@@ -738,7 +744,6 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: true,
         omitted_descendants: BTreeMap::new(),
         items: vec![
             bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
@@ -802,7 +807,6 @@ fn duplicate_mapping_preserves_batch_ids_and_increments_timestamp_millis() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: true,
         omitted_descendants: BTreeMap::new(),
         items: vec![
             bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
@@ -852,7 +856,6 @@ async fn merge_and_replace_reject_reparenting_before_database_access() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: false,
         omitted_descendants: BTreeMap::new(),
         items: vec![bundle_item(
             root,
@@ -863,25 +866,24 @@ async fn merge_and_replace_reject_reparenting_before_database_access() {
         references: vec![],
     };
 
-    for mode in [IfExisting::Merge, IfExisting::Replace] {
+    for mode in [ImportMode::Merge, ImportMode::Replace] {
         let error = import_bundle::<TestOrdered>(
             &util(MockDynamoBackend::new()),
             &TestAlgorithms,
             Some(&destination_parent),
             bundle.clone(),
             mode,
-            false,
         )
         .await
         .unwrap_err();
         assert!(error.to_string().contains("reparenting is not supported"));
-        assert!(error.to_string().contains("use Duplicate"));
+        assert!(error.to_string().contains("use New"));
     }
 }
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
-async fn ordered_duplicate_gets_a_fresh_id_and_is_placed_last() {
+async fn ordered_new_gets_a_fresh_id_and_is_placed_last() {
     let parent = PkSk {
         pk: "ROOT".into(),
         sk: "ROOTOBJ#parent".into(),
@@ -894,7 +896,6 @@ async fn ordered_duplicate_gets_a_fresh_id_and_is_placed_last() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: false,
         omitted_descendants: BTreeMap::new(),
         items: vec![bundle_item(
             root,
@@ -935,8 +936,9 @@ async fn ordered_duplicate_gets_a_fresh_id_and_is_placed_last() {
         &TestAlgorithms,
         Some(&parent),
         bundle,
-        IfExisting::Duplicate,
-        true,
+        ImportMode::New {
+            after: Some(DynamoInsertPosition::Last),
+        },
     )
     .await
     .unwrap();
@@ -947,7 +949,60 @@ async fn ordered_duplicate_gets_a_fresh_id_and_is_placed_last() {
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
-async fn duplicate_remaps_bundled_refs_and_clears_missing_same_table_refs() {
+async fn new_without_an_insertion_position_clears_the_source_sort() {
+    let parent = PkSk {
+        pk: "ROOT".into(),
+        sk: "ROOTOBJ#parent".into(),
+    };
+    let root = id(0, "ORDERED", "ORDERED#source");
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: parent.sk.clone(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![bundle_item(
+            root,
+            None,
+            BundleNesting::TopLevel,
+            json!({"name": "new", "sort": 3.0}),
+        )],
+        references: vec![],
+    };
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(1)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(table, vec![])])))
+                .build())
+        });
+    backend
+        .expect_batch_put_item()
+        .times(1)
+        .returning(|_, items| {
+            assert_eq!(items.len(), 1);
+            assert!(!items[0].contains_key("sort"));
+            Ok(BatchWriteItemOutput::builder().build())
+        });
+
+    import_bundle::<TestOrdered>(
+        &util(backend),
+        &TestAlgorithms,
+        Some(&parent),
+        bundle,
+        ImportMode::New { after: None },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
     let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
     let target = id(1, "TARGET", "TARGET#old");
     let existing_external = PkSk {
@@ -965,7 +1020,6 @@ async fn duplicate_remaps_bundled_refs_and_clears_missing_same_table_refs() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: true,
         omitted_descendants: BTreeMap::new(),
         items: vec![
             bundle_item(
@@ -1066,8 +1120,7 @@ async fn duplicate_remaps_bundled_refs_and_clears_missing_same_table_refs() {
         &TestAlgorithms,
         None,
         bundle.clone(),
-        IfExisting::Duplicate,
-        false,
+        ImportMode::New { after: None },
     )
     .await
     .unwrap();
@@ -1100,7 +1153,6 @@ async fn external_reference_to_an_incoming_id_is_not_cleared() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: true,
         omitted_descendants: BTreeMap::new(),
         items: vec![
             bundle_item(
@@ -1154,8 +1206,7 @@ async fn external_reference_to_an_incoming_id_is_not_cleared() {
         &TestAlgorithms,
         None,
         bundle,
-        IfExisting::Merge,
-        false,
+        ImportMode::Merge,
     )
     .await
     .unwrap();
@@ -1174,7 +1225,6 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: false,
         omitted_descendants: BTreeMap::new(),
         items: vec![bundle_item(
             root,
@@ -1241,8 +1291,7 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
         &TestAlgorithms,
         None,
         bundle,
-        IfExisting::Merge,
-        false,
+        ImportMode::Merge,
     )
     .await
     .unwrap();
@@ -1262,7 +1311,6 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
             sk: root_id.original_sk.clone(),
         },
         root: root_id.clone(),
-        recursive: true,
         omitted_descendants: BTreeMap::from([(
             "ROOTOBJ".into(),
             BTreeSet::from(["RECALC".into()]),
@@ -1336,8 +1384,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
         &TestAlgorithms,
         None,
         bundle,
-        IfExisting::Replace,
-        false,
+        ImportMode::Replace,
     )
     .await
     .unwrap();
@@ -1348,7 +1395,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
-async fn duplicate_rejects_a_fixed_singleton_root_at_its_source_placement() {
+async fn new_rejects_a_fixed_singleton_root_at_its_source_placement() {
     let root = id(0, "SETTINGS", "@SETTINGS");
     let mut root_item = bundle_item(
         root.clone(),
@@ -1364,7 +1411,6 @@ async fn duplicate_rejects_a_fixed_singleton_root_at_its_source_placement() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: false,
         omitted_descendants: BTreeMap::new(),
         items: vec![root_item],
         references: vec![],
@@ -1374,8 +1420,7 @@ async fn duplicate_rejects_a_fixed_singleton_root_at_its_source_placement() {
         &TestAlgorithms,
         None,
         bundle,
-        IfExisting::Duplicate,
-        false,
+        ImportMode::New { after: None },
     )
     .await
     .is_err());
@@ -1383,7 +1428,7 @@ async fn duplicate_rejects_a_fixed_singleton_root_at_its_source_placement() {
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
-async fn duplicate_rejects_a_fixed_batch_root_at_its_source_placement() {
+async fn new_rejects_a_fixed_batch_root_at_its_source_placement() {
     let parent = PkSk {
         pk: "ROOT".into(),
         sk: "ROOTOBJ#parent".into(),
@@ -1403,7 +1448,6 @@ async fn duplicate_rejects_a_fixed_batch_root_at_its_source_placement() {
             sk: root.original_sk.clone(),
         },
         root,
-        recursive: false,
         omitted_descendants: BTreeMap::new(),
         items: vec![root_item],
         references: vec![],
@@ -1413,8 +1457,7 @@ async fn duplicate_rejects_a_fixed_batch_root_at_its_source_placement() {
         &TestAlgorithms,
         Some(&parent),
         bundle,
-        IfExisting::Duplicate,
-        false,
+        ImportMode::New { after: None },
     )
     .await
     .unwrap_err();
@@ -1424,7 +1467,7 @@ async fn duplicate_rejects_a_fixed_batch_root_at_its_source_placement() {
 
 #[tokio::test]
 #[allow(clippy::result_large_err)]
-async fn duplicate_allows_a_fixed_batch_root_below_a_different_parent() {
+async fn new_allows_a_fixed_batch_root_below_a_different_parent() {
     let source_parent = PkSk {
         pk: "ROOT".into(),
         sk: "ROOTOBJ#source-parent".into(),
@@ -1448,7 +1491,6 @@ async fn duplicate_allows_a_fixed_batch_root_below_a_different_parent() {
             sk: root.original_sk.clone(),
         },
         root,
-        recursive: false,
         omitted_descendants: BTreeMap::new(),
         items: vec![root_item],
         references: vec![],
@@ -1485,8 +1527,7 @@ async fn duplicate_allows_a_fixed_batch_root_below_a_different_parent() {
             sk: "ROOTOBJ#destination-parent".into(),
         }),
         bundle,
-        IfExisting::Duplicate,
-        false,
+        ImportMode::New { after: None },
     )
     .await
     .unwrap();
@@ -1505,7 +1546,6 @@ async fn import_rejects_reference_paths_that_are_not_present() {
             sk: root.original_sk.clone(),
         },
         root: root.clone(),
-        recursive: false,
         omitted_descendants: BTreeMap::new(),
         items: vec![bundle_item(
             root.clone(),
@@ -1531,8 +1571,7 @@ async fn import_rejects_reference_paths_that_are_not_present() {
         &TestAlgorithms,
         None,
         bundle,
-        IfExisting::Merge,
-        false,
+        ImportMode::Merge,
     )
     .await
     .is_err());

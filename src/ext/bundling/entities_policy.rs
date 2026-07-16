@@ -335,24 +335,6 @@ impl DynamoBundlePolicy {
 }
 
 impl DynamoBundleObjectPolicy {
-    fn register_schema<O: DynamoObject>(&mut self) {
-        let type_name = std::any::type_name::<O>();
-        if self
-            .schema_variants
-            .iter()
-            .any(|variant| variant.type_name == type_name)
-        {
-            return;
-        }
-        let topology = DynamoBundleTopology::from_nesting(O::nesting_logic());
-        let validate_data = Arc::new(|item: &DynamoBundleItem| validate_item_data::<O>(item));
-        self.schema_variants.push(DynamoBundleSchemaVariant {
-            type_name,
-            topology,
-            validate_data,
-        });
-    }
-
     pub(crate) fn omit_descendant_label(&mut self, label: &str) -> &mut Self {
         self.omitted_descendants.insert(label.to_owned());
         self
@@ -364,42 +346,6 @@ impl DynamoBundleObjectPolicy {
 
     pub(crate) fn normalize_renamed_fields(&self, data: &mut Value) {
         normalize_renamed_fields(data, self.renamed_fields);
-    }
-
-    fn validate_schema(
-        &self,
-        item: &DynamoBundleItem,
-        parent: BundleItemParent<'_>,
-    ) -> Result<(), ServerError> {
-        if self.schema_variants.is_empty() {
-            return Ok(());
-        }
-        let matching = self
-            .schema_variants
-            .iter()
-            .filter(|variant| variant.topology.matches(item.nesting, parent))
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            return Err(invalid_bundle(&format!(
-                "item label `{}` used {:?} nesting below {}, which does not match any local schema",
-                item.id.label,
-                item.nesting,
-                parent.description(),
-            )));
-        }
-
-        let mut errors = Vec::new();
-        for variant in matching {
-            match (variant.validate_data)(item) {
-                Ok(()) => return Ok(()),
-                Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
-            }
-        }
-        Err(invalid_bundle(&format!(
-            "item label `{}` data did not match its local schema: {}",
-            item.id.label,
-            errors.join("; "),
-        )))
     }
 }
 
@@ -501,6 +447,65 @@ impl DynamoBundleReferenceMatch {
                 encoding,
             },
         }
+    }
+}
+
+// Internal: Validation.
+// ----------------------------------------------------------------------------
+
+impl DynamoBundleObjectPolicy {
+    fn register_schema<O: DynamoObject>(&mut self) {
+        let type_name = std::any::type_name::<O>();
+        if self
+            .schema_variants
+            .iter()
+            .any(|variant| variant.type_name == type_name)
+        {
+            return;
+        }
+        let topology = DynamoBundleTopology::from_nesting(O::nesting_logic());
+        let validate_data = Arc::new(|item: &DynamoBundleItem| validate_item_data::<O>(item));
+        self.schema_variants.push(DynamoBundleSchemaVariant {
+            type_name,
+            topology,
+            validate_data,
+        });
+    }
+
+    fn validate_schema(
+        &self,
+        item: &DynamoBundleItem,
+        parent: BundleItemParent<'_>,
+    ) -> Result<(), ServerError> {
+        if self.schema_variants.is_empty() {
+            return Ok(());
+        }
+        let matching = self
+            .schema_variants
+            .iter()
+            .filter(|variant| variant.topology.matches(item.nesting, parent))
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            return Err(invalid_bundle(&format!(
+                "item label `{}` used {:?} nesting below {}, which does not match any local schema",
+                item.id.label,
+                item.nesting,
+                parent.description(),
+            )));
+        }
+
+        let mut errors = Vec::new();
+        for variant in matching {
+            match (variant.validate_data)(item) {
+                Ok(()) => return Ok(()),
+                Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
+            }
+        }
+        Err(invalid_bundle(&format!(
+            "item label `{}` data did not match its local schema: {}",
+            item.id.label,
+            errors.join("; "),
+        )))
     }
 }
 

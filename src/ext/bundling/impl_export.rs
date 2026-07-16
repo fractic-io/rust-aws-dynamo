@@ -11,8 +11,7 @@ use crate::{
     errors::{DynamoCalloutError, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        id_calculations::{get_object_type, object_ref_component},
-        parsing::dynamo_map_to_serde_value,
+        identifiers::RawIdPath, parsing::dynamo_map_to_serde_value, pk_sk::id_fields_from_map,
         ForeignRef, PkSk,
     },
     util::{
@@ -118,7 +117,7 @@ async fn export_bundle(
     let mut by_pk_sk = HashMap::new();
     let mut items = Vec::with_capacity(collected.len());
     for (index, item) in collected.into_iter().enumerate() {
-        let label = get_object_type(&item.id.pk, &item.id.sk)?.to_string();
+        let label = RawIdPath::new(&item.id.sk).object_label()?.to_string();
         let (storage, mut data) = normalize_rows(item.rows)?;
         let object = bundles.require(&label)?;
         object.normalize_renamed_fields(&mut data);
@@ -182,7 +181,7 @@ pub(crate) async fn collect_bundle_items(
     fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
     let root = ext_base_id(root);
-    let root_label = get_object_type(&root.pk, &root.sk)?;
+    let root_label = RawIdPath::new(&root.sk).object_label()?;
     let root_config = bundles.require(root_label)?;
     let mut recorded = fixed_omissions.cloned().unwrap_or_default();
     let root_omissions = omissions_for(root_config, fixed_omissions, &mut recorded, root_label);
@@ -334,7 +333,7 @@ fn append_partition_groups(
     let mut accepted = vec![owner_index];
     let mut omitted = Vec::<PkSk>::new();
     for (id, rows) in groups {
-        let label = get_object_type(&id.pk, &id.sk)?.to_string();
+        let label = RawIdPath::new(&id.sk).object_label()?.to_string();
         let inline_parent = accepted
             .iter()
             .copied()
@@ -358,7 +357,7 @@ fn append_partition_groups(
         let mut descendant_omissions = inherited_omissions.clone();
         descendant_omissions.extend(omissions_for(object, fixed_omissions, recorded, &label));
         collected.push(CollectedItem {
-            id: id.clone(),
+            id,
             parent: Some(parent),
             nesting,
             rows,
@@ -443,7 +442,7 @@ fn unique_foreign_target<'a>(
 ) -> Result<Option<&'a DynamoBundleItem>, ServerError> {
     let mut matches = bundle.items.iter().filter(|item| {
         target_label.is_none_or(|label| item.id.label == label)
-            && object_ref_component(&item.id.original_sk) == reference
+            && RawIdPath::new(&item.id.original_sk).foreign_ref_value() == reference
     });
     let target = matches.next();
     if target.is_some() && matches.next().is_some() {
@@ -478,7 +477,13 @@ fn group_logical_rows(rows: Vec<DynamoMap>) -> Result<HashMap<PkSk, Vec<DynamoMa
         groups.entry(ext_base_id(&id)).or_default().push(row);
     }
     for rows in groups.values_mut() {
-        rows.sort_by_cached_key(|row| PkSk::from_map(row).map(|id| id.sk).unwrap_or_default());
+        rows.sort_unstable_by(|left, right| {
+            let (_, left_sk) =
+                id_fields_from_map(left).expect("grouped DynamoDB row must retain its pk/sk");
+            let (_, right_sk) =
+                id_fields_from_map(right).expect("grouped DynamoDB row must retain its pk/sk");
+            left_sk.cmp(right_sk)
+        });
     }
     Ok(groups)
 }

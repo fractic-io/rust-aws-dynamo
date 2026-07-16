@@ -1,47 +1,49 @@
 use std::{fmt, sync::LazyLock};
 
+use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_server_error::ServerError;
 use serde::{
     de::{self},
     Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use crate::{
-    errors::DynamoInvalidId, schema::id_calculations::get_pk_sk_from_map, util::DynamoMap,
-};
+use crate::{errors::DynamoInvalidId, util::DynamoMap};
 
 use super::{
-    id_calculations::{
-        generate_pk_sk, get_object_type, get_pk_sk_from_string, is_singleton, set_pk_sk_in_map,
-    },
+    identifiers::{generate_id, RawIdPath, ROOT_KEY},
     DynamoObject, ForeignRef, PkSk,
 };
 
 static ROOT: LazyLock<PkSk> = LazyLock::new(|| PkSk {
-    pk: "ROOT".to_string(),
-    sk: "ROOT".to_string(),
+    pk: ROOT_KEY.to_string(),
+    sk: ROOT_KEY.to_string(),
 });
 
 impl PkSk {
+    /// The canonical placement handle for root-level objects.
     pub fn root() -> &'static PkSk {
         &ROOT
     }
 
+    /// Generates a new logical ID using `T`'s configured ID and nesting rules.
     pub fn generate<T: DynamoObject>(
         data: &T::Data,
         parent_id: &PkSk,
     ) -> Result<PkSk, ServerError> {
-        let (pk, sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
-        Ok(PkSk { pk, sk })
+        generate_id::<T>(data, parent_id)
     }
 
+    /// Parses the client-facing `pk|sk` representation.
     pub fn from_string(s: &str) -> Result<PkSk, ServerError> {
-        serde_json::from_str(format!("\"{}\"", s).as_str())
-            .map_err(|e| DynamoInvalidId::with_debug("invalid PkSk string", &e))
+        let (pk, sk) = split_serialized_id(s)?;
+        Ok(PkSk {
+            pk: pk.to_string(),
+            sk: sk.to_string(),
+        })
     }
 
     pub fn from_map(map: &DynamoMap) -> Result<PkSk, ServerError> {
-        let (pk, sk) = get_pk_sk_from_map(map)?;
+        let (pk, sk) = id_fields_from_map(map)?;
         Ok(PkSk {
             pk: pk.to_string(),
             sk: sk.to_string(),
@@ -49,15 +51,18 @@ impl PkSk {
     }
 
     pub fn write_to_map(&self, map: &mut DynamoMap) {
-        set_pk_sk_in_map(map, self.pk.to_string(), self.sk.to_string());
+        map.insert("pk".to_string(), AttributeValue::S(self.pk.clone()));
+        map.insert("sk".to_string(), AttributeValue::S(self.sk.clone()));
     }
 
+    /// Returns the terminal object's configured ID label.
     pub fn object_type(&self) -> Result<&str, ServerError> {
-        get_object_type(&self.pk, &self.sk)
+        RawIdPath::new(&self.sk).object_label()
     }
 
+    /// Whether the terminal object uses singleton ID syntax.
     pub fn is_singleton(&self) -> bool {
-        is_singleton(&self.pk, &self.sk)
+        RawIdPath::new(&self.sk).is_singleton()
     }
 
     pub fn build_ref<'a>(&'a self) -> ForeignRef<'a> {
@@ -67,6 +72,37 @@ impl PkSk {
     pub fn into_ref(self) -> ForeignRef<'static> {
         ForeignRef::from(self)
     }
+}
+
+pub(crate) fn id_fields_from_map(map: &DynamoMap) -> Result<(&str, &str), ServerError> {
+    let field = |name| {
+        map.get(name)
+            .and_then(|value| value.as_s().ok())
+            .map(String::as_str)
+            .ok_or_else(|| {
+                DynamoInvalidId::with_debug(
+                    "DynamoDB item did not contain both string `pk` and `sk` fields",
+                    &name,
+                )
+            })
+    };
+    Ok((field("pk")?, field("sk")?))
+}
+
+fn split_serialized_id(id: &str) -> Result<(&str, &str), ServerError> {
+    let Some((pk, sk)) = id.split_once('|') else {
+        return Err(DynamoInvalidId::with_debug(
+            "ID was not in `pk|sk` format",
+            &id,
+        ));
+    };
+    if pk.is_empty() || sk.is_empty() {
+        return Err(DynamoInvalidId::with_debug(
+            "ID contained an empty partition key or sort key",
+            &id,
+        ));
+    }
+    Ok((pk, sk))
 }
 
 impl fmt::Display for PkSk {
@@ -80,7 +116,7 @@ impl Serialize for PkSk {
     where
         S: Serializer,
     {
-        format!("{}|{}", self.pk, self.sk).serialize(serializer)
+        serializer.collect_str(self)
     }
 }
 
@@ -90,7 +126,7 @@ impl<'de> Deserialize<'de> for PkSk {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let (pk, sk) = get_pk_sk_from_string(&s).map_err(de::Error::custom)?;
+        let (pk, sk) = split_serialized_id(&s).map_err(de::Error::custom)?;
         Ok(PkSk {
             pk: pk.to_string(),
             sk: sk.to_string(),
@@ -104,6 +140,8 @@ impl<'de> Deserialize<'de> for PkSk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use serde_json;
 
     #[test]
@@ -125,6 +163,10 @@ mod tests {
         let pksk: PkSk = serde_json::from_str(json_str).unwrap();
         assert_eq!(pksk.pk, "test_pk");
         assert_eq!(pksk.sk, "test_sk");
+
+        let pksk = PkSk::from_string(r#"test_pk|sort|"key"#).unwrap();
+        assert_eq!(pksk.pk, "test_pk");
+        assert_eq!(pksk.sk, r#"sort|"key"#);
     }
 
     #[test]
@@ -135,6 +177,22 @@ mod tests {
         // Using Deserialize:
         let json_str = r#""invalid_format""#; // Extra quotes.
         assert!(serde_json::from_str::<PkSk>(json_str).is_err());
+        assert!(PkSk::from_string("|test_sk").is_err());
+        assert!(PkSk::from_string("test_pk|").is_err());
+    }
+
+    #[test]
+    fn test_map_round_trip_and_validation() {
+        let id = PkSk {
+            pk: "test_pk".into(),
+            sk: "TEST#1".into(),
+        };
+        let mut map = HashMap::new();
+        id.write_to_map(&mut map);
+        assert_eq!(PkSk::from_map(&map).unwrap(), id);
+
+        map.insert("sk".into(), AttributeValue::N("1".into()));
+        assert!(PkSk::from_map(&map).is_err());
     }
 
     #[test]

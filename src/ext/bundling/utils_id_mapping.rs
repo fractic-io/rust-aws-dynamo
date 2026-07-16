@@ -5,9 +5,8 @@ use fractic_server_error::{CriticalError, ServerError};
 
 use crate::errors::DynamoInvalidBundle;
 use crate::schema::{
-    id_calculations::{
-        freshen_object_sk, freshen_timestamp_object_sk, object_sk_component, place_inline_id,
-        place_root_id, place_top_level_id, relative_child_sk, strip_ext_suffix,
+    identifiers::{
+        place_terminal_segment_with, regenerate_timestamp, regenerate_uuid, IdPlacement, RawIdPath,
     },
     PkSk,
 };
@@ -81,32 +80,35 @@ fn place_root(
     id_logic: BundleIdLogic,
     duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<PkSk, ServerError> {
-    match item.nesting {
+    let (parent, original_sk, placement) = match item.nesting {
         BundleNesting::Root => {
             if parent.is_some() {
                 return Err(DynamoInvalidBundle::new(
                     "root object cannot be imported below a parent",
                 ));
             }
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_root_id(&object_sk))
+            (
+                PkSk::root(),
+                item.id.original_sk.as_str(),
+                IdPlacement::Root,
+            )
         }
-        BundleNesting::TopLevel => {
-            let parent =
-                parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_top_level_id(parent, &object_sk))
-        }
-        BundleNesting::Inline => {
-            let parent =
-                parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
-            let component = object_sk_component(&item.id.original_sk, &item.id.label)?;
-            let component = destination_object_sk(component, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_inline_id(parent, &component))
-        }
-    }
+        BundleNesting::TopLevel => (
+            parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?,
+            item.id.original_sk.as_str(),
+            IdPlacement::TopLevel,
+        ),
+        BundleNesting::Inline => (
+            parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?,
+            RawIdPath::new(&item.id.original_sk).terminal_segment(&item.id.label)?,
+            IdPlacement::Inline,
+        ),
+    };
+    Ok(place_terminal_segment_with(
+        parent,
+        &destination_object_sk(original_sk, duplicate, id_logic, duplicate_ids)?,
+        placement,
+    ))
 }
 
 fn place_child(
@@ -116,23 +118,28 @@ fn place_child(
     id_logic: BundleIdLogic,
     duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<PkSk, ServerError> {
-    match item.nesting {
-        BundleNesting::TopLevel => {
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_top_level_id(parent, &object_sk))
-        }
+    let (original_sk, placement) = match item.nesting {
+        BundleNesting::TopLevel => (item.id.original_sk.as_str(), IdPlacement::TopLevel),
         BundleNesting::Inline => {
             let original_parent = item
                 .parent
                 .as_ref()
                 .ok_or_else(|| DynamoInvalidBundle::new("inline child had no parent"))?;
-            let relative = relative_child_sk(&item.id.original_sk, &original_parent.original_sk)?;
-            let relative = destination_object_sk(relative, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_inline_id(parent, &relative))
+            (
+                RawIdPath::new(&item.id.original_sk)
+                    .relative_to(RawIdPath::new(&original_parent.original_sk))?,
+                IdPlacement::Inline,
+            )
         }
-        BundleNesting::Root => Err(DynamoInvalidBundle::new("non-root item had root nesting")),
-    }
+        BundleNesting::Root => {
+            return Err(DynamoInvalidBundle::new("non-root item had root nesting"))
+        }
+    };
+    Ok(place_terminal_segment_with(
+        parent,
+        &destination_object_sk(original_sk, duplicate, id_logic, duplicate_ids)?,
+        placement,
+    ))
 }
 
 // Helpers.
@@ -173,19 +180,20 @@ fn destination_object_sk(
     duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<String, ServerError> {
     if !duplicate {
-        return Ok(strip_ext_suffix(original_sk).to_string());
+        return Ok(RawIdPath::new(original_sk).logical_path().to_string());
     }
     match id_logic {
-        BundleIdLogic::Uuid => Ok(freshen_object_sk(original_sk)),
-        BundleIdLogic::Timestamp => Ok(freshen_timestamp_object_sk(
-            original_sk,
-            duplicate_ids.next_timestamp()?,
-        )),
+        BundleIdLogic::Uuid => regenerate_uuid(original_sk),
+        BundleIdLogic::Timestamp => {
+            regenerate_timestamp(original_sk, duplicate_ids.next_timestamp()?)
+        }
         BundleIdLogic::Singleton
         | BundleIdLogic::IndexedSingleton
         | BundleIdLogic::BatchOptimized
         | BundleIdLogic::SingletonExt
-        | BundleIdLogic::IndexedSingletonExt => Ok(strip_ext_suffix(original_sk).to_string()),
+        | BundleIdLogic::IndexedSingletonExt => {
+            Ok(RawIdPath::new(original_sk).logical_path().to_string())
+        }
         BundleIdLogic::Phantom => Err(DynamoInvalidBundle::new(
             "persisted bundle item used phantom ID logic",
         )),

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{id_calculations::object_ref_component, ForeignRef, PkSk};
+use super::{identifiers::RawIdPath, ForeignRef, PkSk};
 
 impl<'a> ForeignRef<'a> {
     /// Returns the raw internal reference string.
@@ -87,18 +87,18 @@ impl<'de> Deserialize<'de> for ForeignRef<'static> {
 /// 3) if they start with `@` => treat them as a singleton `sk`
 /// 4) otherwise => treat them as an already-minimal reference
 fn normalize_ref(raw: &str) -> &str {
-    if let Some((_, sk)) = raw.split_once('|') {
-        return object_ref_component(sk);
+    match raw.split_once('|') {
+        Some((_, sk)) => RawIdPath::new(sk).foreign_ref_value(),
+        None if raw.contains('#') || raw.starts_with('@') => {
+            RawIdPath::new(raw).foreign_ref_value()
+        }
+        None => raw,
     }
-    if raw.contains('#') || raw.starts_with('@') {
-        return object_ref_component(raw);
-    }
-    raw
 }
 
 /// Extracts the minimal reference string from a full Dynamo sk.
 fn extract_ref_from_sk(sk: &str) -> &str {
-    object_ref_component(sk)
+    RawIdPath::new(sk).foreign_ref_value()
 }
 
 // Tests.

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::{
     errors::DynamoInvalidBundle,
-    schema::id_calculations::{get_object_type, strip_ext_suffix},
+    schema::identifiers::{RawIdPath, ROOT_KEY},
     util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT},
 };
 
@@ -49,8 +49,9 @@ pub(crate) fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> 
         {
             return Err(DynamoInvalidBundle::new("bundle item shape was invalid"));
         }
-        if strip_ext_suffix(&item.id.original_sk) != item.id.original_sk
-            || get_object_type("", &item.id.original_sk)? != item.id.label
+        let raw_path = RawIdPath::new(&item.id.original_sk);
+        let parsed = raw_path.parse()?;
+        if raw_path.logical_path() != item.id.original_sk || parsed.object_label() != item.id.label
         {
             return Err(DynamoInvalidBundle::new(
                 "bundle item ID metadata was invalid",
@@ -79,10 +80,12 @@ pub(crate) fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> 
     let root = items
         .get(&bundle.root)
         .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
-    if strip_ext_suffix(&bundle.source_root.sk) != bundle.source_root.sk
+    let raw_root_path = RawIdPath::new(&bundle.source_root.sk);
+    let parsed_root_path = raw_root_path.parse()?;
+    if raw_root_path.logical_path() != bundle.source_root.sk
         || bundle.source_root.sk != root.id.original_sk
-        || get_object_type(&bundle.source_root.pk, &bundle.source_root.sk)? != root.id.label
-        || (root.nesting == BundleNesting::Root && bundle.source_root.pk != "ROOT")
+        || parsed_root_path.object_label() != root.id.label
+        || (root.nesting == BundleNesting::Root && bundle.source_root.pk != ROOT_KEY)
     {
         return Err(DynamoInvalidBundle::new(
             "bundle source root metadata was invalid",

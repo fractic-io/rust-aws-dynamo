@@ -308,12 +308,6 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
             .await
     }
 
-    pub async fn import(&self, bundle: DynamoBundle) -> Result<DynamoImportResult, ServerError> {
-        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::New { position: None })
-            .await
-    }
-
     pub async fn import_replace(
         &self,
         bundle: DynamoBundle,
@@ -388,12 +382,6 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     pub async fn export(&self, item: O) -> Result<DynamoBundle, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
             .export(item)
-            .await
-    }
-
-    pub async fn import(&self, bundle: DynamoBundle) -> Result<DynamoImportResult, ServerError> {
-        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::New { position: None })
             .await
     }
 

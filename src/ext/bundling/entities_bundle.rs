@@ -143,8 +143,8 @@ pub enum ImportMode {
     Replace,
     /// Always creates a distinct root identity, allowing a different parent.
     New {
-        /// Optional destination ordering. Ordered CRUD wrappers always provide
-        /// an explicit position; unordered wrappers leave this unset.
+        /// Optional destination ordering. Ordered items should always provide
+        /// an explicit position; unordered wrappers should leave this unset.
         position: Option<DynamoInsertPosition>,
     },
 }

@@ -200,7 +200,7 @@ impl DynamoBundle {
 impl DynamoBundleItem {
     /// Reads a value selected by a bundle reference path.
     pub fn value_at(&self, path: &BundleDataPath) -> Option<&Value> {
-        super::impl_utils::value_at_path(&self.data, path)
+        super::utils_value::value_at_path(&self.data, path)
     }
 }
 

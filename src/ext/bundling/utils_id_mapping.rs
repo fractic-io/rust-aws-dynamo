@@ -71,7 +71,7 @@ pub(crate) fn build_id_map(
     Ok(result)
 }
 
-// Helpers.
+// Internal.
 // ----------------------------------------------------------------------------
 
 fn place_root(
@@ -134,6 +134,9 @@ fn place_child(
         BundleNesting::Root => Err(DynamoInvalidBundle::new("non-root item had root nesting")),
     }
 }
+
+// Helpers.
+// ----------------------------------------------------------------------------
 
 struct DuplicateIdGenerator {
     timestamp_seed: i64,

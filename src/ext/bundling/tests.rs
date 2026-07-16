@@ -38,7 +38,7 @@ use super::{
     },
     impl_export::export_from_config,
     impl_import::import_bundle,
-    impl_mapping::build_id_map,
+    utils_id_mapping::build_id_map,
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
     DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
     DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportWarning, ImportMode,

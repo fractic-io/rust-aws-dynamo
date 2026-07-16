@@ -4,9 +4,9 @@ mod entities_bundle;
 mod entities_policy;
 mod impl_export;
 mod impl_import;
-mod impl_mapping;
-mod impl_utils;
-mod impl_validation;
+mod utils_bundle_validation;
+mod utils_id_mapping;
+mod utils_value;
 
 pub use entities_bundle::*;
 pub use entities_policy::{

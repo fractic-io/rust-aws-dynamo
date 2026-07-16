@@ -21,12 +21,13 @@ use crate::{
 use super::{
     entities_policy::{configured_bundle_policy, validate_import_policy},
     impl_export::{collect_bundle_items, export_with_omissions},
-    impl_mapping::build_id_map,
-    impl_utils::set_value_at_path,
-    impl_validation::validate_bundle,
-    root_nesting, BundleId, BundleIdLogic, DynamoBundle, DynamoBundlePolicy,
-    DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
-    DynamoImportResult, DynamoImportWarning, ImportMode,
+    root_nesting,
+    utils_bundle_validation::validate_bundle,
+    utils_id_mapping::build_id_map,
+    utils_value::set_value_at_path,
+    BundleId, BundleIdLogic, DynamoBundle, DynamoBundlePolicy, DynamoBundleReferenceEncoding,
+    DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportResult, DynamoImportWarning,
+    ImportMode,
 };
 
 const DELETE_CONCURRENCY: usize = 16;
@@ -102,8 +103,8 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
             })?;
             if preserved_root_id != &bundle.source_root {
                 return Err(DynamoInvalidOperation::new(
-                    "bundle reparenting is not supported for Merge or Replace; use New to \
-                     import below a different parent",
+                    "bundle reparenting is not supported for Merge or Replace; use New to import \
+                     below a different parent",
                 ));
             }
             let existing = find_existing(util, &preserved_ids).await?;

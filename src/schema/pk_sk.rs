@@ -122,7 +122,7 @@ impl Serialize for PkSk {
     where
         S: Serializer,
     {
-        format!("{}|{}", self.pk, self.sk).serialize(serializer)
+        serializer.collect_str(self)
     }
 }
 

@@ -10,7 +10,10 @@ use crate::{
     errors::DynamoInvalidBundle,
     errors::{DynamoCalloutError, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
-    schema::{identifiers::RawIdPath, parsing::dynamo_map_to_serde_value, ForeignRef, PkSk},
+    schema::{
+        identifiers::RawIdPath, parsing::dynamo_map_to_serde_value, pk_sk::id_fields_from_map,
+        ForeignRef, PkSk,
+    },
     util::{
         collapse_helpers::{collapse_partitioned_items, ext_base_id},
         DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT,
@@ -354,7 +357,7 @@ fn append_partition_groups(
         let mut descendant_omissions = inherited_omissions.clone();
         descendant_omissions.extend(omissions_for(object, fixed_omissions, recorded, &label));
         collected.push(CollectedItem {
-            id: id.clone(),
+            id,
             parent: Some(parent),
             nesting,
             rows,
@@ -474,7 +477,13 @@ fn group_logical_rows(rows: Vec<DynamoMap>) -> Result<HashMap<PkSk, Vec<DynamoMa
         groups.entry(ext_base_id(&id)).or_default().push(row);
     }
     for rows in groups.values_mut() {
-        rows.sort_by_cached_key(|row| PkSk::from_map(row).map(|id| id.sk).unwrap_or_default());
+        rows.sort_unstable_by(|left, right| {
+            let (_, left_sk) =
+                id_fields_from_map(left).expect("grouped DynamoDB row must retain its pk/sk");
+            let (_, right_sk) =
+                id_fields_from_map(right).expect("grouped DynamoDB row must retain its pk/sk");
+            left_sk.cmp(right_sk)
+        });
     }
     Ok(groups)
 }

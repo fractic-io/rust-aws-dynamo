@@ -185,11 +185,12 @@ fn parse_regular_segment(sk: &str) -> Result<TerminalSegment<'_>, ServerError> {
         return Err(invalid_id_path("terminal segment value was empty", sk));
     }
 
-    let label = prefix.rsplit_once('#').map_or(prefix, |(_, label)| label);
-    validate_label(label, sk)?;
-    let segment = prefix
+    let (label, segment) = prefix
         .rsplit_once('#')
-        .map_or(sk, |(ancestor, _)| &sk[ancestor.len() + 1..]);
+        .map_or((prefix, sk), |(ancestor, label)| {
+            (label, &sk[ancestor.len() + 1..])
+        });
+    validate_label(label, sk)?;
     Ok(TerminalSegment::Regular {
         label,
         prefix,
@@ -243,16 +244,15 @@ fn invalid_id_path(message: &str, sk: &str) -> ServerError {
 }
 
 fn split_ext_suffix(sk: &str) -> (&str, Option<usize>) {
-    let Some(digits_start) = sk
-        .char_indices()
-        .rev()
-        .take_while(|(_, character)| character.is_ascii_digit())
-        .last()
-        .map(|(index, _)| index)
-    else {
+    let bytes = sk.as_bytes();
+    let digits_start = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_digit())
+        .map_or(0, |index| index + 1);
+    if digits_start == bytes.len() {
         return (sk, None);
-    };
-    if digits_start == 0 || sk.as_bytes().get(digits_start - 1) != Some(&b'+') {
+    }
+    if digits_start == 0 || bytes[digits_start - 1] != b'+' {
         return (sk, None);
     }
     let Ok(index) = sk[digits_start..].parse::<usize>() else {

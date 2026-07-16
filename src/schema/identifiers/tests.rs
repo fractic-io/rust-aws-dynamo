@@ -138,14 +138,14 @@ fn generation_and_direct_placement_use_the_child_nesting_logic() {
     assert!(inline.sk.starts_with("PARENT#1#INLINE#"));
 
     assert_eq!(
-        place_for::<TopLevelChild>(&parent, "@CHILD"),
+        place_id_for::<TopLevelChild>(&parent, "@CHILD"),
         PkSk {
             pk: "PARENT#1".into(),
             sk: "@CHILD".into(),
         }
     );
     assert_eq!(
-        place_for::<InlineChild>(&parent, "@CHILD"),
+        place_id_for::<InlineChild>(&parent, "@CHILD"),
         PkSk {
             pk: "PARENT_PARTITION".into(),
             sk: "PARENT#1@CHILD".into(),

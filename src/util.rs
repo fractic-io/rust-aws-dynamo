@@ -481,9 +481,8 @@ impl DynamoUtil {
         data: &T::Data,
         options: IdGenerationOptions,
     ) -> Result<CreateToken<T>, ServerError> {
-        let PkSk { pk, sk } = generate_id_with_options::<T>(data, parent_id, options)?;
         Ok(CreateToken {
-            id: PkSk { pk, sk },
+            id: generate_id_with_options::<T>(data, parent_id, options)?,
             _phantom: std::marker::PhantomData,
         })
     }

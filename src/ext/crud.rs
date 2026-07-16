@@ -8,7 +8,7 @@ use fractic_server_error::ServerError;
 use crate::{
     errors::DynamoNotFound,
     ext::bundling::{Bundler, DynamoBundle, DynamoBundlePolicy, DynamoImportResult, ImportMode},
-    schema::{identifiers::place_for, DynamoObject, PkSk},
+    schema::{identifiers::place_id_for, DynamoObject, PkSk},
     util::{DynamoInsertPosition, DynamoMap, DynamoUtil},
 };
 
@@ -325,7 +325,7 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     // -----------------------------------------------------------------------
 
     fn id_for(&self) -> PkSk {
-        place_for::<O>(PkSk::root(), &format!("@{}", O::id_label()))
+        place_id_for::<O>(PkSk::root(), &format!("@{}", O::id_label()))
     }
 }
 
@@ -419,7 +419,7 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     // -----------------------------------------------------------------------
 
     fn id_for(&self, key: &str) -> PkSk {
-        place_for::<O>(PkSk::root(), &format!("@{}[{key}]", O::id_label()))
+        place_id_for::<O>(PkSk::root(), &format!("@{}[{key}]", O::id_label()))
     }
 }
 
@@ -1186,7 +1186,7 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        place_for::<O>(parent.id(), &format!("@{}", O::id_label()))
+        place_id_for::<O>(parent.id(), &format!("@{}", O::id_label()))
     }
 }
 
@@ -1328,6 +1328,6 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
     where
         P: DynamoObject + ParentOf<O>,
     {
-        place_for::<O>(parent.id(), &format!("@{}[{key}]", O::id_label()))
+        place_id_for::<O>(parent.id(), &format!("@{}[{key}]", O::id_label()))
     }
 }

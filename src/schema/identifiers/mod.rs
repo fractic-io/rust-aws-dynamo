@@ -29,5 +29,5 @@ pub(crate) use generation::{
     IdGenerationOptions,
 };
 pub(crate) use id_path::{ParsedIdPath, RawIdPath, TerminalSegmentKind};
-pub(crate) use placement::{place_for, place_object, IdPlacement, ROOT_KEY};
+pub(crate) use placement::{place_id_for, place_id_path, IdPlacement, ROOT_KEY};
 pub(crate) use relations::validate_parent_relation;

@@ -5,7 +5,7 @@ use crate::{
     schema::{DynamoObject, IdLogic, PkSk},
 };
 
-use super::{id_path::RawIdPath, placement::place_for, relations::validate_parent_relation};
+use super::{id_path::RawIdPath, placement::place_id_for, relations::validate_parent_relation};
 
 const ID_VALUE_WIDTH: usize = 16;
 const MAX_TIMESTAMP_ID: i64 = 9_999_999_999_999_999;
@@ -62,7 +62,7 @@ pub(crate) fn generate_id_with_options<T: DynamoObject>(
             }
         };
 
-    Ok(place_for::<T>(parent, &terminal_segment))
+    Ok(place_id_for::<T>(parent, &terminal_segment))
 }
 
 /// Regenerates the terminal segment value of a UUID ID.
@@ -90,17 +90,17 @@ fn validate_configured_label(label: &str) -> Result<(), ServerError> {
     Ok(())
 }
 
-fn base62_encode(mut value: u128, width: usize) -> String {
-    let mut result = vec!['0'; width];
-    for position in (0..width).rev() {
-        result[position] = BASE62_ALPHABET[(value % 62) as usize] as char;
+fn base62_id_value(mut value: u128) -> String {
+    let mut result = [b'0'; ID_VALUE_WIDTH];
+    for position in (0..ID_VALUE_WIDTH).rev() {
+        result[position] = BASE62_ALPHABET[(value % 62) as usize];
         value /= 62;
     }
-    result.into_iter().collect()
+    String::from_utf8(result.to_vec()).expect("the base62 alphabet is valid UTF-8")
 }
 
 fn new_uuid_value() -> String {
-    base62_encode(uuid::Uuid::new_v4().as_u128(), ID_VALUE_WIDTH)
+    base62_id_value(uuid::Uuid::new_v4().as_u128())
 }
 
 fn timestamp_value(timestamp_millis: i64) -> Result<String, ServerError> {
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn generates_fixed_width_base62_values() {
-        let encoded = base62_encode(1_234_567_890, ID_VALUE_WIDTH);
+        let encoded = base62_id_value(1_234_567_890);
         assert_eq!(encoded.len(), ID_VALUE_WIDTH);
         assert!(encoded
             .chars()

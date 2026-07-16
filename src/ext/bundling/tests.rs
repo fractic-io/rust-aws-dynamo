@@ -201,7 +201,7 @@ impl DynamoCrudAlgorithms for CleanupAlgorithms {
         Ok(())
     }
 
-    async fn bundle_import_outoftable_cleanup(
+    async fn bundle_external_data_cleanup(
         &self,
         stale_rows: &[DynamoMap],
     ) -> Result<(), ServerError> {

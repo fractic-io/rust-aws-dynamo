@@ -122,8 +122,6 @@ pub(crate) fn collapse_partitioned_items(
     let mut ordered_entries = Vec::new();
     let mut partition_groups: HashMap<PkSk, Vec<DynamoMap>> = HashMap::new();
     let mut placeholders: HashMap<PkSk, DynamoMap> = HashMap::new();
-    let mut seen_partition_groups = HashSet::new();
-
     for item in items {
         let is_partition = item.contains_key(COLLAPSE_DATA_RESERVED_KEY);
         let is_placeholder = item.contains_key(COLLAPSE_PLACEHOLDER_RESERVED_KEY);
@@ -134,7 +132,7 @@ pub(crate) fn collapse_partitioned_items(
 
         let id = PkSk::from_map(&item)?;
         let base_id = ext_base_id(&id);
-        if seen_partition_groups.insert(base_id.clone()) {
+        if !partition_groups.contains_key(&base_id) && !placeholders.contains_key(&base_id) {
             ordered_entries.push(OrderedEntry::Partitioned(base_id.clone()));
         }
         if is_partition {
@@ -144,7 +142,7 @@ pub(crate) fn collapse_partitioned_items(
         }
     }
 
-    let mut collapsed = Vec::new();
+    let mut collapsed = Vec::with_capacity(ordered_entries.len());
     for entry in ordered_entries {
         match entry {
             OrderedEntry::Item(item) => collapsed.push(item),
@@ -192,7 +190,7 @@ pub(crate) fn collapse_partitioned_items(
                     .map(|item| {
                         item.get(COLLAPSE_DATA_RESERVED_KEY)
                             .and_then(|v| v.as_s().ok())
-                            .cloned()
+                            .map(String::as_str)
                             .ok_or_else(|| {
                                 DynamoInvalidPartitioning::new(
                                     "ext partition row was missing its data field",

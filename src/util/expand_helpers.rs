@@ -18,30 +18,30 @@ use crate::{
 /// Wrapper struct used to store a batch of items that should be expanded on
 /// query.
 #[derive(Serialize)]
-struct ExpandableBatch<T: DynamoObject> {
+struct ExpandableBatch<'a, T: DynamoObject> {
     #[serde(rename = "..")]
-    items: Vec<T::Data>,
+    items: &'a [T::Data],
 }
 
 // Read logic.
 // ----------------------------------------------------------------------------
 
 pub(crate) fn expand_batched_items(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
-    items
-        .into_iter()
-        .flat_map(|mut item| match item.remove(EXPAND_DATA_RESERVED_KEY) {
-            Some(aws_sdk_dynamodb::types::AttributeValue::L(children)) => children
-                .into_iter()
-                .filter_map(|child| match child {
+    let mut expanded = Vec::with_capacity(items.len());
+    for mut item in items {
+        match item.remove(EXPAND_DATA_RESERVED_KEY) {
+            Some(aws_sdk_dynamodb::types::AttributeValue::L(children)) => {
+                expanded.extend(children.into_iter().filter_map(|child| match child {
                     aws_sdk_dynamodb::types::AttributeValue::M(inner_map) => {
                         Some(inner_map.with_metadata_from(&item))
                     }
                     _ => None,
-                })
-                .collect::<Vec<_>>(),
-            _ => vec![item],
-        })
-        .collect()
+                }));
+            }
+            _ => expanded.push(item),
+        }
+    }
+    expanded
 }
 
 // Write logic.
@@ -70,9 +70,7 @@ pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
             };
             let PkSk { pk, sk } = place_terminal_segment::<T>(parent_id, &new_obj_id);
 
-            let expandable_batch = ExpandableBatch::<T> {
-                items: batch.to_vec(),
-            };
+            let expandable_batch = ExpandableBatch::<T> { items: batch };
             let now = Timestamp::now();
             build_dynamo_map_internal::<ExpandableBatch<T>>(
                 &expandable_batch,

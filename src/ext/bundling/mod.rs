@@ -17,7 +17,7 @@ use fractic_server_error::ServerError;
 
 use crate::{
     ext::crud::DynamoCrudAlgorithms,
-    schema::{DynamoObject, NestingLogic, PkSk},
+    schema::{DynamoObject, PkSk},
     util::DynamoUtil,
 };
 
@@ -43,7 +43,7 @@ impl<'a> Bundler<'a> {
             self.dynamo_util,
             self.crud_algorithms,
             item.id().clone(),
-            root_nesting::<O>(),
+            O::nesting_logic().into(),
             BundleIdLogic::from_object::<O>(),
         )
         .await
@@ -63,19 +63,6 @@ impl<'a> Bundler<'a> {
             mode,
         )
         .await
-    }
-}
-
-// Helpers.
-// ----------------------------------------------------------------------------
-
-pub(crate) fn root_nesting<O: DynamoObject>() -> BundleNesting {
-    match O::nesting_logic() {
-        NestingLogic::Root => BundleNesting::Root,
-        NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
-            BundleNesting::TopLevel
-        }
-        NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => BundleNesting::Inline,
     }
 }
 

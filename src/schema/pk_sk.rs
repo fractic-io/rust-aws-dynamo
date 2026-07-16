@@ -125,12 +125,22 @@ impl<'de> Deserialize<'de> for PkSk {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        let (pk, sk) = split_serialized_id(&s).map_err(de::Error::custom)?;
-        Ok(PkSk {
-            pk: pk.to_string(),
-            sk: sk.to_string(),
-        })
+        let mut pk = String::deserialize(deserializer)?;
+        let separator = pk.find('|').ok_or_else(|| {
+            de::Error::custom(DynamoInvalidId::with_debug(
+                "ID was not in `pk|sk` format",
+                &pk,
+            ))
+        })?;
+        let sk = pk.split_off(separator + 1);
+        pk.truncate(separator);
+        if pk.is_empty() || sk.is_empty() {
+            return Err(de::Error::custom(DynamoInvalidId::with_debug(
+                "ID contained an empty partition key or sort key",
+                &format!("{pk}|{sk}"),
+            )));
+        }
+        Ok(PkSk { pk, sk })
     }
 }
 

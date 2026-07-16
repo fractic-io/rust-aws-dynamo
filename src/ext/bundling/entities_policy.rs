@@ -60,7 +60,7 @@ enum DynamoBundleParentRequirement {
 }
 
 /// An advanced reference selector for shapes not covered by the declarative
-/// reference helpers on [`DynamoBundleObjectConfig`].
+/// reference helpers on [`DynamoBundleObjectPolicy`].
 pub struct DynamoBundleReferenceRule {
     pub(crate) selector: Arc<BundleReferenceSelector>,
 }
@@ -146,7 +146,7 @@ impl DynamoBundleObjectPolicy {
     /// Remaps every `PkSk` in an array. Every target must be in the bundle.
     pub fn bundled_pksk_each<O: DynamoObject>(&mut self, path: &'static str) -> &mut Self {
         let list_path = BundleDataPath::dotted(path);
-        let target_label = O::id_label().to_owned();
+        let target_label = O::id_label();
         self.reference_rules
             .push(DynamoBundleReferenceRule::custom(move |item| {
                 let Some(values) = item.value_at(&list_path).and_then(Value::as_array) else {
@@ -160,7 +160,7 @@ impl DynamoBundleObjectPolicy {
                         DynamoBundleReferenceMatch::bundled_label(
                             list_path.clone().then_index(index),
                             DynamoBundleReferenceEncoding::PkSk,
-                            target_label.clone(),
+                            target_label,
                         )
                     })
                     .collect())
@@ -227,7 +227,7 @@ impl DynamoBundleReferenceMatch {
         path: BundleDataPath,
         encoding: DynamoBundleReferenceEncoding,
     ) -> Self {
-        Self::bundled_label(path, encoding, O::id_label().to_owned())
+        Self::bundled_label(path, encoding, O::id_label())
     }
 
     pub fn in_table(path: BundleDataPath, lookup_id: PkSk) -> Self {
@@ -482,12 +482,20 @@ impl DynamoBundleObjectPolicy {
         if self.schema_variants.is_empty() {
             return Ok(());
         }
-        let matching = self
+        let mut matched_topology = false;
+        let mut errors = Vec::new();
+        for variant in self
             .schema_variants
             .iter()
             .filter(|variant| variant.topology.matches(item.nesting, parent))
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
+        {
+            matched_topology = true;
+            match (variant.validate_data)(item) {
+                Ok(()) => return Ok(()),
+                Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
+            }
+        }
+        if !matched_topology {
             return Err(DynamoInvalidBundle::new(&format!(
                 "item label `{}` used {:?} nesting below {}, which does not match any local schema",
                 item.id.label,
@@ -496,13 +504,6 @@ impl DynamoBundleObjectPolicy {
             )));
         }
 
-        let mut errors = Vec::new();
-        for variant in matching {
-            match (variant.validate_data)(item) {
-                Ok(()) => return Ok(()),
-                Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
-            }
-        }
         Err(DynamoInvalidBundle::new(&format!(
             "item label `{}` data did not match its local schema: {}",
             item.id.label,
@@ -635,31 +636,17 @@ impl DynamoBundleObjectPolicy {
         encoding: DynamoBundleReferenceEncoding,
     ) -> &mut Self {
         let path = BundleDataPath::dotted(path);
-        let target_label = O::id_label().to_owned();
+        let target_label = O::id_label();
         self.reference_rules
-            .push(DynamoBundleReferenceRule::at_bundled_path(
-                path,
-                encoding,
-                target_label,
-            ));
+            .push(DynamoBundleReferenceRule::custom(move |item| {
+                Ok(item.value_at(&path).map_or_else(Vec::new, |_| {
+                    vec![DynamoBundleReferenceMatch::bundled_label(
+                        path.clone(),
+                        encoding,
+                        target_label,
+                    )]
+                }))
+            }));
         self
-    }
-}
-
-impl DynamoBundleReferenceRule {
-    fn at_bundled_path(
-        path: BundleDataPath,
-        encoding: DynamoBundleReferenceEncoding,
-        target_label: String,
-    ) -> Self {
-        Self::custom(move |item| {
-            Ok(item.value_at(&path).map_or_else(Vec::new, |_| {
-                vec![DynamoBundleReferenceMatch::bundled_label(
-                    path.clone(),
-                    encoding,
-                    target_label.clone(),
-                )]
-            }))
-        })
     }
 }

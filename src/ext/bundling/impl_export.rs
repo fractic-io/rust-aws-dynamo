@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_core::collection;
@@ -78,7 +78,7 @@ pub(crate) async fn export_from_config(
 /// Exports a destination snapshot using the incoming bundle's omission policy.
 pub(crate) async fn export_with_omissions(
     util: &DynamoUtil,
-    bundles: &DynamoBundlePolicy,
+    policy: &DynamoBundlePolicy,
     root: &PkSk,
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
@@ -86,7 +86,7 @@ pub(crate) async fn export_with_omissions(
 ) -> Result<DynamoBundle, ServerError> {
     export_bundle(
         util,
-        bundles,
+        policy,
         root,
         ExportOptions {
             root_nesting,
@@ -100,13 +100,13 @@ pub(crate) async fn export_with_omissions(
 
 async fn export_bundle(
     util: &DynamoUtil,
-    bundles: &DynamoBundlePolicy,
+    policy: &DynamoBundlePolicy,
     root: &PkSk,
     options: ExportOptions<'_>,
 ) -> Result<DynamoBundle, ServerError> {
     let (collected, omitted_descendants) = collect_bundle_items(
         util,
-        bundles,
+        policy,
         root,
         options.root_nesting,
         options.fixed_omissions,
@@ -119,7 +119,7 @@ async fn export_bundle(
     for (index, item) in collected.into_iter().enumerate() {
         let label = RawIdPath::new(&item.id.sk).object_label()?.to_string();
         let (storage, mut data) = normalize_rows(item.rows)?;
-        let object = bundles.require(&label)?;
+        let object = policy.require(&label)?;
         object.normalize_renamed_fields(&mut data);
         let id_logic = if item.id == root_id {
             options.root_id_logic
@@ -165,7 +165,7 @@ async fn export_bundle(
         references: Vec::new(),
     };
     if options.include_references {
-        bundle.references = collect_references(bundles, &bundle, &by_pk_sk)?;
+        bundle.references = collect_references(policy, &bundle, &by_pk_sk)?;
     }
     Ok(bundle)
 }
@@ -175,14 +175,14 @@ async fn export_bundle(
 
 pub(crate) async fn collect_bundle_items(
     util: &DynamoUtil,
-    bundles: &DynamoBundlePolicy,
+    policy: &DynamoBundlePolicy,
     root: &PkSk,
     root_nesting: BundleNesting,
     fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
     let root = ext_base_id(root);
     let root_label = RawIdPath::new(&root.sk).object_label()?;
-    let root_config = bundles.require(root_label)?;
+    let root_config = policy.require(root_label)?;
     let mut recorded = fixed_omissions.cloned().unwrap_or_default();
     let root_omissions = omissions_for(root_config, fixed_omissions, &mut recorded, root_label);
     let initial_rows = raw_query(util, &root.pk, Some(&root.sk)).await?;
@@ -203,40 +203,35 @@ pub(crate) async fn collect_bundle_items(
         &mut collected,
         0,
         initial_groups,
-        bundles,
+        policy,
         fixed_omissions,
         &mut recorded,
     )?;
 
-    let mut queried = HashSet::new();
     let mut frontier = (0..collected.len()).collect::<Vec<_>>();
     while !frontier.is_empty() {
-        let owners = frontier
-            .drain(..)
-            .filter_map(|index| {
-                let item = &collected[index];
-                queried
-                    .insert(item.id.clone())
-                    .then(|| (index, item.id.clone()))
-            })
-            .collect::<Vec<_>>();
-        let mut results = stream::iter(owners)
-            .map(|(owner_index, owner)| async move {
-                let rows = raw_query(util, &owner.sk, None).await?;
-                Ok::<_, ServerError>((owner_index, owner, group_logical_rows(rows)?))
+        let collected_ref = &collected;
+        let mut results = stream::iter(frontier.drain(..))
+            .map(move |owner_index| async move {
+                let rows = raw_query(util, &collected_ref[owner_index].id.sk, None).await?;
+                Ok::<_, ServerError>((owner_index, group_logical_rows(rows)?))
             })
             .buffer_unordered(QUERY_CONCURRENCY)
             .try_collect::<Vec<_>>()
             .await?;
-        results.sort_by(|(_, a, _), (_, b, _)| a.pk.cmp(&b.pk).then_with(|| a.sk.cmp(&b.sk)));
+        results.sort_by(|(a, _), (b, _)| {
+            let a = &collected[*a].id;
+            let b = &collected[*b].id;
+            a.pk.cmp(&b.pk).then_with(|| a.sk.cmp(&b.sk))
+        });
 
-        for (owner_index, _, groups) in results {
+        for (owner_index, groups) in results {
             let before = collected.len();
             append_partition_groups(
                 &mut collected,
                 owner_index,
                 groups,
-                bundles,
+                policy,
                 fixed_omissions,
                 &mut recorded,
             )?;
@@ -247,13 +242,13 @@ pub(crate) async fn collect_bundle_items(
 }
 
 fn collect_references(
-    bundles: &DynamoBundlePolicy,
+    policy: &DynamoBundlePolicy,
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
 ) -> Result<Vec<DynamoBundleReference>, ServerError> {
     let mut references = Vec::new();
     for item in &bundle.items {
-        let object = bundles.require(&item.id.label)?;
+        let object = policy.require(&item.id.label)?;
         for rule in object.reference_rules() {
             for matched in (rule.selector)(item)? {
                 let original = item
@@ -324,7 +319,7 @@ fn append_partition_groups(
     collected: &mut Vec<CollectedItem>,
     owner_index: usize,
     groups: HashMap<PkSk, Vec<DynamoMap>>,
-    bundles: &DynamoBundlePolicy,
+    policy: &DynamoBundlePolicy,
     fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), ServerError> {
@@ -353,7 +348,7 @@ fn append_partition_groups(
             Some(index) => (collected[index].id.clone(), BundleNesting::Inline),
             None => (collected[owner_index].id.clone(), BundleNesting::TopLevel),
         };
-        let object = bundles.require(&label)?;
+        let object = policy.require(&label)?;
         let mut descendant_omissions = inherited_omissions.clone();
         descendant_omissions.extend(omissions_for(object, fixed_omissions, recorded, &label));
         collected.push(CollectedItem {

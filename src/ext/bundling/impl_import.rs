@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use fractic_server_error::{CriticalError, ServerError};
 use futures_util::{stream, StreamExt as _, TryStreamExt as _};
+use serde::ser::SerializeMap as _;
 use serde_json::Value;
 
 use crate::{
@@ -21,7 +22,6 @@ use crate::{
 use super::{
     entities_policy::{configured_bundle_policy, validate_import_policy},
     impl_export::{collect_bundle_items, export_with_omissions},
-    root_nesting,
     utils_bundle_validation::validate_bundle,
     utils_id_mapping::build_id_map,
     utils_value::set_value_at_path,
@@ -51,6 +51,29 @@ struct ReplacePlan {
     stale_root_count: usize,
 }
 
+struct PartitionPayload<'a>(&'a serde_json::Map<String, Value>);
+
+impl serde::Serialize for PartitionPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        for (key, value) in self.0 {
+            if !matches!(
+                key.as_str(),
+                AUTO_FIELDS_SORT
+                    | AUTO_FIELDS_TTL
+                    | AUTO_FIELDS_CREATED_AT
+                    | AUTO_FIELDS_UPDATED_AT
+            ) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
 // Private interface.
 // ----------------------------------------------------------------------------
 
@@ -67,7 +90,8 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         .iter()
         .find(|item| item.id == bundle.root)
         .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
-    if root_item.id.label != O::id_label() || root_item.nesting != root_nesting::<O>() {
+    let root_nesting = O::nesting_logic().into();
+    if root_item.id.label != O::id_label() || root_item.nesting != root_nesting {
         return Err(DynamoInvalidBundle::new(
             "bundle root type or nesting did not match the importing CRUD wrapper",
         ));
@@ -127,7 +151,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
                 util,
                 &policy,
                 &root_id,
-                root_nesting::<O>(),
+                root_nesting,
                 root_id_logic,
                 &effective_omissions,
             )
@@ -166,7 +190,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         Some(plan) => {
             if !plan.stale_rows.is_empty() {
                 algorithms
-                    .bundle_import_outoftable_cleanup(&plan.stale_rows)
+                    .bundle_external_data_cleanup(&plan.stale_rows)
                     .await?;
             }
             util.raw_batch_delete_ids(plan.delete_ids.into_iter().collect())
@@ -363,21 +387,17 @@ fn build_write_plan(
 }
 
 fn partition_payload(data: &Value) -> Result<(String, Option<f64>, Option<i64>), ServerError> {
-    let Value::Object(mut object) = data.clone() else {
+    let Value::Object(object) = data else {
         return Err(DynamoInvalidBundle::new(
             "partitioned item data was not an object",
         ));
     };
     let sort = object
-        .remove(AUTO_FIELDS_SORT)
+        .get(AUTO_FIELDS_SORT)
         .and_then(|value| value.as_f64());
-    let ttl = object
-        .remove(AUTO_FIELDS_TTL)
-        .and_then(|value| value.as_i64());
-    object.remove(AUTO_FIELDS_CREATED_AT);
-    object.remove(AUTO_FIELDS_UPDATED_AT);
+    let ttl = object.get(AUTO_FIELDS_TTL).and_then(|value| value.as_i64());
     Ok((
-        serde_json::to_string(&Value::Object(object)).map_err(|error| {
+        serde_json::to_string(&PartitionPayload(object)).map_err(|error| {
             DynamoInvalidOperation::with_debug(
                 "failed to serialize partitioned bundle item",
                 &error,
@@ -447,7 +467,7 @@ async fn prepare_new_root_data<O: DynamoObject>(
 
 async fn build_replace_plan(
     util: &DynamoUtil,
-    bundles: &DynamoBundlePolicy,
+    policy: &DynamoBundlePolicy,
     parent: Option<&PkSk>,
     old: &DynamoBundle,
     new_ids: &HashMap<BundleId, PkSk>,
@@ -468,17 +488,17 @@ async fn build_replace_plan(
                 .get(&item.id)
                 .is_some_and(|id| !desired.contains(id))
         })
-        .map(|item| item.id.clone())
+        .map(|item| &item.id)
         .collect::<HashSet<_>>();
     let stale_roots =
         old.items
             .iter()
             .filter(|item| {
-                stale.contains(&item.id)
+                stale.contains(&&item.id)
                     && item
                         .parent
                         .as_ref()
-                        .is_none_or(|parent| !stale.contains(parent))
+                        .is_none_or(|parent| !stale.contains(&parent))
             })
             .map(|item| {
                 Ok((
@@ -490,11 +510,11 @@ async fn build_replace_plan(
             })
             .collect::<Result<Vec<_>, ServerError>>()?;
 
-    let delete_groups = stream::iter(stale_roots.iter().cloned())
-        .map(|(id, nesting)| async move {
-            let no_omissions = BTreeMap::new();
+    let no_omissions = BTreeMap::new();
+    let delete_groups = stream::iter(&stale_roots)
+        .map(|(id, nesting)| async {
             let (items, _) =
-                collect_bundle_items(util, bundles, &id, nesting, Some(&no_omissions)).await?;
+                collect_bundle_items(util, policy, id, *nesting, Some(&no_omissions)).await?;
             items
                 .into_iter()
                 .flat_map(|item| item.rows)

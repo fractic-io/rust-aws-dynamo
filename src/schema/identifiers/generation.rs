@@ -15,7 +15,7 @@ const BASE62_ALPHABET: &[u8; 62] =
     b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 /// Controls deterministic ID generation used by batch operations and tests.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct IdGenerationOptions {
     pub timestamp_millis: Option<i64>,
 }

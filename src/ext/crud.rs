@@ -22,19 +22,21 @@ pub trait DynamoCrudAlgorithms: Send + Sync {
         self.recursive_delete(id).await
     }
 
-    /// Performs additional out-of-table cleanup for raw rows that Replace
-    /// plans to delete. The importing table rows are still deleted by the
-    /// bundler after this hook succeeds.
-    async fn bundle_import_outoftable_cleanup(
+    /// Registers the objects and relationships allowed in Dynamo bundles.
+    /// The empty default rejects every object type.
+    fn bundle_policy(&self, _policy: &mut DynamoBundlePolicy) {}
+
+    /// Can be overridden to trigger additional cleanup for stale rows that
+    /// ImportMode::Replace plans to delete (i.e. present in source but not in
+    /// bundle being imported). The bundling logic itself handles deletion, but
+    /// this hook gives the chance for custom additional / external cleanup for
+    /// out-of-table data.
+    async fn bundle_external_data_cleanup(
         &self,
         _stale_rows: &[DynamoMap],
     ) -> Result<(), ServerError> {
         Ok(())
     }
-
-    /// Registers the objects and relationships allowed in Dynamo bundles.
-    /// The empty default rejects every object type.
-    fn bundle_policy(&self, _policy: &mut DynamoBundlePolicy) {}
 }
 
 /// Marker trait used to validate whether a given type is a valid parent of `O`.

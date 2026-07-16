@@ -597,13 +597,12 @@ impl DynamoUtil {
                 })
                 .collect::<Result<Vec<_>, ServerError>>()?;
 
-            let mut unique_logical_ids = Vec::new();
             let mut seen_logical_ids = HashSet::new();
-            for (logical_id, _, _, _) in &pending_writes {
-                if seen_logical_ids.insert(logical_id.clone()) {
-                    unique_logical_ids.push(logical_id.clone());
-                }
-            }
+            let unique_logical_ids = pending_writes
+                .iter()
+                .filter(|(logical_id, _, _, _)| seen_logical_ids.insert(logical_id))
+                .map(|(logical_id, _, _, _)| logical_id.clone())
+                .collect::<Vec<_>>();
             let existing_partition_counts =
                 fetch_num_partitions_batch(self, &unique_logical_ids).await?;
 

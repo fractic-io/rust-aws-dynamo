@@ -13,7 +13,7 @@ impl<'a> ForeignRef<'a> {
     /// Severs the reference from the original `PkSk` and returns an owned
     /// `ForeignRef<'static>` object.
     pub fn into_owned(self) -> ForeignRef<'static> {
-        ForeignRef(Cow::Owned(self.0.to_string()))
+        ForeignRef(Cow::Owned(self.0.into_owned()))
     }
 
     /// Builds a `PkSk` from this reference string using a caller-provided
@@ -70,7 +70,12 @@ impl<'de> Deserialize<'de> for ForeignRef<'static> {
         D: Deserializer<'de>,
     {
         let raw = String::deserialize(deserializer)?;
-        Ok(ForeignRef(Cow::Owned(normalize_ref(&raw).to_string())))
+        let normalized = normalize_ref(&raw);
+        if normalized.len() == raw.len() {
+            Ok(ForeignRef(Cow::Owned(raw)))
+        } else {
+            Ok(ForeignRef(Cow::Owned(normalized.to_owned())))
+        }
     }
 }
 

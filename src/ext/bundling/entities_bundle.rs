@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    schema::{DynamoObject, IdLogic, PkSk},
+    schema::{DynamoObject, IdLogic, NestingLogic, PkSk},
     util::DynamoInsertPosition,
 };
 
@@ -188,6 +188,16 @@ impl BundleIdLogic {
             IdLogic::SingletonExt => Self::SingletonExt,
             IdLogic::IndexedSingletonExt(_) => Self::IndexedSingletonExt,
             IdLogic::Phantom => Self::Phantom,
+        }
+    }
+}
+
+impl From<NestingLogic> for BundleNesting {
+    fn from(nesting: NestingLogic) -> Self {
+        match nesting {
+            NestingLogic::Root => Self::Root,
+            NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => Self::TopLevel,
+            NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => Self::Inline,
         }
     }
 }

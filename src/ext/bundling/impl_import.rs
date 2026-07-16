@@ -53,27 +53,6 @@ struct ReplacePlan {
 
 struct PartitionPayload<'a>(&'a serde_json::Map<String, Value>);
 
-impl serde::Serialize for PartitionPayload<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut map = serializer.serialize_map(None)?;
-        for (key, value) in self.0 {
-            if !matches!(
-                key.as_str(),
-                AUTO_FIELDS_SORT
-                    | AUTO_FIELDS_TTL
-                    | AUTO_FIELDS_CREATED_AT
-                    | AUTO_FIELDS_UPDATED_AT
-            ) {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        map.end()
-    }
-}
-
 // Private interface.
 // ----------------------------------------------------------------------------
 
@@ -211,6 +190,27 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
 
 // Internal.
 // ----------------------------------------------------------------------------
+
+impl serde::Serialize for PartitionPayload<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        for (key, value) in self.0 {
+            if !matches!(
+                key.as_str(),
+                AUTO_FIELDS_SORT
+                    | AUTO_FIELDS_TTL
+                    | AUTO_FIELDS_CREATED_AT
+                    | AUTO_FIELDS_UPDATED_AT
+            ) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
 
 async fn find_existing(
     util: &DynamoUtil,

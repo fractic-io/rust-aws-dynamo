@@ -4,7 +4,9 @@ mod entities_bundle;
 mod entities_policy;
 mod impl_export;
 mod impl_import;
-mod impl_utils;
+mod utils_bundle_validation;
+mod utils_id_mapping;
+mod utils_value;
 
 pub use entities_bundle::*;
 pub use entities_policy::{
@@ -14,9 +16,8 @@ pub use entities_policy::{
 use fractic_server_error::ServerError;
 
 use crate::{
-    errors::DynamoInvalidOperation,
     ext::crud::DynamoCrudAlgorithms,
-    schema::{DynamoObject, NestingLogic, PkSk},
+    schema::{DynamoObject, PkSk},
     util::DynamoUtil,
 };
 
@@ -42,21 +43,8 @@ impl<'a> Bundler<'a> {
             self.dynamo_util,
             self.crud_algorithms,
             item.id().clone(),
-            root_nesting::<O>(),
+            O::nesting_logic().into(),
             BundleIdLogic::from_object::<O>(),
-            false,
-        )
-        .await
-    }
-
-    pub async fn export_deep<O: DynamoObject>(&self, item: O) -> Result<DynamoBundle, ServerError> {
-        impl_export::export_from_config(
-            self.dynamo_util,
-            self.crud_algorithms,
-            item.id().clone(),
-            root_nesting::<O>(),
-            BundleIdLogic::from_object::<O>(),
-            true,
         )
         .await
     }
@@ -65,34 +53,17 @@ impl<'a> Bundler<'a> {
         &self,
         parent: Option<&PkSk>,
         bundle: DynamoBundle,
-        if_existing: IfExisting,
+        mode: ImportMode,
     ) -> Result<DynamoImportResult, ServerError> {
         impl_import::import_bundle::<O>(
             self.dynamo_util,
             self.crud_algorithms,
             parent,
             bundle,
-            if_existing,
+            mode,
         )
         .await
     }
-}
-
-// Helpers.
-// ----------------------------------------------------------------------------
-
-pub(crate) fn root_nesting<O: DynamoObject>() -> BundleNesting {
-    match O::nesting_logic() {
-        NestingLogic::Root => BundleNesting::Root,
-        NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
-            BundleNesting::TopLevel
-        }
-        NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => BundleNesting::Inline,
-    }
-}
-
-pub(crate) fn invalid_bundle(details: &str) -> ServerError {
-    DynamoInvalidOperation::new(&format!("invalid Dynamo bundle: {details}"))
 }
 
 // Tests.

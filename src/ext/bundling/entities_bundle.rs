@@ -6,7 +6,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::schema::{DynamoObject, IdLogic, PkSk};
+use crate::{
+    schema::{DynamoObject, IdLogic, NestingLogic, PkSk},
+    util::DynamoInsertPosition,
+};
 
 // Definitions.
 // ----------------------------------------------------------------------------
@@ -43,9 +46,9 @@ pub enum BundleIdLogic {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DynamoBundle {
     pub version: u32,
+    /// Original logical database placement of the bundle root.
+    pub source_root: PkSk,
     pub root: BundleId,
-    #[serde(default)]
-    pub recursive: bool,
     /// Omitted descendant labels keyed by the owning object label.
     #[serde(default)]
     pub omitted_descendants: BTreeMap<String, BTreeSet<String>>,
@@ -113,22 +116,37 @@ pub enum DynamoBundleReferenceTarget {
         id: BundleId,
         encoding: DynamoBundleReferenceEncoding,
     },
-    /// The target is outside the bundle but in the importing table.
-    External {
+    /// The target is outside the bundle but in the importing table. Import
+    /// preserves the reference when the target exists and clears it otherwise.
+    InTable {
         lookup_id: PkSk,
         /// The reference path itself for scalar options, or a containing path
         /// when one missing member must clear a compound optional value.
         clear_path: BundleDataPath,
     },
+    /// The target is stored outside the importing table and cannot be checked.
+    /// Merge and Replace preserve the bundled value; New clears it.
+    OutOfTable {
+        lookup_id: PkSk,
+        /// The reference path itself for scalar options, or a containing path
+        /// when creating a new identity must clear a compound optional value.
+        clear_path: BundleDataPath,
+    },
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum IfExisting {
+pub enum ImportMode {
+    /// Upserts the bundle at its original source placement.
     Merge,
+    /// Reconciles the stored subtree at its original source placement.
     Replace,
-    #[default]
-    Duplicate,
+    /// Always creates a distinct root identity, allowing a different parent.
+    New {
+        /// Optional destination ordering. Ordered items should always provide
+        /// an explicit position; unordered wrappers should leave this unset.
+        position: Option<DynamoInsertPosition>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,18 +156,26 @@ pub struct DynamoImportResult {
     pub written_objects: usize,
     /// Number of logical stale roots recursively removed by Replace.
     pub deleted_subtree_roots: usize,
-    pub duplicated: bool,
+    /// Whether the import created a distinct root identity.
+    pub created_new: bool,
     pub warnings: Vec<DynamoImportWarning>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamoImportWarning {
-    MissingExternalReference,
+    ZeroedInTableReference,
+    ZeroedOutOfTableReference,
 }
 
 // Public interface.
 // ----------------------------------------------------------------------------
+
+impl Default for ImportMode {
+    fn default() -> Self {
+        Self::New { position: None }
+    }
+}
 
 impl BundleIdLogic {
     pub fn from_object<O: DynamoObject>() -> Self {
@@ -166,6 +192,16 @@ impl BundleIdLogic {
     }
 }
 
+impl From<NestingLogic> for BundleNesting {
+    fn from(nesting: NestingLogic) -> Self {
+        match nesting {
+            NestingLogic::Root => Self::Root,
+            NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => Self::TopLevel,
+            NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => Self::Inline,
+        }
+    }
+}
+
 impl DynamoBundle {
     /// Version of the first public Dynamo bundle format.
     pub const VERSION: u32 = 1;
@@ -174,7 +210,7 @@ impl DynamoBundle {
 impl DynamoBundleItem {
     /// Reads a value selected by a bundle reference path.
     pub fn value_at(&self, path: &BundleDataPath) -> Option<&Value> {
-        super::impl_utils::value_at_path(&self.data, path)
+        super::utils_value::value_at_path(&self.data, path)
     }
 }
 

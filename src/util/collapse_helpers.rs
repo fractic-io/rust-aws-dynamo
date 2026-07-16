@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::{
     errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoInvalidPartitioning},
     schema::{
-        id_calculations::{get_ext_index, strip_ext_suffix},
+        identifiers::RawIdPath,
         parsing::{build_dynamo_map_internal, deserialize_dynamo_map_partitions},
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
@@ -57,7 +57,7 @@ pub(crate) fn is_partitioned_id_logic<T: DynamoObject>() -> bool {
 pub(crate) fn ext_base_id(id: &PkSk) -> PkSk {
     PkSk {
         pk: id.pk.clone(),
-        sk: strip_ext_suffix(&id.sk).to_string(),
+        sk: RawIdPath::new(&id.sk).logical_path().to_string(),
     }
 }
 
@@ -122,8 +122,6 @@ pub(crate) fn collapse_partitioned_items(
     let mut ordered_entries = Vec::new();
     let mut partition_groups: HashMap<PkSk, Vec<DynamoMap>> = HashMap::new();
     let mut placeholders: HashMap<PkSk, DynamoMap> = HashMap::new();
-    let mut seen_partition_groups = HashSet::new();
-
     for item in items {
         let is_partition = item.contains_key(COLLAPSE_DATA_RESERVED_KEY);
         let is_placeholder = item.contains_key(COLLAPSE_PLACEHOLDER_RESERVED_KEY);
@@ -134,7 +132,7 @@ pub(crate) fn collapse_partitioned_items(
 
         let id = PkSk::from_map(&item)?;
         let base_id = ext_base_id(&id);
-        if seen_partition_groups.insert(base_id.clone()) {
+        if !partition_groups.contains_key(&base_id) && !placeholders.contains_key(&base_id) {
             ordered_entries.push(OrderedEntry::Partitioned(base_id.clone()));
         }
         if is_partition {
@@ -144,7 +142,7 @@ pub(crate) fn collapse_partitioned_items(
         }
     }
 
-    let mut collapsed = Vec::new();
+    let mut collapsed = Vec::with_capacity(ordered_entries.len());
     for entry in ordered_entries {
         match entry {
             OrderedEntry::Item(item) => collapsed.push(item),
@@ -162,7 +160,7 @@ pub(crate) fn collapse_partitioned_items(
                 partitions.sort_by_key(|item| {
                     PkSk::from_map(item)
                         .ok()
-                        .and_then(|id| get_ext_index(&id.sk))
+                        .and_then(|id| RawIdPath::new(&id.sk).ext_partition_index())
                         .unwrap_or(usize::MAX)
                 });
 
@@ -192,7 +190,7 @@ pub(crate) fn collapse_partitioned_items(
                     .map(|item| {
                         item.get(COLLAPSE_DATA_RESERVED_KEY)
                             .and_then(|v| v.as_s().ok())
-                            .cloned()
+                            .map(String::as_str)
                             .ok_or_else(|| {
                                 DynamoInvalidPartitioning::new(
                                     "ext partition row was missing its data field",
@@ -269,23 +267,15 @@ fn partition_metadata(ttl: Option<i64>) -> Vec<(&'static str, Box<dyn erased_ser
 
 /// Uses the minimum number of digits to represent all partition indices.
 fn build_partition_ids(base_id: &PkSk, total_partitions: usize) -> Vec<PkSk> {
-    fn partition_digits(total_partitions: usize) -> usize {
-        match total_partitions {
-            0 | 1 => 1,
-            n => (n - 1).ilog10() as usize + 1,
-        }
-    }
-
-    fn partition_id(base_id: &PkSk, idx: usize, total_partitions: usize) -> PkSk {
-        let digits = partition_digits(total_partitions);
-        PkSk {
-            pk: base_id.pk.clone(),
-            sk: format!("{}+{:0digits$}", base_id.sk, idx),
-        }
-    }
-
+    let digits = match total_partitions {
+        0 | 1 => 1,
+        n => (n - 1).ilog10() as usize + 1,
+    };
     (0..total_partitions)
-        .map(|idx| partition_id(base_id, idx, total_partitions))
+        .map(|index| PkSk {
+            pk: base_id.pk.clone(),
+            sk: format!("{}+{index:0digits$}", base_id.sk),
+        })
         .collect()
 }
 
@@ -385,15 +375,12 @@ pub(crate) async fn expand_partition_delete_ids<T: DynamoObject>(
         return Ok(ids);
     }
 
-    let mut base_ids = Vec::new();
     let mut seen = HashSet::new();
-    for id in ids {
-        let base_id = ext_base_id(&id);
-        if !seen.insert(base_id.clone()) {
-            continue;
-        }
-        base_ids.push(base_id);
-    }
+    let base_ids = ids
+        .into_iter()
+        .map(|id| ext_base_id(&id))
+        .filter(|id| seen.insert(id.clone()))
+        .collect::<Vec<_>>();
 
     let partition_counts = fetch_num_partitions_batch(util, &base_ids).await?;
     let mut out = Vec::new();

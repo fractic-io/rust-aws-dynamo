@@ -1,7 +1,7 @@
 use fractic_server_error::ServerError;
 use serde_json::Value;
 
-use crate::errors::DynamoInvalidOperation;
+use crate::errors::DynamoInvalidBundleValue;
 
 use super::{BundleDataPath, BundleDataPathSegment};
 
@@ -37,16 +37,11 @@ pub(crate) fn set_value_at_path(
             (BundleDataPathSegment::Index(index), Value::Array(list)) => list.get_mut(*index),
             _ => None,
         }
-        .ok_or_else(|| invalid_value("reference path did not match bundled data"))?;
+        .ok_or_else(|| {
+            DynamoInvalidBundleValue::new("reference path did not match bundled data")
+        })?;
         descend(next, rest, replacement)
     }
 
     descend(root, path.segments(), replacement)
-}
-
-// Helpers.
-// ----------------------------------------------------------------------------
-
-fn invalid_value(details: &str) -> ServerError {
-    DynamoInvalidOperation::new(&format!("invalid Dynamo bundle value: {details}"))
 }

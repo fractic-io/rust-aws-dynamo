@@ -3,7 +3,7 @@ use ordered_float::NotNan;
 
 use crate::{
     errors::{DynamoInvalidId, DynamoInvalidOperation},
-    schema::{id_calculations::generate_pk_sk, DynamoObject, IdLogic, PkSk},
+    schema::{identifiers::generate_id, DynamoObject, IdLogic, PkSk},
 };
 
 use super::{DynamoInsertPosition, DynamoQueryMatchType, DynamoUtil};
@@ -25,33 +25,39 @@ impl Ord for OrderedItem<'_> {
 }
 
 // Strip final UUID or timestamp from a DynamoDB ID.
-fn sk_strip_uuid<T: DynamoObject>(
+fn sk_strip_tail<T: DynamoObject>(
     id_logic: IdLogic<T::Data>,
-    sk: String,
+    mut sk: String,
 ) -> Result<String, ServerError> {
-    Ok(match id_logic {
-        IdLogic::Phantom => {
-            return Err(DynamoInvalidOperation::new(
-                "phantom objects do not support ordered item calculations",
-            ))
-        }
+    match id_logic {
+        IdLogic::Phantom => Err(DynamoInvalidOperation::new(
+            "phantom objects do not support ordered item calculations",
+        )),
         // For Singleton, no ID to strip.
-        IdLogic::Singleton | IdLogic::SingletonExt => sk,
+        IdLogic::Singleton | IdLogic::SingletonExt => Ok(sk),
         // For IndexedSingleton, strip the key.
         IdLogic::IndexedSingleton(_) | IdLogic::IndexedSingletonExt(_) => {
-            sk.split('[').next().unwrap().to_string()
+            let index = sk.find('[').ok_or_else(|| {
+                DynamoInvalidId::with_debug(
+                    "can't strip indexed singleton key since ID didn't contain '['",
+                    &sk,
+                )
+            })?;
+            sk.truncate(index);
+            Ok(sk)
         }
         // For Uuid and Timestamp, take ID until last '#' character.
         IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {
-            sk[..sk.rfind('#').ok_or_else(|| {
+            let index = sk.rfind('#').ok_or_else(|| {
                 DynamoInvalidId::with_debug(
                     "can't strip Uuid/Timestamp since ID didn't contain '#'",
                     &sk,
                 )
-            })?]
-                .to_string()
+            })?;
+            sk.truncate(index);
+            Ok(sk)
         }
-    })
+    }
 }
 
 pub(crate) async fn calculate_sort_values<T: DynamoObject>(
@@ -68,38 +74,32 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
 
     // Search for all IDs for existing items of this type by creating an example
     // ID and stripping the ID UUID / timestamp off the end.
-    let (example_pk, example_sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
+    let example = generate_id::<T>(data, parent_id)?;
     let search_id = PkSk {
-        pk: example_pk,
-        sk: sk_strip_uuid::<T>(T::id_logic(), example_sk)?,
+        pk: example.pk,
+        sk: sk_strip_tail::<T>(T::id_logic(), example.sk)?,
     };
     let query = util
         .query::<T>(None, search_id, DynamoQueryMatchType::BeginsWith)
         .await?;
-    let existing_vals = {
-        let mut v = query
-            .iter()
-            .filter_map(|item| {
-                if let Some(Ok(sort)) = item.sort().map(NotNan::new) {
-                    Some(OrderedItem {
-                        id: item.id(),
-                        sort,
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<OrderedItem>>();
-        v.sort();
-        v
-    };
+    let mut existing_vals = query
+        .iter()
+        .filter_map(|item| {
+            item.sort()
+                .and_then(|sort| NotNan::new(sort).ok())
+                .map(|sort| OrderedItem {
+                    id: item.id(),
+                    sort,
+                })
+        })
+        .collect::<Vec<_>>();
+    existing_vals.sort_unstable();
 
-    Ok(match &insert_position {
+    Ok(match insert_position {
         DynamoInsertPosition::First => {
             let min_val = existing_vals
                 .first()
-                .map(|item| item.sort)
-                .unwrap_or(sort_value_init);
+                .map_or(sort_value_init, |item| item.sort);
             (0..num)
                 .map(|i| min_val - sort_value_default_gap * (i as f64 + 1.0))
                 .rev()
@@ -108,20 +108,19 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
         DynamoInsertPosition::Last => {
             let max_val = existing_vals
                 .last()
-                .map(|item| item.sort)
-                .unwrap_or(sort_value_init);
+                .map_or(sort_value_init, |item| item.sort);
             (0..num)
                 .map(|i| max_val + sort_value_default_gap * (i as f64 + 1.0))
                 .collect()
         }
         DynamoInsertPosition::After(id) => {
-            let insert_after_index = existing_vals.iter().position(|item| item.id == id).ok_or(
+            let insert_after_index = existing_vals.iter().position(|item| item.id == &id).ok_or(
                 DynamoInvalidOperation::new(
                     "the ID provided in DynamoInsertPosition::After(id) does not exist as a \
                      sorted item of type T in the database",
                 ),
             )?;
-            let insert_after = existing_vals.get(insert_after_index).unwrap();
+            let insert_after = &existing_vals[insert_after_index];
             let insert_before = existing_vals.get(insert_after_index + 1);
             match insert_before {
                 // Insert in between two items by calculating evenly spaced
@@ -410,13 +409,13 @@ mod tests {
     }
 
     #[test]
-    fn test_sk_strip_uuid() {
+    fn test_ordered_query_sk_prefix() {
         // We just use TestDynamoObject for all these, even though technically
         // this means the T::id_logic() isn't correct. But it's okay because the
         // function doesn't use it and we just want to test the function logic
         // here.
         assert_eq!(
-            sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_tail::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::Uuid,
                 "GROUP#123#TEST#123".to_string()
             )
@@ -424,7 +423,7 @@ mod tests {
             "GROUP#123#TEST"
         );
         assert_eq!(
-            sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_tail::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::Timestamp,
                 "GROUP#123#TEST2#0005416".to_string()
             )
@@ -432,7 +431,7 @@ mod tests {
             "GROUP#123#TEST2"
         );
         assert_eq!(
-            sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_tail::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::Singleton,
                 "@SINGLETON".to_string()
             )
@@ -440,7 +439,7 @@ mod tests {
             "@SINGLETON"
         );
         assert_eq!(
-            sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_tail::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::SingletonExt,
                 "@SINGLETONEXT".to_string()
             )
@@ -448,7 +447,7 @@ mod tests {
             "@SINGLETONEXT"
         );
         assert_eq!(
-            sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_tail::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::IndexedSingleton(Box::new(|_| Cow::Borrowed(
                     "samplekey"
                 ))),
@@ -458,7 +457,7 @@ mod tests {
             "@SINGLETONFAM"
         );
         assert_eq!(
-            sk_strip_uuid::<TestDynamoObject>(
+            sk_strip_tail::<TestDynamoObject>(
                 IdLogic::<TestDynamoObjectData>::IndexedSingletonExt(Box::new(|_| Cow::Borrowed(
                     "samplekey"
                 ))),

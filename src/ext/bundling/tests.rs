@@ -32,9 +32,9 @@ use crate::{
 };
 
 use super::{
-    export::export_from_config,
-    import::{build_id_map, import_bundle},
-    policy::{configured_bundle_policy, validate_import_policy, DynamoBundleReferenceMatchTarget},
+    impl_export::export_from_config,
+    impl_import::{build_id_map, import_bundle},
+    entities_policy::{configured_bundle_policy, validate_import_policy, DynamoBundleReferenceMatchTarget},
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
     DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
     DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportWarning, IfExisting,

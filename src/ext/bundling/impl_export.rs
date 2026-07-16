@@ -22,13 +22,12 @@ use crate::{
 };
 
 use super::{
-    invalid_bundle,
-    policy::{
+    entities_policy::{
         configured_bundle_policy, DynamoBundleObjectPolicy, DynamoBundleReferenceMatchTarget,
     },
-    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
-    DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
-    DynamoBundleStorage,
+    invalid_bundle, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
+    DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
+    DynamoBundleReferenceTarget, DynamoBundleStorage,
 };
 
 const QUERY_CONCURRENCY: usize = 16;

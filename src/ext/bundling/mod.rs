@@ -1,13 +1,15 @@
 //! Portable export and import of complete Dynamo object trees.
 
-mod export;
-mod import;
-mod model;
-mod policy;
-mod value;
+mod entities_bundle;
+mod entities_policy;
+mod impl_export;
+mod impl_import;
+mod impl_utils;
 
-pub use model::*;
-pub use policy::{DynamoBundlePolicy, DynamoBundleReferenceMatch, DynamoBundleReferenceRule};
+pub use entities_bundle::*;
+pub use entities_policy::{
+    DynamoBundlePolicy, DynamoBundleReferenceMatch, DynamoBundleReferenceRule,
+};
 
 use fractic_server_error::ServerError;
 
@@ -36,7 +38,7 @@ impl<'a> Bundler<'a> {
     }
 
     pub async fn export<O: DynamoObject>(&self, item: O) -> Result<DynamoBundle, ServerError> {
-        export::export_from_config(
+        impl_export::export_from_config(
             self.dynamo_util,
             self.crud_algorithms,
             item.id().clone(),
@@ -48,7 +50,7 @@ impl<'a> Bundler<'a> {
     }
 
     pub async fn export_deep<O: DynamoObject>(&self, item: O) -> Result<DynamoBundle, ServerError> {
-        export::export_from_config(
+        impl_export::export_from_config(
             self.dynamo_util,
             self.crud_algorithms,
             item.id().clone(),
@@ -65,7 +67,7 @@ impl<'a> Bundler<'a> {
         bundle: DynamoBundle,
         if_existing: IfExisting,
     ) -> Result<DynamoImportResult, ServerError> {
-        import::import_bundle::<O>(
+        impl_import::import_bundle::<O>(
             self.dynamo_util,
             self.crud_algorithms,
             parent,

@@ -27,14 +27,13 @@ use crate::{
 };
 
 use super::{
-    export::{collect_bundle_items, export_with_omissions, terminal_ref},
-    invalid_bundle,
-    policy::{configured_bundle_policy, validate_import_policy},
-    root_nesting,
-    value::set_value_at_path,
-    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
-    DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
-    DynamoImportResult, DynamoImportWarning, IfExisting,
+    entities_policy::{configured_bundle_policy, validate_import_policy},
+    impl_export::{collect_bundle_items, export_with_omissions, terminal_ref},
+    impl_utils::set_value_at_path,
+    invalid_bundle, root_nesting, BundleId, BundleIdLogic, BundleNesting, DynamoBundle,
+    DynamoBundleItem, DynamoBundlePolicy, DynamoBundleReferenceEncoding,
+    DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportResult, DynamoImportWarning,
+    IfExisting,
 };
 
 const DELETE_CONCURRENCY: usize = 16;

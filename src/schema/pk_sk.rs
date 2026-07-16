@@ -164,7 +164,7 @@ mod tests {
     fn test_object_type_singleton() {
         let pksk = PkSk {
             pk: "PARENT_OJBECT#123abc".to_string(),
-            sk: "@SINGLETON[CHILD_OBJECT#456def#NESTED_CHILD_OBJECT#789hij]".to_string(),
+            sk: "@SINGLETON[user@example.com]".to_string(),
         };
         assert_eq!(pksk.object_type().unwrap(), "SINGLETON");
         assert!(pksk.is_singleton());

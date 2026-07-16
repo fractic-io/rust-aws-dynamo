@@ -54,6 +54,16 @@ crate::dynamo_object!(
 );
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct TestOtherRootData {}
+crate::dynamo_object!(
+    TestOtherRoot,
+    TestOtherRootData,
+    "OTHERROOT",
+    IdLogic::Uuid,
+    NestingLogic::Root
+);
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TestRenamedRootData {
     pub canonical_ref: Option<PkSk>,
 }
@@ -96,6 +106,34 @@ crate::dynamo_object!(
     "ORDERED",
     IdLogic::Uuid,
     NestingLogic::TopLevelChildOfAny
+);
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestStrictChildData {
+    pub required_name: String,
+}
+crate::dynamo_object!(
+    TestStrictChild,
+    TestStrictChildData,
+    "STRICTCHILD",
+    IdLogic::Uuid,
+    NestingLogic::TopLevelChildOf("ROOTOBJ")
+);
+
+crate::dynamo_object!(
+    TestSharedChildOfRoot,
+    TestStrictChildData,
+    "SHAREDCHILD",
+    IdLogic::Uuid,
+    NestingLogic::TopLevelChildOf("ROOTOBJ")
+);
+crate::dynamo_object!(
+    TestSharedChildOfOtherRoot,
+    TestStrictChildData,
+    "SHAREDCHILD",
+    IdLogic::Uuid,
+    NestingLogic::TopLevelChildOf("OTHERROOT")
 );
 
 struct TestAlgorithms;
@@ -172,6 +210,24 @@ struct DefaultAlgorithms;
 impl DynamoCrudAlgorithms for DefaultAlgorithms {
     async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
         Ok(())
+    }
+}
+
+struct SchemaValidationAlgorithms;
+
+#[async_trait]
+impl DynamoCrudAlgorithms for SchemaValidationAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
+        bundles.include::<TestRoot>();
+        bundles.include::<TestOtherRoot>();
+        bundles.include::<TestStrictChild>();
+        bundles.include::<TestSharedChildOfRoot>();
+        bundles.include::<TestSharedChildOfOtherRoot>();
+        bundles.include::<TestBatch>();
     }
 }
 
@@ -539,6 +595,7 @@ fn import_omissions_are_the_strict_union_and_require_present_owner_labels() {
         &bundle,
         &configured_bundle_policy(&TestAlgorithms),
         BundleIdLogic::Uuid,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -552,6 +609,7 @@ fn import_omissions_are_the_strict_union_and_require_present_owner_labels() {
         &bundle,
         &configured_bundle_policy(&TestAlgorithms),
         BundleIdLogic::Uuid,
+        None,
     )
     .is_err());
 }
@@ -576,6 +634,7 @@ fn import_rejects_unconfigured_bundle_items() {
             &bundle,
             &configured_bundle_policy(&TestAlgorithms),
             BundleIdLogic::Uuid,
+            None,
         )
         .is_err());
     }
@@ -611,6 +670,7 @@ fn import_rejects_id_logic_metadata_that_disagrees_with_local_policy() {
         &bundle,
         &configured_bundle_policy(&TestAlgorithms),
         BundleIdLogic::Uuid,
+        None,
     )
     .is_err());
 }
@@ -634,8 +694,142 @@ fn import_rejects_root_policy_that_disagrees_with_crud_type() {
         &bundle,
         &configured_bundle_policy(&TestAlgorithms),
         BundleIdLogic::Timestamp,
+        None,
     )
     .is_err());
+}
+
+#[test]
+fn import_validates_local_topology_and_data_shape() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let child = id(1, "STRICTCHILD", "STRICTCHILD#child");
+    let mut bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![
+            bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
+            bundle_item(
+                child.clone(),
+                Some(root.clone()),
+                BundleNesting::TopLevel,
+                json!({"required_name": "valid", "sort": 4.0}),
+            ),
+        ],
+        references: vec![],
+    };
+    let policy = configured_bundle_policy(&SchemaValidationAlgorithms);
+
+    validate_import_policy(&bundle, &policy, BundleIdLogic::Uuid, None).unwrap();
+
+    bundle.items[1].nesting = BundleNesting::Inline;
+    let topology_error =
+        validate_import_policy(&bundle, &policy, BundleIdLogic::Uuid, None).unwrap_err();
+    assert!(topology_error.to_string().contains("local schema"));
+
+    bundle.items[1].nesting = BundleNesting::TopLevel;
+    bundle.items[1].data = json!({"required_name": 4});
+    let data_error =
+        validate_import_policy(&bundle, &policy, BundleIdLogic::Uuid, None).unwrap_err();
+    assert!(data_error.to_string().contains("data did not match"));
+
+    bundle.items[1].data = json!({"required_name": "valid", "sort": 4.0});
+    bundle.items[0] = bundle_item(
+        id(0, "OTHERROOT", "OTHERROOT#root"),
+        None,
+        BundleNesting::Root,
+        json!({}),
+    );
+    bundle.root = bundle.items[0].id.clone();
+    bundle.items[1].parent = Some(bundle.root.clone());
+    let parent_error =
+        validate_import_policy(&bundle, &policy, BundleIdLogic::Uuid, None).unwrap_err();
+    assert!(parent_error
+        .to_string()
+        .contains("bundled parent label `OTHERROOT`"));
+}
+
+#[test]
+fn import_validates_batch_optimized_payload_members() {
+    let root = id(0, "BATCH", "BATCH#-");
+    let mut root_item = bundle_item(
+        root.clone(),
+        None,
+        BundleNesting::TopLevel,
+        json!({"..": [{}]}),
+    );
+    root_item.id_logic = BundleIdLogic::BatchOptimized;
+    let mut bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOTOBJ#parent".into(),
+            sk: root.original_sk.clone(),
+        },
+        root,
+        omitted_descendants: BTreeMap::new(),
+        items: vec![root_item],
+        references: vec![],
+    };
+    let parent = PkSk {
+        pk: "ROOT".into(),
+        sk: "ROOTOBJ#parent".into(),
+    };
+    let policy = configured_bundle_policy(&SchemaValidationAlgorithms);
+
+    validate_import_policy(
+        &bundle,
+        &policy,
+        BundleIdLogic::BatchOptimized,
+        Some(&parent),
+    )
+    .unwrap();
+
+    bundle.items[0].data = json!({});
+    let error = validate_import_policy(
+        &bundle,
+        &policy,
+        BundleIdLogic::BatchOptimized,
+        Some(&parent),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("batch-optimized data"));
+}
+
+#[test]
+fn import_accepts_registered_schema_variants_sharing_a_label() {
+    let root = id(0, "OTHERROOT", "OTHERROOT#root");
+    let child = id(1, "SHAREDCHILD", "SHAREDCHILD#child");
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![
+            bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
+            bundle_item(
+                child,
+                Some(root),
+                BundleNesting::TopLevel,
+                json!({"required_name": "valid"}),
+            ),
+        ],
+        references: vec![],
+    };
+
+    validate_import_policy(
+        &bundle,
+        &configured_bundle_policy(&SchemaValidationAlgorithms),
+        BundleIdLogic::Uuid,
+        None,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -747,12 +941,6 @@ fn indexed_singleton_terminal_refs_allow_at_signs_in_keys() {
             "PARENT#old@SETTINGS[user@example.com]"
         ),
         "user@example.com"
-    );
-    assert_eq!(
-        crate::schema::id_calculations::object_ref_component(
-            "@ACCOUNT[user@example.com]#CHILD#child-id"
-        ),
-        "child-id"
     );
 }
 

@@ -9,12 +9,13 @@ use serde_json::Value;
 use crate::{
     errors::DynamoInvalidOperation,
     ext::crud::DynamoCrudAlgorithms,
-    schema::{DynamoFieldRename, DynamoObject, PkSk},
+    schema::{DynamoFieldRename, DynamoObject, IdLogic, NestingLogic, PkSk},
+    util::{AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, EXPAND_DATA_RESERVED_KEY},
 };
 
 use super::{
-    invalid_bundle, BundleDataPath, BundleIdLogic, DynamoBundle, DynamoBundleItem,
-    DynamoBundleReferenceEncoding,
+    invalid_bundle, BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle,
+    DynamoBundleItem, DynamoBundleReferenceEncoding,
 };
 
 // Definitions.
@@ -34,8 +35,28 @@ pub struct DynamoBundlePolicy {
 pub struct DynamoBundleObjectPolicy {
     id_logic: BundleIdLogic,
     renamed_fields: &'static [DynamoFieldRename],
+    schema_variants: Vec<DynamoBundleSchemaVariant>,
     omitted_descendants: BTreeSet<String>,
     reference_rules: Vec<DynamoBundleReferenceRule>,
+}
+
+struct DynamoBundleSchemaVariant {
+    type_name: &'static str,
+    topology: DynamoBundleTopology,
+    validate_data: Arc<BundleDataValidator>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DynamoBundleTopology {
+    nesting: BundleNesting,
+    parent: DynamoBundleParentRequirement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DynamoBundleParentRequirement {
+    None,
+    Any,
+    Label(&'static str),
 }
 
 /// An advanced reference selector for shapes not covered by the declarative
@@ -46,6 +67,8 @@ pub struct DynamoBundleReferenceRule {
 
 type BundleReferenceSelector =
     dyn Fn(&DynamoBundleItem) -> Result<Vec<DynamoBundleReferenceMatch>, ServerError> + Send + Sync;
+
+type BundleDataValidator = dyn Fn(&DynamoBundleItem) -> Result<(), String> + Send + Sync;
 
 /// A reference discovered by a custom bundle reference rule.
 #[derive(Debug, Clone)]
@@ -65,13 +88,16 @@ impl DynamoBundlePolicy {
     /// Includes an object type and returns its configuration builder.
     ///
     /// Types sharing a persisted label share one configuration and must have
-    /// identical ID and rename behavior.
+    /// identical ID and rename behavior. Each type contributes its own allowed
+    /// topology and data shape for import validation.
     pub fn include<O: DynamoObject>(&mut self) -> &mut DynamoBundleObjectPolicy {
-        self.include_label(
+        let object = self.include_label(
             O::id_label(),
             BundleIdLogic::from_object::<O>(),
             O::renamed_fields(),
-        )
+        );
+        object.register_schema::<O>();
+        object
     }
 
     pub fn object<O: DynamoObject>(&self) -> Option<&DynamoBundleObjectPolicy> {
@@ -275,6 +301,7 @@ impl DynamoBundlePolicy {
             Entry::Vacant(entry) => entry.insert(DynamoBundleObjectPolicy {
                 id_logic,
                 renamed_fields,
+                schema_variants: Vec::new(),
                 omitted_descendants: BTreeSet::new(),
                 reference_rules: Vec::new(),
             }),
@@ -308,6 +335,24 @@ impl DynamoBundlePolicy {
 }
 
 impl DynamoBundleObjectPolicy {
+    fn register_schema<O: DynamoObject>(&mut self) {
+        let type_name = std::any::type_name::<O>();
+        if self
+            .schema_variants
+            .iter()
+            .any(|variant| variant.type_name == type_name)
+        {
+            return;
+        }
+        let topology = DynamoBundleTopology::from_nesting(O::nesting_logic());
+        let validate_data = Arc::new(|item: &DynamoBundleItem| validate_item_data::<O>(item));
+        self.schema_variants.push(DynamoBundleSchemaVariant {
+            type_name,
+            topology,
+            validate_data,
+        });
+    }
+
     pub(crate) fn omit_descendant_label(&mut self, label: &str) -> &mut Self {
         self.omitted_descendants.insert(label.to_owned());
         self
@@ -318,18 +363,156 @@ impl DynamoBundleObjectPolicy {
     }
 
     pub(crate) fn normalize_renamed_fields(&self, data: &mut Value) {
-        let Value::Object(data) = data else {
-            return;
-        };
-        for renamed in self.renamed_fields {
-            if renamed.is_noop() {
-                continue;
+        normalize_renamed_fields(data, self.renamed_fields);
+    }
+
+    fn validate_schema(
+        &self,
+        item: &DynamoBundleItem,
+        parent: BundleItemParent<'_>,
+    ) -> Result<(), ServerError> {
+        if self.schema_variants.is_empty() {
+            return Ok(());
+        }
+        let matching = self
+            .schema_variants
+            .iter()
+            .filter(|variant| variant.topology.matches(item.nesting, parent))
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            return Err(invalid_bundle(&format!(
+                "item label `{}` used {:?} nesting below {}, which does not match any local schema",
+                item.id.label,
+                item.nesting,
+                parent.description(),
+            )));
+        }
+
+        let mut errors = Vec::new();
+        for variant in matching {
+            match (variant.validate_data)(item) {
+                Ok(()) => return Ok(()),
+                Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
             }
-            if data.contains_key(renamed.to) {
-                data.remove(renamed.from);
-            } else if let Some(value) = data.remove(renamed.from) {
-                data.insert(renamed.to.to_owned(), value);
-            }
+        }
+        Err(invalid_bundle(&format!(
+            "item label `{}` data did not match its local schema: {}",
+            item.id.label,
+            errors.join("; "),
+        )))
+    }
+}
+
+impl DynamoBundleTopology {
+    fn from_nesting(nesting: NestingLogic) -> Self {
+        match nesting {
+            NestingLogic::Root => Self {
+                nesting: BundleNesting::Root,
+                parent: DynamoBundleParentRequirement::None,
+            },
+            NestingLogic::TopLevelChildOf(label) => Self {
+                nesting: BundleNesting::TopLevel,
+                parent: DynamoBundleParentRequirement::Label(label),
+            },
+            NestingLogic::TopLevelChildOfAny => Self {
+                nesting: BundleNesting::TopLevel,
+                parent: DynamoBundleParentRequirement::Any,
+            },
+            NestingLogic::InlineChildOf(label) => Self {
+                nesting: BundleNesting::Inline,
+                parent: DynamoBundleParentRequirement::Label(label),
+            },
+            NestingLogic::InlineChildOfAny => Self {
+                nesting: BundleNesting::Inline,
+                parent: DynamoBundleParentRequirement::Any,
+            },
+        }
+    }
+
+    fn matches(&self, nesting: BundleNesting, parent: BundleItemParent<'_>) -> bool {
+        self.nesting == nesting && self.parent.matches(parent)
+    }
+}
+
+impl DynamoBundleParentRequirement {
+    fn matches(self, parent: BundleItemParent<'_>) -> bool {
+        match self {
+            Self::None => matches!(parent, BundleItemParent::None),
+            Self::Any => !matches!(parent, BundleItemParent::None),
+            Self::Label(expected) => parent.label().is_some_and(|actual| actual == expected),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BundleItemParent<'a> {
+    None,
+    Bundled(&'a str),
+    External(&'a PkSk),
+}
+
+impl<'a> BundleItemParent<'a> {
+    fn label(self) -> Option<&'a str> {
+        match self {
+            Self::None => None,
+            Self::Bundled(label) => Some(label),
+            Self::External(id) => id.object_type().ok(),
+        }
+    }
+
+    fn description(self) -> String {
+        match self {
+            Self::None => "no parent".to_owned(),
+            Self::Bundled(label) => format!("bundled parent label `{label}`"),
+            Self::External(id) => format!("destination parent `{id}`"),
+        }
+    }
+}
+
+fn validate_item_data<O: DynamoObject>(item: &DynamoBundleItem) -> Result<(), String> {
+    if matches!(O::id_logic(), IdLogic::BatchOptimized { .. }) {
+        let values = item
+            .data
+            .get(EXPAND_DATA_RESERVED_KEY)
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                format!(
+                    "batch-optimized data did not contain an `{EXPAND_DATA_RESERVED_KEY}` array"
+                )
+            })?;
+        for (index, value) in values.iter().enumerate() {
+            validate_data_value::<O>(value)
+                .map_err(|error| format!("batch member {index} was invalid: {error}"))?;
+        }
+        return Ok(());
+    }
+    validate_data_value::<O>(&item.data)
+}
+
+fn validate_data_value<O: DynamoObject>(data: &Value) -> Result<(), String> {
+    let mut data = data.clone();
+    normalize_renamed_fields(&mut data, O::renamed_fields());
+    if let Value::Object(data) = &mut data {
+        data.remove(AUTO_FIELDS_SORT);
+        data.remove(AUTO_FIELDS_TTL);
+    }
+    serde_json::from_value::<O::Data>(data)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRename]) {
+    let Value::Object(data) = data else {
+        return;
+    };
+    for renamed in renamed_fields {
+        if renamed.is_noop() {
+            continue;
+        }
+        if data.contains_key(renamed.to) {
+            data.remove(renamed.from);
+        } else if let Some(value) = data.remove(renamed.from) {
+            data.insert(renamed.to.to_owned(), value);
         }
     }
 }
@@ -350,6 +533,7 @@ pub(crate) fn validate_import_policy(
     bundle: &DynamoBundle,
     policy: &DynamoBundlePolicy,
     root_id_logic: BundleIdLogic,
+    destination_parent: Option<&PkSk>,
 ) -> Result<BTreeMap<String, BTreeSet<String>>, ServerError> {
     let labels = bundle
         .items
@@ -379,8 +563,14 @@ pub(crate) fn validate_import_policy(
         }
     }
 
+    let items = bundle
+        .items
+        .iter()
+        .map(|item| (&item.id, item))
+        .collect::<HashMap<&BundleId, &DynamoBundleItem>>();
     for item in &bundle.items {
-        let local_id_logic = policy.require(&item.id.label)?.id_logic();
+        let local = policy.require(&item.id.label)?;
+        let local_id_logic = local.id_logic();
         let expected = if item.id == bundle.root {
             if local_id_logic != root_id_logic {
                 return Err(invalid_bundle(&format!(
@@ -397,6 +587,17 @@ pub(crate) fn validate_import_policy(
                 item.id.label, item.id_logic
             )));
         }
+        let parent = if item.id == bundle.root {
+            destination_parent.map_or(BundleItemParent::None, BundleItemParent::External)
+        } else {
+            let parent = item
+                .parent
+                .as_ref()
+                .and_then(|parent| items.get(parent))
+                .ok_or_else(|| invalid_bundle("bundle item parent was missing"))?;
+            BundleItemParent::Bundled(&parent.id.label)
+        };
+        local.validate_schema(item, parent)?;
     }
     Ok(effective)
 }

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{ForeignRef, PkSk};
+use super::{id_calculations::object_ref_component, ForeignRef, PkSk};
 
 impl<'a> ForeignRef<'a> {
     /// Returns the raw internal reference string.
@@ -81,112 +81,24 @@ impl<'de> Deserialize<'de> for ForeignRef<'static> {
 /// minimal representation in case it was previously stored as a full PkSk, or
 /// the full Sk string.
 ///
-/// The detection is intentionally simple for backwards compatibility:
-/// 1) if it contains `|` => assume `pk|sk` and extract from the `sk` portion
-/// 2) else if it contains `@` or `#` => assume full `sk` and extract from it
-/// 3) else => assume it is already the minimal reference
+/// Values retain backwards-compatible detection:
+/// 1) if they contain `|` => treat them as `pk|sk`
+/// 2) if they contain `#` => treat them as a non-singleton `sk`
+/// 3) if they start with `@` => treat them as a singleton `sk`
+/// 4) otherwise => treat them as an already-minimal reference
 fn normalize_ref(raw: &str) -> &str {
-    let mut pipe: Option<usize> = None;
-    let mut at: Option<usize> = None;
-    let mut last_hash: Option<usize> = None;
-    let mut open: Option<usize> = None;
-    let mut close: Option<usize> = None;
-
-    // Track extraction markers for "the current sk view". If we see a '|', we
-    // reset markers and start tracking after it.
-    for (i, b) in raw.bytes().enumerate() {
-        match b {
-            b'|' if pipe.is_none() => {
-                pipe = Some(i);
-                at = None;
-                last_hash = None;
-                open = None;
-                close = None;
-            }
-            b'@' => {
-                if at.is_none() {
-                    at = Some(i);
-                }
-            }
-            b'#' => {
-                last_hash = Some(i);
-            }
-            b'[' => {
-                if at.is_some() && open.is_none() {
-                    open = Some(i);
-                }
-            }
-            b']' if open.is_some() && close.is_none() => {
-                close = Some(i);
-            }
-            _ => {}
-        }
+    if let Some((_, sk)) = raw.split_once('|') {
+        return object_ref_component(sk);
     }
-
-    let sk_start = pipe.map(|p| p + 1).unwrap_or(0);
-
-    // If we saw '@' in the sk view, this is a singleton.
-    if at.is_some() {
-        if let (Some(o), Some(c)) = (open, close) {
-            return &raw[o + 1..c];
-        }
-        return "";
+    if raw.contains('#') || raw.starts_with('@') {
+        return object_ref_component(raw);
     }
-
-    // Otherwise, if we saw any '#', use the suffix after the last one.
-    if let Some(h) = last_hash {
-        return &raw[h + 1..];
-    }
-
-    // Otherwise, treat as already-minimal ref (or sk with no markers).
-    &raw[sk_start..]
+    raw
 }
 
 /// Extracts the minimal reference string from a full Dynamo sk.
-///
-/// Rules:
-/// - If the sk contains '@' anywhere, it is treated as a singleton:
-///   - Singleton: empty string ("")
-///   - IndexedSingleton: the text between '[' and ']' (if present)
-/// - Otherwise, returns the text after the final '#'
 fn extract_ref_from_sk(sk: &str) -> &str {
-    let mut at: Option<usize> = None;
-    let mut last_hash: Option<usize> = None;
-    let mut open: Option<usize> = None;
-    let mut close: Option<usize> = None;
-
-    for (i, b) in sk.bytes().enumerate() {
-        match b {
-            b'@' => {
-                if at.is_none() {
-                    at = Some(i);
-                }
-            }
-            b'#' => last_hash = Some(i),
-            b'[' => {
-                if at.is_some() && open.is_none() {
-                    open = Some(i);
-                }
-            }
-            b']' if open.is_some() && close.is_none() => {
-                close = Some(i);
-            }
-            _ => {}
-        }
-    }
-
-    if at.is_some() {
-        if let (Some(o), Some(c)) = (open, close) {
-            return &sk[o + 1..c];
-        }
-        return "";
-    }
-
-    if let Some(h) = last_hash {
-        return &sk[h + 1..];
-    }
-
-    sk
+    object_ref_component(sk)
 }
 
 // Tests.
@@ -238,6 +150,21 @@ mod tests {
     }
 
     #[test]
+    fn test_foreign_ref_from_indexed_singleton_with_at_sign_roundtrips() {
+        let id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "@ACCOUNT[user@example.com]".to_string(),
+        };
+        let reference = ForeignRef::from(&id);
+        assert_eq!(reference.raw(), "user@example.com");
+
+        let serialized = serde_json::to_string(&reference).unwrap();
+        assert_eq!(serialized, r#""user@example.com""#);
+        let back: ForeignRef<'static> = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(back.raw(), reference.raw());
+    }
+
+    #[test]
     fn test_foreign_ref_serde_roundtrip_minimal() {
         let r = ForeignRef(Cow::Owned("0123456789ABCDEF".to_string()));
         let s = serde_json::to_string(&r).unwrap();
@@ -256,6 +183,22 @@ mod tests {
     }
 
     #[test]
+    fn test_foreign_ref_serde_roundtrip_minimal_with_at_sign() {
+        let raw = "user@example.com";
+        let r = ForeignRef(Cow::Owned(raw.to_string()));
+        let serialized = serde_json::to_string(&r).unwrap();
+        assert_eq!(serialized, format!("\"{raw}\""));
+        let back: ForeignRef<'static> = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(back.raw(), raw);
+    }
+
+    #[test]
+    fn test_foreign_ref_deserialize_unescaped_minimal_with_internal_at_sign() {
+        let r: ForeignRef<'static> = serde_json::from_str(r#""user@example.com""#).unwrap();
+        assert_eq!(r.raw(), "user@example.com");
+    }
+
+    #[test]
     fn test_foreign_ref_deserialize_backcompat_from_full_pksk_string() {
         let legacy = r#""USER#AAAAAAAAAAAAAAAA|ORDER#BBBBBBBBBBBBBBBB""#;
         let r: ForeignRef<'static> = serde_json::from_str(legacy).unwrap();
@@ -271,9 +214,9 @@ mod tests {
 
     #[test]
     fn test_foreign_ref_deserialize_backcompat_indexed_singleton_full_sk() {
-        let legacy = r#""@FAMILY[key123]""#;
+        let legacy = r#""@FAMILY[user@example.com]""#;
         let r: ForeignRef<'static> = serde_json::from_str(legacy).unwrap();
-        assert_eq!(r.raw(), "key123");
+        assert_eq!(r.raw(), "user@example.com");
     }
 
     #[test]

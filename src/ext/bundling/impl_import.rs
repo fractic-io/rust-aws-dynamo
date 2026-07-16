@@ -10,9 +10,9 @@ use crate::{
     ext::crud::DynamoCrudAlgorithms,
     schema::{
         id_calculations::{
-            freshen_object_sk, freshen_timestamp_object_sk, get_object_type, object_ref_component,
-            object_sk_component, place_inline_id, place_root_id, place_top_level_id,
-            relative_child_sk, strip_ext_suffix,
+            freshen_object_sk, freshen_timestamp_object_sk, get_object_type, object_sk_component,
+            place_inline_id, place_root_id, place_top_level_id, relative_child_sk,
+            strip_ext_suffix,
         },
         parsing::build_dynamo_map_internal,
         DynamoObject, PkSk, Timestamp,
@@ -80,7 +80,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     }
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let policy = configured_bundle_policy(algorithms);
-    let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic)?;
+    let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic, parent)?;
     let replacing = matches!(&mode, ImportMode::Replace);
     let (id_map, existing, created_new, new_position) = match mode {
         ImportMode::New { position } => {
@@ -317,12 +317,17 @@ async fn resolve_references(
                 let target = id_map
                     .get(target)
                     .ok_or_else(|| invalid_bundle("reference target had no destination ID"))?;
-                Value::String(match encoding {
-                    DynamoBundleReferenceEncoding::PkSk => target.to_string(),
+                match encoding {
+                    DynamoBundleReferenceEncoding::PkSk => Value::String(target.to_string()),
                     DynamoBundleReferenceEncoding::ForeignRef => {
-                        object_ref_component(&target.sk).to_string()
+                        serde_json::to_value(target.build_ref()).map_err(|error| {
+                            DynamoInvalidOperation::with_debug(
+                                "failed to serialize remapped bundle foreign reference",
+                                &error,
+                            )
+                        })?
                     }
-                })
+                }
             }
             DynamoBundleReferenceTarget::InTable { lookup_id, .. }
                 if existing_in_table.contains(lookup_id) =>

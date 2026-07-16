@@ -5,10 +5,7 @@ use fractic_server_error::{CriticalError, ServerError};
 
 use crate::errors::DynamoInvalidBundle;
 use crate::schema::{
-    id_calculations::{
-        freshen_object_sk, freshen_timestamp_object_sk, object_sk_component, place_inline_id,
-        place_root_id, place_top_level_id, relative_child_sk, strip_ext_suffix,
-    },
+    identifiers::{place_object, regenerate_timestamp, regenerate_uuid, IdPlacement, SortKey},
     PkSk,
 };
 
@@ -90,21 +87,22 @@ fn place_root(
             }
             let object_sk =
                 destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_root_id(&object_sk))
+            Ok(place_object(PkSk::root(), &object_sk, IdPlacement::Root))
         }
         BundleNesting::TopLevel => {
             let parent =
                 parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
             let object_sk =
                 destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_top_level_id(parent, &object_sk))
+            Ok(place_object(parent, &object_sk, IdPlacement::TopLevel))
         }
         BundleNesting::Inline => {
             let parent =
                 parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
-            let component = object_sk_component(&item.id.original_sk, &item.id.label)?;
+            let component =
+                SortKey::new(&item.id.original_sk).terminal_component(&item.id.label)?;
             let component = destination_object_sk(component, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_inline_id(parent, &component))
+            Ok(place_object(parent, &component, IdPlacement::Inline))
         }
     }
 }
@@ -120,16 +118,17 @@ fn place_child(
         BundleNesting::TopLevel => {
             let object_sk =
                 destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_top_level_id(parent, &object_sk))
+            Ok(place_object(parent, &object_sk, IdPlacement::TopLevel))
         }
         BundleNesting::Inline => {
             let original_parent = item
                 .parent
                 .as_ref()
                 .ok_or_else(|| DynamoInvalidBundle::new("inline child had no parent"))?;
-            let relative = relative_child_sk(&item.id.original_sk, &original_parent.original_sk)?;
+            let relative = SortKey::new(&item.id.original_sk)
+                .relative_to(SortKey::new(&original_parent.original_sk))?;
             let relative = destination_object_sk(relative, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_inline_id(parent, &relative))
+            Ok(place_object(parent, &relative, IdPlacement::Inline))
         }
         BundleNesting::Root => Err(DynamoInvalidBundle::new("non-root item had root nesting")),
     }
@@ -173,19 +172,18 @@ fn destination_object_sk(
     duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<String, ServerError> {
     if !duplicate {
-        return Ok(strip_ext_suffix(original_sk).to_string());
+        return Ok(SortKey::new(original_sk).logical().to_string());
     }
     match id_logic {
-        BundleIdLogic::Uuid => Ok(freshen_object_sk(original_sk)),
-        BundleIdLogic::Timestamp => Ok(freshen_timestamp_object_sk(
-            original_sk,
-            duplicate_ids.next_timestamp()?,
-        )),
+        BundleIdLogic::Uuid => regenerate_uuid(original_sk),
+        BundleIdLogic::Timestamp => {
+            regenerate_timestamp(original_sk, duplicate_ids.next_timestamp()?)
+        }
         BundleIdLogic::Singleton
         | BundleIdLogic::IndexedSingleton
         | BundleIdLogic::BatchOptimized
         | BundleIdLogic::SingletonExt
-        | BundleIdLogic::IndexedSingletonExt => Ok(strip_ext_suffix(original_sk).to_string()),
+        | BundleIdLogic::IndexedSingletonExt => Ok(SortKey::new(original_sk).logical().to_string()),
         BundleIdLogic::Phantom => Err(DynamoInvalidBundle::new(
             "persisted bundle item used phantom ID logic",
         )),

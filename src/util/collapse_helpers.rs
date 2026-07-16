@@ -7,7 +7,7 @@ use serde::Serialize;
 use crate::{
     errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoInvalidPartitioning},
     schema::{
-        id_calculations::{get_ext_index, strip_ext_suffix},
+        identifiers::SortKey,
         parsing::{build_dynamo_map_internal, deserialize_dynamo_map_partitions},
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
@@ -57,7 +57,7 @@ pub(crate) fn is_partitioned_id_logic<T: DynamoObject>() -> bool {
 pub(crate) fn ext_base_id(id: &PkSk) -> PkSk {
     PkSk {
         pk: id.pk.clone(),
-        sk: strip_ext_suffix(&id.sk).to_string(),
+        sk: SortKey::new(&id.sk).logical().to_string(),
     }
 }
 
@@ -162,7 +162,7 @@ pub(crate) fn collapse_partitioned_items(
                 partitions.sort_by_key(|item| {
                     PkSk::from_map(item)
                         .ok()
-                        .and_then(|id| get_ext_index(&id.sk))
+                        .and_then(|id| SortKey::new(&id.sk).ext_partition_index())
                         .unwrap_or(usize::MAX)
                 });
 

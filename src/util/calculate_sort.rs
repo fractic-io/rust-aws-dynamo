@@ -3,7 +3,7 @@ use ordered_float::NotNan;
 
 use crate::{
     errors::{DynamoInvalidId, DynamoInvalidOperation},
-    schema::{id_calculations::generate_pk_sk, DynamoObject, IdLogic, PkSk},
+    schema::{identifiers::generate_id, DynamoObject, IdLogic, PkSk},
 };
 
 use super::{DynamoInsertPosition, DynamoQueryMatchType, DynamoUtil};
@@ -68,7 +68,10 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
 
     // Search for all IDs for existing items of this type by creating an example
     // ID and stripping the ID UUID / timestamp off the end.
-    let (example_pk, example_sk) = generate_pk_sk::<T>(data, &parent_id.pk, &parent_id.sk)?;
+    let PkSk {
+        pk: example_pk,
+        sk: example_sk,
+    } = generate_id::<T>(data, parent_id)?;
     let search_id = PkSk {
         pk: example_pk,
         sk: sk_strip_uuid::<T>(T::id_logic(), example_sk)?,

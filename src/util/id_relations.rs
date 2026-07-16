@@ -3,61 +3,60 @@ use fractic_server_error::ServerError;
 use crate::{
     errors::DynamoInvalidOperation,
     schema::{
-        id_calculations::{append_child_sk, strip_ext_suffix},
-        DynamoObject, IdLogic, NestingLogic, PkSk,
+        identifiers::{place_for, validate_parent_relation, SortKey, TerminalKind},
+        DynamoObject, IdLogic, PkSk,
     },
 };
 
+/// Verifies that an ID belongs to `T` and is a logical object ID rather than a
+/// physical ext-partition row.
 #[track_caller]
-pub fn validate_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError> {
-    if matches!(
-        T::id_logic(),
-        IdLogic::SingletonExt | IdLogic::IndexedSingletonExt(_)
-    ) && id.sk != strip_ext_suffix(&id.sk)
-    {
+pub fn validate_object_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError> {
+    let sort_key = SortKey::new(&id.sk);
+    if id.sk != sort_key.logical() {
         return Err(DynamoInvalidOperation::new(&format!(
-            "ID must be the logical ext item ID, not a partition row ID: '{}'",
+            "ID must be a logical object ID, not an ext-partition row ID: '{}'",
             id
         )));
     }
-    if id.object_type()? != T::id_label() {
+    if sort_key.object_label()? != T::id_label() {
         return Err(DynamoInvalidOperation::new(&format!(
             "ID does not match object type; expected object type '{}', got ID '{}'",
             T::id_label(),
             id
         )));
     }
-    Ok(())
-}
-
-#[track_caller]
-pub fn validate_parent_id<T: DynamoObject>(parent_id: &PkSk) -> Result<(), ServerError> {
-    match T::nesting_logic() {
-        NestingLogic::Root if parent_id != PkSk::root() => {
-            return Err(DynamoInvalidOperation::new(
-                "parent ID does not match root, as expected for NestingLogic::Root",
-            ));
+    let expected_kind = match T::id_logic() {
+        IdLogic::Singleton | IdLogic::SingletonExt => Some(TerminalKind::Singleton),
+        IdLogic::IndexedSingleton(_) | IdLogic::IndexedSingletonExt(_) => {
+            Some(TerminalKind::IndexedSingleton)
         }
-        NestingLogic::TopLevelChildOf(ptype_req) if parent_id.object_type()? != ptype_req => {
+        IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {
+            Some(TerminalKind::Regular)
+        }
+        IdLogic::Phantom => None,
+    };
+    if let Some(expected) = expected_kind {
+        if sort_key.terminal_kind()? != expected {
             return Err(DynamoInvalidOperation::new(&format!(
-                "parent ID does not match required object type '{}', got '{}'",
-                ptype_req,
-                parent_id.object_type()?
+                "ID syntax does not match the configured ID logic for object type '{}': '{}'",
+                T::id_label(),
+                id
             )));
         }
-        NestingLogic::InlineChildOf(ptype_req) if parent_id.object_type()? != ptype_req => {
-            return Err(DynamoInvalidOperation::new(&format!(
-                "parent ID does not match required object type '{}', got '{}'",
-                ptype_req,
-                parent_id.object_type()?
-            )));
-        }
-        _ => {}
     }
     Ok(())
 }
 
-pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
+/// Verifies that `parent_id` satisfies `T`'s configured nesting relationship.
+#[track_caller]
+pub fn validate_parent_for<T: DynamoObject>(parent_id: &PkSk) -> Result<(), ServerError> {
+    validate_parent_relation::<T>(parent_id)
+        .map_err(|error| DynamoInvalidOperation::new(&error.to_string()))
+}
+
+/// Returns the `(pk, sk-prefix)` used to query all children of type `T`.
+pub fn child_query_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
     // * Singleton / IndexedSingleton →  "@LABEL"
     // * Everything else              →  "LABEL#"
     let sk_search_prefix = match T::id_logic() {
@@ -70,20 +69,7 @@ pub fn child_search_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
         _ => format!("{}#", T::id_label()),
     };
 
-    match T::nesting_logic() {
-        NestingLogic::Root => PkSk {
-            pk: "ROOT".to_string(),
-            sk: sk_search_prefix,
-        },
-        NestingLogic::TopLevelChildOfAny | NestingLogic::TopLevelChildOf(_) => PkSk {
-            pk: parent_id.sk.clone(),
-            sk: sk_search_prefix,
-        },
-        NestingLogic::InlineChildOfAny | NestingLogic::InlineChildOf(_) => PkSk {
-            pk: parent_id.pk.clone(),
-            sk: append_child_sk(&parent_id.sk, &sk_search_prefix),
-        },
-    }
+    place_for::<T>(parent_id, &sk_search_prefix)
 }
 
 #[cfg(test)]
@@ -211,10 +197,10 @@ mod tests {
     );
 
     #[test]
-    fn test_validate_parent_id() {
+    fn test_validate_parent_for() {
         // Root OK / error --------------------------------------------------------
-        assert!(validate_parent_id::<RootGroup>(PkSk::root()).is_ok());
-        assert!(validate_parent_id::<RootGroup>(&PkSk {
+        assert!(validate_parent_for::<RootGroup>(PkSk::root()).is_ok());
+        assert!(validate_parent_for::<RootGroup>(&PkSk {
             pk: "X".into(),
             sk: "Y".into()
         })
@@ -225,44 +211,68 @@ mod tests {
             pk: "ROOT".into(),
             sk: "GROUP#1".into(),
         };
-        assert!(validate_parent_id::<GroupEvent>(&group_parent).is_ok());
+        assert!(validate_parent_for::<GroupEvent>(&group_parent).is_ok());
         let wrong_parent = PkSk {
             pk: "ROOT".into(),
             sk: "OTHER#1".into(),
         };
-        assert!(validate_parent_id::<GroupEvent>(&wrong_parent).is_err());
+        assert!(validate_parent_for::<GroupEvent>(&wrong_parent).is_err());
 
         // InlineChildOf OK / wrong-type ------------------------------------------
         let inl_parent = PkSk {
             pk: "ROOT".into(),
             sk: "GROUP#1".into(),
         };
-        assert!(validate_parent_id::<GroupTask>(&inl_parent).is_ok());
-        assert!(validate_parent_id::<GroupTask>(&wrong_parent).is_err());
+        assert!(validate_parent_for::<GroupTask>(&inl_parent).is_ok());
+        assert!(validate_parent_for::<GroupTask>(&wrong_parent).is_err());
 
         // “Any” variants never fail ----------------------------------------------
-        assert!(validate_parent_id::<InlineChildOfAny>(&wrong_parent).is_ok());
-        assert!(validate_parent_id::<TopLevelChildOfAny>(&wrong_parent).is_ok());
+        assert!(validate_parent_for::<InlineChildOfAny>(&wrong_parent).is_ok());
+        assert!(validate_parent_for::<TopLevelChildOfAny>(&wrong_parent).is_ok());
     }
 
     #[test]
-    fn test_validate_id_rejects_ext_partition_row_ids() {
-        assert!(validate_id::<InlineSingletonExt>(&PkSk {
+    fn test_validate_object_id_rejects_ext_partition_row_ids() {
+        assert!(validate_object_id::<InlineSingletonExt>(&PkSk {
             pk: "P".into(),
             sk: "S#@INLSINGLEEXT+0".into(),
         })
         .is_err());
-        assert!(validate_id::<InlineIndexedSingletonExt>(&PkSk {
+        assert!(validate_object_id::<InlineIndexedSingletonExt>(&PkSk {
             pk: "P".into(),
             sk: "S#@INLFAMEXT[key]+12".into(),
+        })
+        .is_err());
+        assert!(validate_object_id::<GroupTask>(&PkSk {
+            pk: "P".into(),
+            sk: "GROUP#1#TASK#2+0".into(),
         })
         .is_err());
     }
 
     #[test]
-    fn test_child_search_prefix() {
+    fn test_validate_object_id_rejects_wrong_terminal_syntax() {
+        assert!(validate_object_id::<InlineSingleton>(&PkSk {
+            pk: "P".into(),
+            sk: "INLSINGLE#value".into(),
+        })
+        .is_err());
+        assert!(validate_object_id::<InlineIndexedSingleton>(&PkSk {
+            pk: "P".into(),
+            sk: "@INLFAM".into(),
+        })
+        .is_err());
+        assert!(validate_object_id::<GroupTask>(&PkSk {
+            pk: "P".into(),
+            sk: "@TASK".into(),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn test_child_query_prefix() {
         // Root-level child:
-        let root_obj_search = child_search_prefix::<RootGroup>(PkSk::root());
+        let root_obj_search = child_query_prefix::<RootGroup>(PkSk::root());
         assert_eq!(
             root_obj_search,
             PkSk {
@@ -277,7 +287,7 @@ mod tests {
             sk: "GROUP#1".into(),
         };
         assert_eq!(
-            child_search_prefix::<GroupEvent>(&top_level_child_search),
+            child_query_prefix::<GroupEvent>(&top_level_child_search),
             PkSk {
                 pk: "GROUP#1".into(),
                 sk: "EVENT#".into()
@@ -290,7 +300,7 @@ mod tests {
             sk: "GROUP#1".into(),
         };
         assert_eq!(
-            child_search_prefix::<GroupTask>(&inline_child_search),
+            child_query_prefix::<GroupTask>(&inline_child_search),
             PkSk {
                 pk: "ROOT".into(),
                 sk: "GROUP#1#TASK#".into()
@@ -303,7 +313,7 @@ mod tests {
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<InlineSingleton>(&inline_singleton_search),
+            child_query_prefix::<InlineSingleton>(&inline_singleton_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S@INLSINGLE".into()
@@ -316,7 +326,7 @@ mod tests {
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<InlineIndexedSingleton>(&inline_indexed_singleton_search),
+            child_query_prefix::<InlineIndexedSingleton>(&inline_indexed_singleton_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S@INLFAM".into()
@@ -325,7 +335,7 @@ mod tests {
 
         // Inline SingletonExt:
         assert_eq!(
-            child_search_prefix::<InlineSingletonExt>(&inline_singleton_search),
+            child_query_prefix::<InlineSingletonExt>(&inline_singleton_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S@INLSINGLEEXT".into()
@@ -334,7 +344,7 @@ mod tests {
 
         // Inline IndexedSingletonExt:
         assert_eq!(
-            child_search_prefix::<InlineIndexedSingletonExt>(&inline_indexed_singleton_search),
+            child_query_prefix::<InlineIndexedSingletonExt>(&inline_indexed_singleton_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S@INLFAMEXT".into()
@@ -347,7 +357,7 @@ mod tests {
             sk: "S".into(),
         };
         assert_eq!(
-            child_search_prefix::<InlineBatch>(&inline_batch_search),
+            child_query_prefix::<InlineBatch>(&inline_batch_search),
             PkSk {
                 pk: "P".into(),
                 sk: "S#INLBATCH#".into()
@@ -360,7 +370,7 @@ mod tests {
             sk: "S#123#N#456".into(),
         };
         assert_eq!(
-            child_search_prefix::<TopLevelBatch>(&top_level_batch_search),
+            child_query_prefix::<TopLevelBatch>(&top_level_batch_search),
             PkSk {
                 pk: "S#123#N#456".into(),
                 sk: "TOPLBATCH#".into()

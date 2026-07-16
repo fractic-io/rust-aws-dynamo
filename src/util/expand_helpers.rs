@@ -2,7 +2,9 @@ use fractic_server_error::{CriticalError, ServerError};
 use serde::Serialize;
 
 use crate::{
-    schema::{parsing::build_dynamo_map_internal, DynamoObject, NestingLogic, PkSk, Timestamp},
+    schema::{
+        identifiers::place_for, parsing::build_dynamo_map_internal, DynamoObject, PkSk, Timestamp,
+    },
     util::{
         metadata_helpers::WithMetadataFrom as _, DynamoMap, AUTO_FIELDS_CREATED_AT,
         AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT, EXPAND_DATA_RESERVED_KEY,
@@ -66,16 +68,7 @@ pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
             } else {
                 format!("{}#{i:0index_digits$}", T::id_label())
             };
-            let (pk, sk) = match T::nesting_logic() {
-                NestingLogic::Root => ("ROOT".to_string(), new_obj_id),
-                NestingLogic::TopLevelChildOf(_) | NestingLogic::TopLevelChildOfAny => {
-                    (parent_id.sk.clone(), new_obj_id)
-                }
-                NestingLogic::InlineChildOf(_) | NestingLogic::InlineChildOfAny => (
-                    parent_id.pk.clone(),
-                    format!("{}#{}", parent_id.sk, new_obj_id),
-                ),
-            };
+            let PkSk { pk, sk } = place_for::<T>(parent_id, &new_obj_id);
 
             let expandable_batch = ExpandableBatch::<T> {
                 items: batch.to_vec(),

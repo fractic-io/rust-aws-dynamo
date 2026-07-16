@@ -13,14 +13,21 @@ pub(crate) enum IdPlacement {
 }
 
 /// Places an object's ID-path segment using `T`'s declared nesting logic.
-pub(crate) fn place_id_for<T: DynamoObject>(parent: &PkSk, path: &str) -> PkSk {
-    place_id_path(parent, path, placement_for(T::nesting_logic()))
+pub(crate) fn place_terminal_segment<T: DynamoObject>(
+    parent: &PkSk,
+    terminal_segment: &str,
+) -> PkSk {
+    place_terminal_segment_with(parent, terminal_segment, placement_for(T::nesting_logic()))
 }
 
 /// Places a terminal segment or relative ID path according to the requested
 /// storage relationship.
-pub(crate) fn place_id_path(parent: &PkSk, path: &str, placement: IdPlacement) -> PkSk {
-    let logical_path = RawIdPath::new(path).logical_path();
+pub(crate) fn place_terminal_segment_with(
+    parent: &PkSk,
+    terminal_segment: &str,
+    placement: IdPlacement,
+) -> PkSk {
+    let logical_path = RawIdPath::new(terminal_segment).logical_path();
     match placement {
         IdPlacement::Root => PkSk {
             pk: ROOT_KEY.to_string(),
@@ -62,32 +69,32 @@ mod tests {
             sk: "PARENT#1".into(),
         };
         assert_eq!(
-            place_id_path(&parent, "CHILD#2", IdPlacement::Root),
+            place_terminal_segment_with(&parent, "CHILD#2", IdPlacement::Root),
             PkSk {
                 pk: "ROOT".into(),
                 sk: "CHILD#2".into(),
             }
         );
         assert_eq!(
-            place_id_path(&parent, "CHILD#2", IdPlacement::TopLevel),
+            place_terminal_segment_with(&parent, "CHILD#2", IdPlacement::TopLevel),
             PkSk {
                 pk: "PARENT#1".into(),
                 sk: "CHILD#2".into(),
             }
         );
         assert_eq!(
-            place_id_path(&parent, "CHILD#2", IdPlacement::Inline),
+            place_terminal_segment_with(&parent, "CHILD#2", IdPlacement::Inline),
             PkSk {
                 pk: "PARENT_PARTITION".into(),
                 sk: "PARENT#1#CHILD#2".into(),
             }
         );
         assert_eq!(
-            place_id_path(&parent, "@SETTINGS", IdPlacement::Inline).sk,
+            place_terminal_segment_with(&parent, "@SETTINGS", IdPlacement::Inline).sk,
             "PARENT#1@SETTINGS"
         );
         assert_eq!(
-            place_id_path(&parent, "#CHILD#2", IdPlacement::Inline).sk,
+            place_terminal_segment_with(&parent, "#CHILD#2", IdPlacement::Inline).sk,
             "PARENT#1#CHILD#2"
         );
     }

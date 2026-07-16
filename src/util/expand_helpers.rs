@@ -3,8 +3,8 @@ use serde::Serialize;
 
 use crate::{
     schema::{
-        identifiers::place_id_for, parsing::build_dynamo_map_internal, DynamoObject, PkSk,
-        Timestamp,
+        identifiers::place_terminal_segment, parsing::build_dynamo_map_internal, DynamoObject,
+        PkSk, Timestamp,
     },
     util::{
         metadata_helpers::WithMetadataFrom as _, DynamoMap, AUTO_FIELDS_CREATED_AT,
@@ -69,7 +69,7 @@ pub(crate) fn build_expandable_batch_maps<T: DynamoObject>(
             } else {
                 format!("{}#{i:0index_digits$}", T::id_label())
             };
-            let PkSk { pk, sk } = place_id_for::<T>(parent_id, &new_obj_id);
+            let PkSk { pk, sk } = place_terminal_segment::<T>(parent_id, &new_obj_id);
 
             let expandable_batch = ExpandableBatch::<T> {
                 items: batch.to_vec(),

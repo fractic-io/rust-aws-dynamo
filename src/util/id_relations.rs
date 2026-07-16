@@ -4,7 +4,8 @@ use crate::{
     errors::DynamoInvalidOperation,
     schema::{
         identifiers::{
-            place_id_for, validate_parent_relation, ParsedIdPath, RawIdPath, TerminalSegmentKind,
+            place_terminal_segment, validate_parent_relation, ParsedIdPath, RawIdPath,
+            TerminalSegmentKind,
         },
         DynamoObject, IdLogic, PkSk,
     },
@@ -72,7 +73,7 @@ pub fn child_query_prefix<T: DynamoObject>(parent_id: &PkSk) -> PkSk {
         _ => format!("{}#", T::id_label()),
     };
 
-    place_id_for::<T>(parent_id, &sk_search_prefix)
+    place_terminal_segment::<T>(parent_id, &sk_search_prefix)
 }
 
 #[cfg(test)]

@@ -36,7 +36,7 @@ use super::{
     entities_policy::{
         configured_bundle_policy, validate_import_policy, DynamoBundleReferenceMatchTarget,
     },
-    impl_export::{export_from_config, terminal_ref},
+    impl_export::export_from_config,
     impl_import::{build_id_map, import_bundle},
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
     DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
@@ -722,8 +722,16 @@ fn serde_values_omit_null_object_fields_and_reject_dynamo_only_values() {
 #[test]
 fn indexed_singleton_terminal_refs_allow_at_signs_in_keys() {
     assert_eq!(
-        terminal_ref("PARENT#old@SETTINGS[user@example.com]"),
+        crate::schema::id_calculations::object_ref_component(
+            "PARENT#old@SETTINGS[user@example.com]"
+        ),
         "user@example.com"
+    );
+    assert_eq!(
+        crate::schema::id_calculations::object_ref_component(
+            "@ACCOUNT[user@example.com]#CHILD#child-id"
+        ),
+        "child-id"
     );
 }
 
@@ -746,19 +754,19 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
         root: root.clone(),
         omitted_descendants: BTreeMap::new(),
         items: vec![
-            bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
-            bundle_item(
-                top.clone(),
-                Some(root.clone()),
-                BundleNesting::TopLevel,
-                json!({}),
-            ),
             bundle_item(
                 inline.clone(),
                 Some(top.clone()),
                 BundleNesting::Inline,
                 json!({}),
             ),
+            bundle_item(
+                top.clone(),
+                Some(root.clone()),
+                BundleNesting::TopLevel,
+                json!({}),
+            ),
+            bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
         ],
         references: vec![],
     };
@@ -937,13 +945,13 @@ async fn ordered_new_gets_a_fresh_id_and_is_placed_last() {
         Some(&parent),
         bundle,
         ImportMode::New {
-            after: Some(DynamoInsertPosition::Last),
+            position: Some(DynamoInsertPosition::Last),
         },
     )
     .await
     .unwrap();
 
-    assert!(result.duplicated);
+    assert!(result.created_new);
     assert_ne!(result.root_id.sk, "ORDERED#source");
 }
 
@@ -994,7 +1002,7 @@ async fn new_without_an_insertion_position_clears_the_source_sort() {
         &TestAlgorithms,
         Some(&parent),
         bundle,
-        ImportMode::New { after: None },
+        ImportMode::New { position: None },
     )
     .await
     .unwrap();
@@ -1120,7 +1128,7 @@ async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
         &TestAlgorithms,
         None,
         bundle.clone(),
-        ImportMode::New { after: None },
+        ImportMode::New { position: None },
     )
     .await
     .unwrap();
@@ -1134,7 +1142,7 @@ async fn new_remaps_bundled_refs_and_clears_missing_same_table_refs() {
             DynamoImportWarning::MissingExternalReference,
         ]
     );
-    assert!(result.duplicated);
+    assert!(result.created_new);
 }
 
 #[tokio::test]
@@ -1297,7 +1305,7 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
     .unwrap();
     assert_eq!(result.root_id.sk, "ROOTOBJ#root");
     assert_eq!(result.written_objects, 1);
-    assert!(!result.duplicated);
+    assert!(!result.created_new);
 }
 
 #[tokio::test]
@@ -1390,7 +1398,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
     .unwrap();
 
     assert_eq!(result.deleted_subtree_roots, 1);
-    assert!(!result.duplicated);
+    assert!(!result.created_new);
 }
 
 #[tokio::test]
@@ -1420,7 +1428,7 @@ async fn new_rejects_a_fixed_singleton_root_at_its_source_placement() {
         &TestAlgorithms,
         None,
         bundle,
-        ImportMode::New { after: None },
+        ImportMode::New { position: None },
     )
     .await
     .is_err());
@@ -1457,7 +1465,7 @@ async fn new_rejects_a_fixed_batch_root_at_its_source_placement() {
         &TestAlgorithms,
         Some(&parent),
         bundle,
-        ImportMode::New { after: None },
+        ImportMode::New { position: None },
     )
     .await
     .unwrap_err();
@@ -1527,12 +1535,12 @@ async fn new_allows_a_fixed_batch_root_below_a_different_parent() {
             sk: "ROOTOBJ#destination-parent".into(),
         }),
         bundle,
-        ImportMode::New { after: None },
+        ImportMode::New { position: None },
     )
     .await
     .unwrap();
 
-    assert!(result.duplicated);
+    assert!(result.created_new);
     assert_eq!(result.root_id.sk, "BATCH#0");
 }
 

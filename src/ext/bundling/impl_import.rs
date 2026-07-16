@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use chrono::Utc;
 use fractic_server_error::{CriticalError, ServerError};
@@ -10,9 +10,9 @@ use crate::{
     ext::crud::DynamoCrudAlgorithms,
     schema::{
         id_calculations::{
-            freshen_object_sk, freshen_timestamp_object_sk, get_object_type, object_sk_component,
-            place_inline_id, place_root_id, place_top_level_id, relative_child_sk,
-            strip_ext_suffix,
+            freshen_object_sk, freshen_timestamp_object_sk, get_object_type, object_ref_component,
+            object_sk_component, place_inline_id, place_root_id, place_top_level_id,
+            relative_child_sk, strip_ext_suffix,
         },
         parsing::build_dynamo_map_internal,
         DynamoObject, PkSk, Timestamp,
@@ -29,7 +29,7 @@ use crate::{
 
 use super::{
     entities_policy::{configured_bundle_policy, validate_import_policy},
-    impl_export::{collect_bundle_items, export_with_omissions, terminal_ref},
+    impl_export::{collect_bundle_items, export_with_omissions},
     impl_utils::set_value_at_path,
     invalid_bundle, root_nesting, BundleId, BundleIdLogic, BundleNesting, DynamoBundle,
     DynamoBundleItem, DynamoBundlePolicy, DynamoBundleReferenceEncoding,
@@ -42,13 +42,13 @@ const DELETE_CONCURRENCY: usize = 16;
 // Definitions.
 // ----------------------------------------------------------------------------
 
-struct MergePlan {
+struct ImportWritePlan {
     puts: Vec<DynamoMap>,
     maintenance_deletes: Vec<PkSk>,
 }
 
 struct ExistingState {
-    conflicts: HashSet<PkSk>,
+    has_conflicts: bool,
     ext_partition_counts: HashMap<PkSk, usize>,
 }
 
@@ -76,13 +76,9 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let policy = configured_bundle_policy(algorithms);
     let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic)?;
-    let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
-    let preserved_root_id = preserved_ids
-        .get(&bundle.root)
-        .ok_or_else(|| invalid_bundle("bundle root had no preserved destination ID"))?;
     let replacing = matches!(&mode, ImportMode::Replace);
-    let (id_map, existing, duplicated, new_position) = match mode {
-        ImportMode::New { after } => {
+    let (id_map, existing, created_new, new_position) = match mode {
+        ImportMode::New { position } => {
             let ids = build_id_map(&bundle, parent, true, root_id_logic)?;
             let destination_root = ids
                 .get(&bundle.root)
@@ -94,14 +90,18 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
                 ));
             }
             let existing = find_existing(util, &ids).await?;
-            if !existing.conflicts.is_empty() {
+            if existing.has_conflicts {
                 return Err(DynamoInvalidOperation::new(
                     "one or more generated New destination IDs already exist",
                 ));
             }
-            (ids, existing, true, after)
+            (ids, existing, true, position)
         }
         ImportMode::Merge | ImportMode::Replace => {
+            let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
+            let preserved_root_id = preserved_ids
+                .get(&bundle.root)
+                .ok_or_else(|| invalid_bundle("bundle root had no preserved destination ID"))?;
             if preserved_root_id != &bundle.source_root {
                 return Err(DynamoInvalidOperation::new(
                     "bundle reparenting is not supported for Merge or Replace; use New to \
@@ -122,7 +122,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         .cloned()
         .ok_or_else(|| invalid_bundle("bundle root had no destination ID"))?;
 
-    let old = if !existing.conflicts.is_empty() && replacing {
+    let old = if existing.has_conflicts && replacing {
         Some(
             export_with_omissions(
                 util,
@@ -139,18 +139,18 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     };
 
     let warnings = resolve_references(util, &mut bundle, &id_map).await?;
-    if duplicated {
-        place_new_root::<O>(util, parent, &mut bundle, new_position).await?;
+    if created_new {
+        prepare_new_root_data::<O>(util, parent, &mut bundle, new_position).await?;
     }
-    let existing_partition_counts = if duplicated {
+    let existing_partition_counts = if created_new {
         HashMap::new()
     } else {
         existing.ext_partition_counts
     };
-    let merge_plan = build_merge_plan(&bundle, &id_map, &existing_partition_counts)?;
-    util.raw_batch_delete_ids(merge_plan.maintenance_deletes)
+    let write_plan = build_write_plan(&bundle, &id_map, &existing_partition_counts)?;
+    util.raw_batch_delete_ids(write_plan.maintenance_deletes)
         .await?;
-    util.raw_batch_put_item(merge_plan.puts).await?;
+    util.raw_batch_put_item(write_plan.puts).await?;
 
     let deleted_subtree_roots = match old {
         Some(old) => replace_stale(util, &policy, parent, &old, &id_map).await?,
@@ -161,7 +161,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         root_id,
         written_objects: bundle.items.len(),
         deleted_subtree_roots,
-        duplicated,
+        created_new,
         warnings,
     })
 }
@@ -172,41 +172,48 @@ pub(crate) fn build_id_map(
     duplicate: bool,
     root_id_logic: BundleIdLogic,
 ) -> Result<HashMap<BundleId, PkSk>, ServerError> {
-    let mut result = HashMap::new();
+    let root = bundle
+        .items
+        .iter()
+        .find(|item| item.id == bundle.root)
+        .ok_or_else(|| invalid_bundle("bundle root item was missing"))?;
+    let mut children = HashMap::<&BundleId, Vec<&DynamoBundleItem>>::new();
+    for item in &bundle.items {
+        if let Some(parent) = &item.parent {
+            children.entry(parent).or_default().push(item);
+        }
+    }
+
+    let mut result = HashMap::with_capacity(bundle.items.len());
     let mut duplicate_ids = DuplicateIdGenerator::new();
-    let mut pending = bundle.items.iter().collect::<Vec<_>>();
-    while !pending.is_empty() {
-        let mut next = Vec::new();
-        let mut mapped_any = false;
-        for item in pending {
-            let parent_id = item.parent.as_ref().and_then(|id| result.get(id));
-            if item.parent.is_some() && parent_id.is_none() {
-                next.push(item);
-                continue;
-            }
-            let id_logic = if item.id == bundle.root {
-                root_id_logic
-            } else {
-                item.id_logic
-            };
-            let mapped = if item.id == bundle.root {
-                place_root(item, parent, duplicate, id_logic, &mut duplicate_ids)?
-            } else {
-                place_child(
+    result.insert(
+        root.id.clone(),
+        place_root(root, parent, duplicate, root_id_logic, &mut duplicate_ids)?,
+    );
+    let mut frontier = VecDeque::from([root]);
+    while let Some(mapped_parent) = frontier.pop_front() {
+        if let Some(child_items) = children.remove(&mapped_parent.id) {
+            let parent_id = result
+                .get(&mapped_parent.id)
+                .cloned()
+                .ok_or_else(|| invalid_bundle("mapped bundle parent was missing"))?;
+            for item in child_items {
+                let mapped = place_child(
                     item,
-                    parent_id.expect("non-root bundle item has parent"),
+                    &parent_id,
                     duplicate,
-                    id_logic,
+                    item.id_logic,
                     &mut duplicate_ids,
-                )?
-            };
-            result.insert(item.id.clone(), mapped);
-            mapped_any = true;
+                )?;
+                if result.insert(item.id.clone(), mapped).is_some() {
+                    return Err(invalid_bundle("bundle IDs were invalid"));
+                }
+                frontier.push_back(item);
+            }
         }
-        if !mapped_any {
-            return Err(invalid_bundle("bundle item parent graph was invalid"));
-        }
-        pending = next;
+    }
+    if result.len() != bundle.items.len() {
+        return Err(invalid_bundle("bundle item parent graph was invalid"));
     }
     Ok(result)
 }
@@ -221,7 +228,7 @@ async fn find_existing(
     let rows = util
         .raw_batch_get_ids(ids.values().cloned().collect(), None)
         .await?;
-    let mut conflicts = HashSet::new();
+    let has_conflicts = !rows.is_empty();
     let mut ext_partition_counts = HashMap::new();
     for row in rows {
         let id = PkSk::from_map(&row)?;
@@ -230,12 +237,11 @@ async fn find_existing(
             .and_then(|value| value.as_n().ok())
             .and_then(|value| value.parse().ok())
         {
-            ext_partition_counts.insert(id.clone(), count);
+            ext_partition_counts.insert(id, count);
         }
-        conflicts.insert(id);
     }
     Ok(ExistingState {
-        conflicts,
+        has_conflicts,
         ext_partition_counts,
     })
 }
@@ -253,16 +259,16 @@ async fn resolve_references(
             DynamoBundleReferenceTarget::Bundled { .. } => None,
         })
         .collect::<HashSet<_>>();
-    let existing_external = util
-        .raw_batch_get_ids(external_ids.into_iter().collect(), Some("pk, sk".into()))
-        .await?
-        .iter()
-        .map(PkSk::from_map)
-        .collect::<Result<HashSet<_>, _>>()?;
-    let existing_external = existing_external
-        .into_iter()
-        .chain(id_map.values().cloned())
-        .collect::<HashSet<_>>();
+    let mut existing_external = if external_ids.is_empty() {
+        HashSet::new()
+    } else {
+        util.raw_batch_get_ids(external_ids.into_iter().collect(), Some("pk, sk".into()))
+            .await?
+            .iter()
+            .map(PkSk::from_map)
+            .collect::<Result<HashSet<_>, _>>()?
+    };
+    existing_external.extend(id_map.values().cloned());
 
     let source_indexes = bundle
         .items
@@ -288,7 +294,7 @@ async fn resolve_references(
                 Value::String(match encoding {
                     DynamoBundleReferenceEncoding::PkSk => target.to_string(),
                     DynamoBundleReferenceEncoding::ForeignRef => {
-                        terminal_ref(&target.sk).to_string()
+                        object_ref_component(&target.sk).to_string()
                     }
                 })
             }
@@ -321,11 +327,11 @@ async fn resolve_references(
     Ok(warnings)
 }
 
-fn build_merge_plan(
+fn build_write_plan(
     bundle: &DynamoBundle,
     ids: &HashMap<BundleId, PkSk>,
     existing_partition_counts: &HashMap<PkSk, usize>,
-) -> Result<MergePlan, ServerError> {
+) -> Result<ImportWritePlan, ServerError> {
     let mut puts = Vec::new();
     let mut maintenance_deletes = Vec::new();
     let imported_at = Timestamp::now();
@@ -366,7 +372,7 @@ fn build_merge_plan(
             }
         }
     }
-    Ok(MergePlan {
+    Ok(ImportWritePlan {
         puts,
         maintenance_deletes,
     })
@@ -396,7 +402,7 @@ fn partition_payload(data: &Value) -> Result<(String, Option<f64>, Option<i64>),
     ))
 }
 
-async fn place_new_root<O: DynamoObject>(
+async fn prepare_new_root_data<O: DynamoObject>(
     util: &DynamoUtil,
     parent: Option<&PkSk>,
     bundle: &mut DynamoBundle,

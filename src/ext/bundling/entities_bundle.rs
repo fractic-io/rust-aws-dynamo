@@ -136,13 +136,13 @@ pub enum ImportMode {
     New {
         /// Optional destination ordering. Ordered CRUD wrappers always provide
         /// an explicit position; unordered wrappers leave this unset.
-        after: Option<DynamoInsertPosition>,
+        position: Option<DynamoInsertPosition>,
     },
 }
 
 impl Default for ImportMode {
     fn default() -> Self {
-        Self::New { after: None }
+        Self::New { position: None }
     }
 }
 
@@ -153,7 +153,8 @@ pub struct DynamoImportResult {
     pub written_objects: usize,
     /// Number of logical stale roots recursively removed by Replace.
     pub deleted_subtree_roots: usize,
-    pub duplicated: bool,
+    /// Whether the import created a distinct root identity.
+    pub created_new: bool,
     pub warnings: Vec<DynamoImportWarning>,
 }
 

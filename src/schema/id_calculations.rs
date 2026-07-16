@@ -101,23 +101,38 @@ pub(crate) fn append_child_sk(parent_sk: &str, child_sk: &str) -> String {
 /// object without access to its original parent.
 pub(crate) fn object_sk_component<'a>(sk: &'a str, label: &str) -> Result<&'a str, ServerError> {
     let sk = strip_ext_suffix(sk);
-    if let Some(at) = sk.find('@') {
-        return Ok(&sk[at..]);
+    if get_object_type("", sk)? != label {
+        return Err(DynamoInvalidId::with_debug(
+            "could not extract object SK component",
+            &sk,
+        ));
     }
-    let marker = format!("#{label}#");
-    if let Some(index) = sk.rfind(&marker) {
-        return Ok(&sk[index + 1..]);
-    }
-    if sk
-        .strip_prefix(label)
-        .is_some_and(|suffix| suffix.starts_with('#'))
+    let separators = terminal_separators(sk);
+    if separators
+        .last_at
+        .is_some_and(|at| separators.last_hash.is_none_or(|hash| at > hash))
     {
-        return Ok(sk);
+        return Ok(&sk[separators.last_at.expect("checked above")..]);
     }
-    Err(DynamoInvalidId::with_debug(
-        "could not extract object SK component",
-        &sk,
-    ))
+    Ok(&sk[separators.previous_hash.map_or(0, |hash| hash + 1)..])
+}
+
+/// Extracts the minimal foreign-reference value for the terminal object in an
+/// SK, ignoring separator characters inside indexed-singleton keys.
+pub(crate) fn object_ref_component(sk: &str) -> &str {
+    let sk = strip_ext_suffix(sk);
+    let separators = terminal_separators(sk);
+    if let Some(at) = separators
+        .last_at
+        .filter(|at| separators.last_hash.is_none_or(|hash| *at > hash))
+    {
+        let singleton = &sk[at + 1..];
+        if let (Some(open), Some(close)) = (singleton.find('['), singleton.rfind(']')) {
+            return &singleton[open + 1..close];
+        }
+        return "";
+    }
+    separators.last_hash.map_or(sk, |hash| &sk[hash + 1..])
 }
 
 /// Returns a child's SK relative to its stored parent.
@@ -183,7 +198,11 @@ pub(crate) fn place_inline_id(parent: &PkSk, relative_sk: &str) -> PkSk {
 
 pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, ServerError> {
     let sk = strip_ext_suffix(sk);
-    if let Some(pos) = sk.find('@') {
+    let separators = terminal_separators(sk);
+    if let Some(pos) = separators
+        .last_at
+        .filter(|at| separators.last_hash.is_none_or(|hash| *at > hash))
+    {
         // '@' indicates object is a singleton. In this case, the only label
         // that matters is the @LABEL, which can by extracted by getting the
         // text between '@' and '[' (in case of IndexedSingleton) or EOL
@@ -194,16 +213,40 @@ pub(crate) fn get_object_type<'a>(_pk: &'a str, sk: &'a str) -> Result<&'a str, 
     } else {
         // Otherwise, object type is decided by the last label in the
         // PARENT#uuid#CHILD#uuid#... format.
-        let split: Vec<&str> = sk.split('#').collect();
-        if split.len() < 2 {
-            Err(DynamoInvalidId::with_debug(
+        let Some(last_hash) = separators.last_hash else {
+            return Err(DynamoInvalidId::with_debug(
                 "sk not in LABEL#uuid format",
                 &sk.to_string(),
-            ))
-        } else {
-            Ok(split[split.len() - 2])
+            ));
+        };
+        let label_start = separators.previous_hash.map_or(0, |hash| hash + 1);
+        Ok(&sk[label_start..last_hash])
+    }
+}
+
+#[derive(Default)]
+struct TerminalSeparators {
+    last_at: Option<usize>,
+    previous_hash: Option<usize>,
+    last_hash: Option<usize>,
+}
+
+fn terminal_separators(sk: &str) -> TerminalSeparators {
+    let mut result = TerminalSeparators::default();
+    let mut in_index_key = false;
+    for (index, byte) in sk.bytes().enumerate() {
+        match byte {
+            b'[' if !in_index_key => in_index_key = true,
+            b']' if in_index_key => in_index_key = false,
+            b'@' if !in_index_key => result.last_at = Some(index),
+            b'#' if !in_index_key => {
+                result.previous_hash = result.last_hash;
+                result.last_hash = Some(index);
+            }
+            _ => {}
         }
     }
+    result
 }
 
 // ID construction algorithms.
@@ -402,6 +445,10 @@ mod tests {
             get_object_type("USER#123", "ORDER#56#ITEM#1@POST[key]").unwrap(),
             "POST"
         );
+        assert_eq!(
+            get_object_type("ROOT", "@ACCOUNT[user@example.com]#MESSAGE#message-id").unwrap(),
+            "MESSAGE"
+        );
         assert_eq!(get_object_type("ROOT", "@SINGLTN+0").unwrap(), "SINGLTN");
         assert_eq!(get_object_type("ROOT", "@PREF[key]+12").unwrap(), "PREF");
     }
@@ -448,6 +495,11 @@ mod tests {
         assert_eq!(
             object_sk_component("PARENT#old@SETTINGS[user@example.com]", "SETTINGS").unwrap(),
             "@SETTINGS[user@example.com]"
+        );
+        assert_eq!(
+            object_sk_component("@ACCOUNT[user@example.com]#MESSAGE#message-id", "MESSAGE")
+                .unwrap(),
+            "MESSAGE#message-id"
         );
         assert_eq!(
             relative_child_sk("PARENT#old#CHILD#old", "PARENT#old").unwrap(),

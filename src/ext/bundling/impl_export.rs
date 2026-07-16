@@ -10,14 +10,14 @@ use crate::{
     errors::{DynamoCalloutError, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        id_calculations::{get_object_type, strip_ext_suffix},
+        id_calculations::{get_object_type, object_ref_component},
         parsing::dynamo_map_to_serde_value,
         ForeignRef, PkSk,
     },
     util::{
-        collapse_helpers::collapse_partitioned_items, DynamoMap, DynamoUtil,
-        AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY,
-        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        collapse_helpers::{collapse_partitioned_items, ext_base_id},
+        DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT,
+        COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
     },
 };
 
@@ -35,7 +35,6 @@ const QUERY_CONCURRENCY: usize = 16;
 // Definitions.
 // ----------------------------------------------------------------------------
 
-#[derive(Clone)]
 pub(crate) struct CollectedItem {
     pub id: PkSk,
     pub parent: Option<PkSk>,
@@ -114,7 +113,7 @@ async fn export_bundle(
     )
     .await?;
 
-    let root_id = logical_base_id(root);
+    let root_id = ext_base_id(root);
     let mut by_pk_sk = HashMap::new();
     let mut items = Vec::with_capacity(collected.len());
     for (index, item) in collected.into_iter().enumerate() {
@@ -171,25 +170,6 @@ async fn export_bundle(
     Ok(bundle)
 }
 
-pub(crate) fn logical_base_id(id: &PkSk) -> PkSk {
-    PkSk {
-        pk: id.pk.clone(),
-        sk: strip_ext_suffix(&id.sk).to_string(),
-    }
-}
-
-pub(crate) fn terminal_ref(sk: &str) -> &str {
-    let sk = strip_ext_suffix(sk);
-    if let Some(at) = sk.find('@') {
-        let singleton = &sk[at + 1..];
-        if let (Some(open), Some(close)) = (singleton.find('['), singleton.find(']')) {
-            return &singleton[open + 1..close];
-        }
-        return "";
-    }
-    sk.rsplit_once('#').map_or(sk, |(_, value)| value)
-}
-
 // Item / ref collection.
 // ----------------------------------------------------------------------------
 
@@ -200,7 +180,7 @@ pub(crate) async fn collect_bundle_items(
     root_nesting: BundleNesting,
     fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> Result<(Vec<CollectedItem>, BTreeMap<String, BTreeSet<String>>), ServerError> {
-    let root = logical_base_id(root);
+    let root = ext_base_id(root);
     let root_label = get_object_type(&root.pk, &root.sk)?;
     let root_config = bundles.require(root_label)?;
     let mut recorded = fixed_omissions.cloned().unwrap_or_default();
@@ -215,57 +195,52 @@ pub(crate) async fn collect_bundle_items(
         parent: None,
         nesting: root_nesting,
         rows: root_rows,
-        omitted_descendants: root_omissions.clone(),
+        omitted_descendants: root_omissions,
     }];
 
     initial_groups.retain(|id, _| is_inline_descendant(&id.sk, &root.sk));
     append_partition_groups(
         &mut collected,
-        &root,
+        0,
         initial_groups,
-        &root_omissions,
         bundles,
         fixed_omissions,
         &mut recorded,
     )?;
 
     let mut queried = HashSet::new();
-    let mut frontier = collected
-        .iter()
-        .map(|item| item.id.clone())
-        .collect::<Vec<_>>();
+    let mut frontier = (0..collected.len()).collect::<Vec<_>>();
     while !frontier.is_empty() {
         let owners = frontier
             .drain(..)
-            .filter(|id| queried.insert(id.clone()))
+            .filter_map(|index| {
+                let item = &collected[index];
+                queried
+                    .insert(item.id.clone())
+                    .then(|| (index, item.id.clone()))
+            })
             .collect::<Vec<_>>();
         let mut results = stream::iter(owners)
-            .map(|owner| async move {
+            .map(|(owner_index, owner)| async move {
                 let rows = raw_query(util, &owner.sk, None).await?;
-                Ok::<_, ServerError>((owner, group_logical_rows(rows)?))
+                Ok::<_, ServerError>((owner_index, owner, group_logical_rows(rows)?))
             })
             .buffer_unordered(QUERY_CONCURRENCY)
             .try_collect::<Vec<_>>()
             .await?;
-        results.sort_by(|(a, _), (b, _)| a.pk.cmp(&b.pk).then_with(|| a.sk.cmp(&b.sk)));
+        results.sort_by(|(_, a, _), (_, b, _)| a.pk.cmp(&b.pk).then_with(|| a.sk.cmp(&b.sk)));
 
-        for (owner, groups) in results {
+        for (owner_index, _, groups) in results {
             let before = collected.len();
-            let omissions = collected
-                .iter()
-                .find(|item| item.id == owner)
-                .map(|item| item.omitted_descendants.clone())
-                .unwrap_or_default();
             append_partition_groups(
                 &mut collected,
-                &owner,
+                owner_index,
                 groups,
-                &omissions,
                 bundles,
                 fixed_omissions,
                 &mut recorded,
             )?;
-            frontier.extend(collected[before..].iter().map(|item| item.id.clone()));
+            frontier.extend(before..collected.len());
         }
     }
     Ok((collected, recorded))
@@ -283,7 +258,6 @@ fn collect_references(
             for matched in (rule.selector)(item)? {
                 let original = item
                     .value_at(&matched.path)
-                    .cloned()
                     .ok_or_else(|| invalid_bundle("reference path was missing"))?;
                 let target = match matched.target {
                     DynamoBundleReferenceMatchTarget::Bundled {
@@ -295,7 +269,7 @@ fn collect_references(
                             original_ids,
                             item,
                             &matched.path,
-                            &original,
+                            original,
                             encoding,
                             Some(&target_label),
                         )?;
@@ -341,24 +315,25 @@ fn omissions_for(
 
 fn append_partition_groups(
     collected: &mut Vec<CollectedItem>,
-    owner: &PkSk,
+    owner_index: usize,
     groups: HashMap<PkSk, Vec<DynamoMap>>,
-    owner_omissions: &BTreeSet<String>,
     bundles: &DynamoBundlePolicy,
     fixed_omissions: Option<&BTreeMap<String, BTreeSet<String>>>,
     recorded: &mut BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), ServerError> {
     let mut groups = groups.into_iter().collect::<Vec<_>>();
     groups.sort_by(|(a, _), (b, _)| a.sk.len().cmp(&b.sk.len()).then_with(|| a.sk.cmp(&b.sk)));
-    let mut accepted = vec![(owner.clone(), owner_omissions.clone())];
+    let mut accepted = vec![owner_index];
     let mut omitted = Vec::<PkSk>::new();
     for (id, rows) in groups {
         let label = get_object_type(&id.pk, &id.sk)?.to_string();
         let inline_parent = accepted
             .iter()
-            .filter(|(candidate, _)| is_inline_descendant(&id.sk, &candidate.sk))
-            .max_by_key(|(candidate, _)| candidate.sk.len());
-        let inherited_omissions = inline_parent.map_or(owner_omissions, |(_, omissions)| omissions);
+            .copied()
+            .filter(|index| is_inline_descendant(&id.sk, &collected[*index].id.sk))
+            .max_by_key(|index| collected[*index].id.sk.len());
+        let inherited_omissions =
+            &collected[inline_parent.unwrap_or(owner_index)].omitted_descendants;
         if inherited_omissions.contains(&label)
             || omitted
                 .iter()
@@ -368,8 +343,8 @@ fn append_partition_groups(
             continue;
         }
         let (parent, nesting) = match inline_parent {
-            Some((parent, _)) => (parent.clone(), BundleNesting::Inline),
-            None => (owner.clone(), BundleNesting::TopLevel),
+            Some(index) => (collected[index].id.clone(), BundleNesting::Inline),
+            None => (collected[owner_index].id.clone(), BundleNesting::TopLevel),
         };
         let object = bundles.require(&label)?;
         let mut descendant_omissions = inherited_omissions.clone();
@@ -379,9 +354,9 @@ fn append_partition_groups(
             parent: Some(parent),
             nesting,
             rows,
-            omitted_descendants: descendant_omissions.clone(),
+            omitted_descendants: descendant_omissions,
         });
-        accepted.push((id, descendant_omissions));
+        accepted.push(collected.len() - 1);
     }
     Ok(())
 }
@@ -443,19 +418,30 @@ fn find_bundled_target(
         return Ok(target.clone());
     }
 
+    if let Some(target) = unique_foreign_target(bundle, raw, target_label)? {
+        return Ok(target.id.clone());
+    }
     let reference = serde_json::from_value::<ForeignRef<'static>>(Value::String(raw.to_owned()))
         .map_err(|_| invalid_bundle("foreign reference was invalid"))?;
+    unique_foreign_target(bundle, reference.raw(), target_label)?
+        .map(|target| target.id.clone())
+        .ok_or_else(|| missing_internal_target(bundle, source, path, raw, target_label))
+}
+
+fn unique_foreign_target<'a>(
+    bundle: &'a DynamoBundle,
+    reference: &str,
+    target_label: Option<&str>,
+) -> Result<Option<&'a DynamoBundleItem>, ServerError> {
     let mut matches = bundle.items.iter().filter(|item| {
         target_label.is_none_or(|label| item.id.label == label)
-            && terminal_ref(&item.id.original_sk) == reference.raw()
+            && object_ref_component(&item.id.original_sk) == reference
     });
-    let target = matches
-        .next()
-        .ok_or_else(|| missing_internal_target(bundle, source, path, raw, target_label))?;
-    if matches.next().is_some() {
+    let target = matches.next();
+    if target.is_some() && matches.next().is_some() {
         return Err(invalid_bundle("bundled reference target was ambiguous"));
     }
-    Ok(target.id.clone())
+    Ok(target)
 }
 
 fn missing_internal_target(
@@ -479,10 +465,10 @@ fn group_logical_rows(rows: Vec<DynamoMap>) -> Result<HashMap<PkSk, Vec<DynamoMa
     let mut groups: HashMap<PkSk, Vec<DynamoMap>> = HashMap::new();
     for row in rows {
         let id = PkSk::from_map(&row)?;
-        groups.entry(logical_base_id(&id)).or_default().push(row);
+        groups.entry(ext_base_id(&id)).or_default().push(row);
     }
     for rows in groups.values_mut() {
-        rows.sort_by_key(|row| PkSk::from_map(row).map(|id| id.sk).unwrap_or_default());
+        rows.sort_by_cached_key(|row| PkSk::from_map(row).map(|id| id.sk).unwrap_or_default());
     }
     Ok(groups)
 }

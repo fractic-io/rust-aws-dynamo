@@ -7,7 +7,7 @@ use fractic_server_error::ServerError;
 
 use crate::{
     errors::DynamoNotFound,
-    ext::bundling::{self, DynamoBundle, DynamoBundlePolicy, DynamoImportResult, IfExisting},
+    ext::bundling::{Bundler, DynamoBundle, DynamoBundlePolicy, DynamoImportResult, IfExisting},
     schema::{DynamoObject, NestingLogic, PkSk},
     util::{DynamoInsertPosition, DynamoUtil},
 };
@@ -98,6 +98,25 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
         Ok(items.into_iter().map(DynamoObject::into_data).collect())
     }
 
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export(item)
+            .await
+    }
+
+    pub async fn import(
+        &self,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(None, bundle, if_existing)
+            .await
+    }
+
     // Global operations:
     // -----------------------------------------------------------------------
 
@@ -185,6 +204,25 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
         Ok(items.into_iter().map(DynamoObject::into_data).collect())
     }
 
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export_deep(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export_deep(item)
+            .await
+    }
+
+    pub async fn import(
+        &self,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(None, bundle, if_existing)
+            .await
+    }
+
     // Global operations:
     // -----------------------------------------------------------------------
 
@@ -234,6 +272,25 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
 
     pub async fn delete(&self) -> Result<(), ServerError> {
         self.dynamo_util.delete_item::<O>(self.id_for()).await
+    }
+
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export(item)
+            .await
+    }
+
+    pub async fn import(
+        &self,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(None, bundle, if_existing)
+            .await
     }
 
     // Helpers:
@@ -295,6 +352,25 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     pub async fn batch_delete(&self, keys: Vec<&str>) -> Result<(), ServerError> {
         self.dynamo_util
             .batch_delete_item::<O>(keys.iter().map(|k| self.id_for(k)).collect())
+            .await
+    }
+
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export(item)
+            .await
+    }
+
+    pub async fn import(
+        &self,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(None, bundle, if_existing)
             .await
     }
 
@@ -403,6 +479,29 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
             .batch_delete_item::<O>(items.iter().map(|i| i.id().clone()).collect())
             .await?;
         Ok(items.into_iter().map(DynamoObject::into_data).collect())
+    }
+
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export(item)
+            .await
+    }
+
+    pub async fn import<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .await
     }
 
     // Global operations:
@@ -525,6 +624,29 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
         Ok(items.into_iter().map(DynamoObject::into_data).collect())
     }
 
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export_deep(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export_deep(item)
+            .await
+    }
+
+    pub async fn import<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .await
+    }
+
     // Global operations:
     // -----------------------------------------------------------------------
 
@@ -606,6 +728,29 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
             .batch_delete_item::<O>(items.iter().map(|i| i.id().clone()).collect())
             .await?;
         Ok(items.into_iter().map(DynamoObject::into_data).collect())
+    }
+
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export(item)
+            .await
+    }
+
+    pub async fn import<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .await
     }
 
     // Global operations:
@@ -708,6 +853,29 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
         Ok(items.into_iter().map(DynamoObject::into_data).collect())
     }
 
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export_deep(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export_deep(item)
+            .await
+    }
+
+    pub async fn import<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .await
+    }
+
     // Global operations:
     // -----------------------------------------------------------------------
 
@@ -776,6 +944,26 @@ impl<O: DynamoObject> ManageChildBatch<O> {
             .batch_replace_all_ordered::<O>(parent.id(), data)
             .await
     }
+
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    /// Imports a bundle below `parent`. Batch-optimized objects deliberately do
+    /// not expose item-level export because their logical items share physical
+    /// rows; export their owning object recursively instead.
+    pub async fn import<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .await
+    }
 }
 
 /// Type-safe accessor for CRUD operations on a singleton child object.
@@ -829,6 +1017,29 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
         P: DynamoObject + ParentOf<O>,
     {
         self.dynamo_util.delete_item::<O>(self.id_for(parent)).await
+    }
+
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export(item)
+            .await
+    }
+
+    pub async fn import<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .await
     }
 
     // Helpers:
@@ -928,6 +1139,29 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
             .await
     }
 
+    // Bundling operations:
+    // -----------------------------------------------------------------------
+
+    pub async fn export(&self, item: O) -> Result<DynamoBundle, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .export(item)
+            .await
+    }
+
+    pub async fn import<P>(
+        &self,
+        parent: &P,
+        bundle: DynamoBundle,
+        if_existing: IfExisting,
+    ) -> Result<DynamoImportResult, ServerError>
+    where
+        P: DynamoObject + ParentOf<O>,
+    {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import::<O>(Some(parent.id()), bundle, if_existing)
+            .await
+    }
+
     // Global operations:
     // -----------------------------------------------------------------------
 
@@ -964,106 +1198,5 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
                 sk: format!("{}@{}[{}]", parent.id().sk, O::id_label(), key),
             },
         }
-    }
-}
-
-// Bundle operations.
-// ----------------------------------------------------------------------------
-
-macro_rules! impl_root_bundle_operations {
-    ($manager:ident, $algorithms:ident, $export:ident) => {
-        impl<O: DynamoObject> $manager<O> {
-            pub async fn $export(&self, item: O) -> Result<DynamoBundle, ServerError> {
-                bundling::$export(&self.dynamo_util, &*self.$algorithms, item).await
-            }
-
-            pub async fn import(
-                &self,
-                bundle: DynamoBundle,
-                if_existing: IfExisting,
-            ) -> Result<DynamoImportResult, ServerError> {
-                bundling::import::<O>(
-                    &self.dynamo_util,
-                    &*self.$algorithms,
-                    None,
-                    bundle,
-                    if_existing,
-                )
-                .await
-            }
-        }
-    };
-}
-
-macro_rules! impl_child_bundle_operations {
-    ($manager:ident, $algorithms:ident, $export:ident) => {
-        impl<O: DynamoObject> $manager<O> {
-            pub async fn $export(&self, item: O) -> Result<DynamoBundle, ServerError> {
-                bundling::$export(&self.dynamo_util, &*self.$algorithms, item).await
-            }
-
-            pub async fn import<P>(
-                &self,
-                parent: &P,
-                bundle: DynamoBundle,
-                if_existing: IfExisting,
-            ) -> Result<DynamoImportResult, ServerError>
-            where
-                P: DynamoObject + ParentOf<O>,
-            {
-                bundling::import::<O>(
-                    &self.dynamo_util,
-                    &*self.$algorithms,
-                    Some(parent.id()),
-                    bundle,
-                    if_existing,
-                )
-                .await
-            }
-        }
-    };
-}
-
-impl_root_bundle_operations!(ManageRootUnordered, crud_algorithms, export);
-impl_root_bundle_operations!(
-    ManageRootUnorderedWithChildren,
-    crud_algorithms,
-    export_deep
-);
-impl_root_bundle_operations!(ManageRootSingleton, crud_algorithms, export);
-impl_root_bundle_operations!(ManageRootIndexedSingleton, crud_algorithms, export);
-
-impl_child_bundle_operations!(ManageChildOrdered, crud_algorithms, export);
-impl_child_bundle_operations!(ManageChildOrderedWithChildren, crud_algorithms, export_deep);
-impl_child_bundle_operations!(ManageChildUnordered, crud_algorithms, export);
-impl_child_bundle_operations!(
-    ManageChildUnorderedWithChildren,
-    crud_algorithms,
-    export_deep
-);
-impl_child_bundle_operations!(ManageChildSingleton, crud_algorithms, export);
-impl_child_bundle_operations!(ManageChildIndexedSingleton, crud_algorithms, export);
-
-impl<O: DynamoObject> ManageChildBatch<O> {
-    /// Imports a bundle below `parent`. Batch-optimized objects deliberately do
-    /// not expose item-level export because their logical items share physical
-    /// rows; export their owning object recursively instead.
-    pub async fn import<P>(
-        &self,
-        parent: &P,
-        bundle: DynamoBundle,
-        if_existing: IfExisting,
-    ) -> Result<DynamoImportResult, ServerError>
-    where
-        P: DynamoObject + ParentOf<O>,
-    {
-        bundling::import::<O>(
-            &self.dynamo_util,
-            &*self.crud_algorithms,
-            Some(parent.id()),
-            bundle,
-            if_existing,
-        )
-        .await
     }
 }

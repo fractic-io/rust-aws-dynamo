@@ -1,6 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use chrono::Utc;
 use fractic_server_error::{CriticalError, ServerError};
 use futures_util::{stream, StreamExt as _, TryStreamExt as _};
 use serde_json::Value;
@@ -8,15 +7,7 @@ use serde_json::Value;
 use crate::{
     errors::DynamoInvalidOperation,
     ext::crud::DynamoCrudAlgorithms,
-    schema::{
-        id_calculations::{
-            freshen_object_sk, freshen_timestamp_object_sk, get_object_type, object_sk_component,
-            place_inline_id, place_root_id, place_top_level_id, relative_child_sk,
-            strip_ext_suffix,
-        },
-        parsing::build_dynamo_map_internal,
-        DynamoObject, PkSk, Timestamp,
-    },
+    schema::{parsing::build_dynamo_map_internal, DynamoObject, PkSk, Timestamp},
     util::{
         calculate_sort_values,
         collapse_helpers::{
@@ -30,11 +21,12 @@ use crate::{
 use super::{
     entities_policy::{configured_bundle_policy, validate_import_policy},
     impl_export::{collect_bundle_items, export_with_omissions},
+    impl_mapping::build_id_map,
     impl_utils::set_value_at_path,
-    invalid_bundle, root_nesting, BundleId, BundleIdLogic, BundleNesting, DynamoBundle,
-    DynamoBundleItem, DynamoBundlePolicy, DynamoBundleReferenceEncoding,
-    DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportResult, DynamoImportWarning,
-    ImportMode,
+    impl_validation::validate_bundle,
+    invalid_bundle, root_nesting, BundleId, BundleIdLogic, DynamoBundle, DynamoBundlePolicy,
+    DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
+    DynamoImportResult, DynamoImportWarning, ImportMode,
 };
 
 const DELETE_CONCURRENCY: usize = 16;
@@ -190,58 +182,6 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         created_new,
         warnings,
     })
-}
-
-pub(crate) fn build_id_map(
-    bundle: &DynamoBundle,
-    parent: Option<&PkSk>,
-    duplicate: bool,
-    root_id_logic: BundleIdLogic,
-) -> Result<HashMap<BundleId, PkSk>, ServerError> {
-    let root = bundle
-        .items
-        .iter()
-        .find(|item| item.id == bundle.root)
-        .ok_or_else(|| invalid_bundle("bundle root item was missing"))?;
-    let mut children = HashMap::<&BundleId, Vec<&DynamoBundleItem>>::new();
-    for item in &bundle.items {
-        if let Some(parent) = &item.parent {
-            children.entry(parent).or_default().push(item);
-        }
-    }
-
-    let mut result = HashMap::with_capacity(bundle.items.len());
-    let mut duplicate_ids = DuplicateIdGenerator::new();
-    result.insert(
-        root.id.clone(),
-        place_root(root, parent, duplicate, root_id_logic, &mut duplicate_ids)?,
-    );
-    let mut frontier = VecDeque::from([root]);
-    while let Some(mapped_parent) = frontier.pop_front() {
-        if let Some(child_items) = children.remove(&mapped_parent.id) {
-            let parent_id = result
-                .get(&mapped_parent.id)
-                .cloned()
-                .ok_or_else(|| invalid_bundle("mapped bundle parent was missing"))?;
-            for item in child_items {
-                let mapped = place_child(
-                    item,
-                    &parent_id,
-                    duplicate,
-                    item.id_logic,
-                    &mut duplicate_ids,
-                )?;
-                if result.insert(item.id.clone(), mapped).is_some() {
-                    return Err(invalid_bundle("bundle IDs were invalid"));
-                }
-                frontier.push_back(item);
-            }
-        }
-    }
-    if result.len() != bundle.items.len() {
-        return Err(invalid_bundle("bundle item parent graph was invalid"));
-    }
-    Ok(result)
 }
 
 // Internal.
@@ -572,228 +512,4 @@ async fn build_replace_plan(
         stale_rows,
         stale_root_count: stale_roots.len(),
     })
-}
-
-// Helpers.
-// ----------------------------------------------------------------------------
-
-fn place_root(
-    item: &DynamoBundleItem,
-    parent: Option<&PkSk>,
-    duplicate: bool,
-    id_logic: BundleIdLogic,
-    duplicate_ids: &mut DuplicateIdGenerator,
-) -> Result<PkSk, ServerError> {
-    match item.nesting {
-        BundleNesting::Root => {
-            if parent.is_some() {
-                return Err(invalid_bundle(
-                    "root object cannot be imported below a parent",
-                ));
-            }
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_root_id(&object_sk))
-        }
-        BundleNesting::TopLevel => {
-            let parent = parent.ok_or_else(|| invalid_bundle("child bundle requires a parent"))?;
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_top_level_id(parent, &object_sk))
-        }
-        BundleNesting::Inline => {
-            let parent = parent.ok_or_else(|| invalid_bundle("child bundle requires a parent"))?;
-            let component = object_sk_component(&item.id.original_sk, &item.id.label)?;
-            let component = destination_object_sk(component, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_inline_id(parent, &component))
-        }
-    }
-}
-
-fn place_child(
-    item: &DynamoBundleItem,
-    parent: &PkSk,
-    duplicate: bool,
-    id_logic: BundleIdLogic,
-    duplicate_ids: &mut DuplicateIdGenerator,
-) -> Result<PkSk, ServerError> {
-    match item.nesting {
-        BundleNesting::TopLevel => {
-            let object_sk =
-                destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_top_level_id(parent, &object_sk))
-        }
-        BundleNesting::Inline => {
-            let original_parent = item
-                .parent
-                .as_ref()
-                .ok_or_else(|| invalid_bundle("inline child had no parent"))?;
-            let relative = relative_child_sk(&item.id.original_sk, &original_parent.original_sk)?;
-            let relative = destination_object_sk(relative, duplicate, id_logic, duplicate_ids)?;
-            Ok(place_inline_id(parent, &relative))
-        }
-        BundleNesting::Root => Err(invalid_bundle("non-root item had root nesting")),
-    }
-}
-
-struct DuplicateIdGenerator {
-    timestamp_seed: i64,
-    timestamp_count: usize,
-}
-
-impl DuplicateIdGenerator {
-    fn new() -> Self {
-        Self {
-            timestamp_seed: Utc::now().timestamp_millis(),
-            timestamp_count: 0,
-        }
-    }
-
-    fn next_timestamp(&mut self) -> Result<i64, ServerError> {
-        let offset = i64::try_from(self.timestamp_count)
-            .map_err(|_| CriticalError::new("bundle timestamp item index overflowed i64"))?;
-        let timestamp = self
-            .timestamp_seed
-            .checked_add(offset)
-            .ok_or_else(|| CriticalError::new("bundle timestamp ID overflowed i64"))?;
-        self.timestamp_count = self
-            .timestamp_count
-            .checked_add(1)
-            .ok_or_else(|| CriticalError::new("bundle timestamp item count overflowed usize"))?;
-        Ok(timestamp)
-    }
-}
-
-fn destination_object_sk(
-    original_sk: &str,
-    duplicate: bool,
-    id_logic: BundleIdLogic,
-    duplicate_ids: &mut DuplicateIdGenerator,
-) -> Result<String, ServerError> {
-    if !duplicate {
-        return Ok(strip_ext_suffix(original_sk).to_string());
-    }
-    match id_logic {
-        BundleIdLogic::Uuid => Ok(freshen_object_sk(original_sk)),
-        BundleIdLogic::Timestamp => Ok(freshen_timestamp_object_sk(
-            original_sk,
-            duplicate_ids.next_timestamp()?,
-        )),
-        BundleIdLogic::Singleton
-        | BundleIdLogic::IndexedSingleton
-        | BundleIdLogic::BatchOptimized
-        | BundleIdLogic::SingletonExt
-        | BundleIdLogic::IndexedSingletonExt => Ok(strip_ext_suffix(original_sk).to_string()),
-        BundleIdLogic::Phantom => Err(invalid_bundle(
-            "persisted bundle item used phantom ID logic",
-        )),
-    }
-}
-
-fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> {
-    if bundle.version != DynamoBundle::VERSION {
-        return Err(invalid_bundle("unsupported bundle version"));
-    }
-    let ids = bundle
-        .items
-        .iter()
-        .map(|item| &item.id)
-        .collect::<HashSet<_>>();
-    let values = bundle
-        .items
-        .iter()
-        .map(|item| item.id.value)
-        .collect::<HashSet<_>>();
-    if ids.len() != bundle.items.len()
-        || values.len() != bundle.items.len()
-        || !ids.contains(&bundle.root)
-    {
-        return Err(invalid_bundle("bundle IDs were invalid"));
-    }
-    for item in &bundle.items {
-        let Value::Object(data) = &item.data else {
-            return Err(invalid_bundle("bundle item data was not an object"));
-        };
-        if (item.id == bundle.root) != item.parent.is_none()
-            || (item.id != bundle.root && item.nesting == BundleNesting::Root)
-            || item
-                .parent
-                .as_ref()
-                .is_some_and(|parent| !ids.contains(parent))
-        {
-            return Err(invalid_bundle("bundle item shape was invalid"));
-        }
-        if strip_ext_suffix(&item.id.original_sk) != item.id.original_sk
-            || get_object_type("", &item.id.original_sk)? != item.id.label
-        {
-            return Err(invalid_bundle("bundle item ID metadata was invalid"));
-        }
-        if [
-            "pk",
-            "sk",
-            "id",
-            AUTO_FIELDS_CREATED_AT,
-            AUTO_FIELDS_UPDATED_AT,
-        ]
-        .iter()
-        .any(|reserved| data.contains_key(*reserved))
-        {
-            return Err(invalid_bundle(
-                "bundle item data contained a reserved or regenerated field",
-            ));
-        }
-    }
-    let items = bundle
-        .items
-        .iter()
-        .map(|item| (&item.id, item))
-        .collect::<HashMap<_, _>>();
-    let root = items
-        .get(&bundle.root)
-        .ok_or_else(|| invalid_bundle("bundle root item was missing"))?;
-    if strip_ext_suffix(&bundle.source_root.sk) != bundle.source_root.sk
-        || bundle.source_root.sk != root.id.original_sk
-        || get_object_type(&bundle.source_root.pk, &bundle.source_root.sk)? != root.id.label
-        || (root.nesting == BundleNesting::Root && bundle.source_root.pk != "ROOT")
-    {
-        return Err(invalid_bundle("bundle source root metadata was invalid"));
-    }
-    let mut reference_paths = HashSet::new();
-    for reference in &bundle.references {
-        let Some(source) = items.get(&reference.source) else {
-            return Err(invalid_bundle("bundle reference source was invalid"));
-        };
-        if !reference_paths.insert((&reference.source, &reference.path)) {
-            return Err(invalid_bundle(
-                "bundle contained multiple references at the same path",
-            ));
-        }
-        if !source
-            .value_at(&reference.path)
-            .is_some_and(Value::is_string)
-        {
-            return Err(invalid_bundle(
-                "bundle reference path was invalid or not a string",
-            ));
-        }
-        if matches!(
-            &reference.target,
-            DynamoBundleReferenceTarget::Bundled { id: target, .. } if !ids.contains(target)
-        ) {
-            return Err(invalid_bundle("bundle reference target was invalid"));
-        }
-        let clear_path = match &reference.target {
-            DynamoBundleReferenceTarget::InTable { clear_path, .. }
-            | DynamoBundleReferenceTarget::OutOfTable { clear_path, .. } => Some(clear_path),
-            DynamoBundleReferenceTarget::Bundled { .. } => None,
-        };
-        if clear_path.is_some_and(|clear_path| {
-            !clear_path.is_prefix_of(&reference.path) || source.value_at(clear_path).is_none()
-        }) {
-            return Err(invalid_bundle(
-                "external reference clear path was not a containing value",
-            ));
-        }
-    }
-    Ok(())
 }

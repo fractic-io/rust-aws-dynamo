@@ -5,7 +5,7 @@ use futures_util::{stream, StreamExt as _, TryStreamExt as _};
 use serde_json::Value;
 
 use crate::{
-    errors::DynamoInvalidOperation,
+    errors::{DynamoInvalidBundle, DynamoInvalidOperation},
     ext::crud::DynamoCrudAlgorithms,
     schema::{parsing::build_dynamo_map_internal, DynamoObject, PkSk, Timestamp},
     util::{
@@ -24,7 +24,7 @@ use super::{
     impl_mapping::build_id_map,
     impl_utils::set_value_at_path,
     impl_validation::validate_bundle,
-    invalid_bundle, root_nesting, BundleId, BundleIdLogic, DynamoBundle, DynamoBundlePolicy,
+    root_nesting, BundleId, BundleIdLogic, DynamoBundle, DynamoBundlePolicy,
     DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
     DynamoImportResult, DynamoImportWarning, ImportMode,
 };
@@ -65,9 +65,9 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         .items
         .iter()
         .find(|item| item.id == bundle.root)
-        .ok_or_else(|| invalid_bundle("bundle root item was missing"))?;
+        .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
     if root_item.id.label != O::id_label() || root_item.nesting != root_nesting::<O>() {
-        return Err(invalid_bundle(
+        return Err(DynamoInvalidBundle::new(
             "bundle root type or nesting did not match the importing CRUD wrapper",
         ));
     }
@@ -80,7 +80,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
             let ids = build_id_map(&bundle, parent, true, root_id_logic)?;
             let destination_root = ids
                 .get(&bundle.root)
-                .ok_or_else(|| invalid_bundle("bundle root had no New destination ID"))?;
+                .ok_or_else(|| DynamoInvalidBundle::new("bundle root had no New destination ID"))?;
             if destination_root == &bundle.source_root {
                 return Err(DynamoInvalidOperation::new(
                     "bundle root has a fixed identity at this placement and cannot be created as \
@@ -97,9 +97,9 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         }
         ImportMode::Merge | ImportMode::Replace => {
             let preserved_ids = build_id_map(&bundle, parent, false, root_id_logic)?;
-            let preserved_root_id = preserved_ids
-                .get(&bundle.root)
-                .ok_or_else(|| invalid_bundle("bundle root had no preserved destination ID"))?;
+            let preserved_root_id = preserved_ids.get(&bundle.root).ok_or_else(|| {
+                DynamoInvalidBundle::new("bundle root had no preserved destination ID")
+            })?;
             if preserved_root_id != &bundle.source_root {
                 return Err(DynamoInvalidOperation::new(
                     "bundle reparenting is not supported for Merge or Replace; use New to \
@@ -111,14 +111,14 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         }
     };
     if id_map.values().collect::<HashSet<_>>().len() != id_map.len() {
-        return Err(invalid_bundle(
+        return Err(DynamoInvalidBundle::new(
             "multiple bundle items mapped to the same destination ID",
         ));
     }
     let root_id = id_map
         .get(&bundle.root)
         .cloned()
-        .ok_or_else(|| invalid_bundle("bundle root had no destination ID"))?;
+        .ok_or_else(|| DynamoInvalidBundle::new("bundle root had no destination ID"))?;
 
     let old = if existing.has_conflicts && replacing {
         Some(
@@ -254,15 +254,15 @@ async fn resolve_references(
         let source_index = source_indexes
             .get(&reference.source.value)
             .copied()
-            .ok_or_else(|| invalid_bundle("reference source was absent"))?;
+            .ok_or_else(|| DynamoInvalidBundle::new("reference source was absent"))?;
         let replacement = match &reference.target {
             DynamoBundleReferenceTarget::Bundled {
                 id: target,
                 encoding,
             } => {
-                let target = id_map
-                    .get(target)
-                    .ok_or_else(|| invalid_bundle("reference target had no destination ID"))?;
+                let target = id_map.get(target).ok_or_else(|| {
+                    DynamoInvalidBundle::new("reference target had no destination ID")
+                })?;
                 match encoding {
                     DynamoBundleReferenceEncoding::PkSk => Value::String(target.to_string()),
                     DynamoBundleReferenceEncoding::ForeignRef => {
@@ -321,7 +321,7 @@ fn build_write_plan(
     for item in &bundle.items {
         let id = ids
             .get(&item.id)
-            .ok_or_else(|| invalid_bundle("bundle item had no destination ID"))?;
+            .ok_or_else(|| DynamoInvalidBundle::new("bundle item had no destination ID"))?;
         match item.storage {
             DynamoBundleStorage::Standard => {
                 puts.push(
@@ -363,7 +363,9 @@ fn build_write_plan(
 
 fn partition_payload(data: &Value) -> Result<(String, Option<f64>, Option<i64>), ServerError> {
     let Value::Object(mut object) = data.clone() else {
-        return Err(invalid_bundle("partitioned item data was not an object"));
+        return Err(DynamoInvalidBundle::new(
+            "partitioned item data was not an object",
+        ));
     };
     let sort = object
         .remove(AUTO_FIELDS_SORT)
@@ -395,18 +397,24 @@ async fn prepare_new_root_data<O: DynamoObject>(
         .items
         .iter_mut()
         .find(|item| item.id == bundle.root)
-        .ok_or_else(|| invalid_bundle("bundle root item was missing"))?;
+        .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
     match &mut root.data {
         Value::Object(root_data) => {
             root_data.remove(AUTO_FIELDS_SORT);
         }
-        _ => return Err(invalid_bundle("bundle root data was not an object")),
+        _ => {
+            return Err(DynamoInvalidBundle::new(
+                "bundle root data was not an object",
+            ))
+        }
     }
     let Some(position) = position else {
         return Ok(());
     };
     let parent = parent.ok_or_else(|| {
-        invalid_bundle("ordered bundle root required a destination parent for sort placement")
+        DynamoInvalidBundle::new(
+            "ordered bundle root required a destination parent for sort placement",
+        )
     })?;
     let data = serde_json::from_value::<O::Data>(root.data.clone()).map_err(|error| {
         DynamoInvalidOperation::with_debug(
@@ -422,7 +430,9 @@ async fn prepare_new_root_data<O: DynamoObject>(
             CriticalError::new("ordered bundle root sort calculation returned no value")
         })?;
     let Value::Object(root_data) = &mut root.data else {
-        return Err(invalid_bundle("bundle root data was not an object"));
+        return Err(DynamoInvalidBundle::new(
+            "bundle root data was not an object",
+        ));
     };
     root_data.insert(
         AUTO_FIELDS_SORT.to_owned(),
@@ -445,7 +455,7 @@ async fn build_replace_plan(
         .items
         .iter()
         .find(|item| item.id == old.root)
-        .ok_or_else(|| invalid_bundle("root item was missing"))?
+        .ok_or_else(|| DynamoInvalidBundle::new("root item was missing"))?
         .id_logic;
     let old_ids = build_id_map(old, parent, false, old_root_id_logic)?;
     let desired = new_ids.values().cloned().collect::<HashSet<_>>();
@@ -459,26 +469,25 @@ async fn build_replace_plan(
         })
         .map(|item| item.id.clone())
         .collect::<HashSet<_>>();
-    let stale_roots = old
-        .items
-        .iter()
-        .filter(|item| {
-            stale.contains(&item.id)
-                && item
-                    .parent
-                    .as_ref()
-                    .is_none_or(|parent| !stale.contains(parent))
-        })
-        .map(|item| {
-            Ok((
-                old_ids
-                    .get(&item.id)
-                    .cloned()
-                    .ok_or_else(|| invalid_bundle("stale item had no destination ID"))?,
-                item.nesting,
-            ))
-        })
-        .collect::<Result<Vec<_>, ServerError>>()?;
+    let stale_roots =
+        old.items
+            .iter()
+            .filter(|item| {
+                stale.contains(&item.id)
+                    && item
+                        .parent
+                        .as_ref()
+                        .is_none_or(|parent| !stale.contains(parent))
+            })
+            .map(|item| {
+                Ok((
+                    old_ids.get(&item.id).cloned().ok_or_else(|| {
+                        DynamoInvalidBundle::new("stale item had no destination ID")
+                    })?,
+                    item.nesting,
+                ))
+            })
+            .collect::<Result<Vec<_>, ServerError>>()?;
 
     let delete_groups = stream::iter(stale_roots.iter().cloned())
         .map(|(id, nesting)| async move {

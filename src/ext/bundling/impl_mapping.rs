@@ -3,6 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use chrono::Utc;
 use fractic_server_error::{CriticalError, ServerError};
 
+use crate::errors::DynamoInvalidBundle;
 use crate::schema::{
     id_calculations::{
         freshen_object_sk, freshen_timestamp_object_sk, object_sk_component, place_inline_id,
@@ -11,9 +12,7 @@ use crate::schema::{
     PkSk,
 };
 
-use super::{
-    invalid_bundle, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
-};
+use super::{BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem};
 
 // Private interface.
 // ----------------------------------------------------------------------------
@@ -28,7 +27,7 @@ pub(crate) fn build_id_map(
         .items
         .iter()
         .find(|item| item.id == bundle.root)
-        .ok_or_else(|| invalid_bundle("bundle root item was missing"))?;
+        .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
     let mut children = HashMap::<&BundleId, Vec<&DynamoBundleItem>>::new();
     for item in &bundle.items {
         if let Some(parent) = &item.parent {
@@ -48,7 +47,7 @@ pub(crate) fn build_id_map(
             let parent_id = result
                 .get(&mapped_parent.id)
                 .cloned()
-                .ok_or_else(|| invalid_bundle("mapped bundle parent was missing"))?;
+                .ok_or_else(|| DynamoInvalidBundle::new("mapped bundle parent was missing"))?;
             for item in child_items {
                 let mapped = place_child(
                     item,
@@ -58,14 +57,16 @@ pub(crate) fn build_id_map(
                     &mut duplicate_ids,
                 )?;
                 if result.insert(item.id.clone(), mapped).is_some() {
-                    return Err(invalid_bundle("bundle IDs were invalid"));
+                    return Err(DynamoInvalidBundle::new("bundle IDs were invalid"));
                 }
                 frontier.push_back(item);
             }
         }
     }
     if result.len() != bundle.items.len() {
-        return Err(invalid_bundle("bundle item parent graph was invalid"));
+        return Err(DynamoInvalidBundle::new(
+            "bundle item parent graph was invalid",
+        ));
     }
     Ok(result)
 }
@@ -83,7 +84,7 @@ fn place_root(
     match item.nesting {
         BundleNesting::Root => {
             if parent.is_some() {
-                return Err(invalid_bundle(
+                return Err(DynamoInvalidBundle::new(
                     "root object cannot be imported below a parent",
                 ));
             }
@@ -92,13 +93,15 @@ fn place_root(
             Ok(place_root_id(&object_sk))
         }
         BundleNesting::TopLevel => {
-            let parent = parent.ok_or_else(|| invalid_bundle("child bundle requires a parent"))?;
+            let parent =
+                parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
             let object_sk =
                 destination_object_sk(&item.id.original_sk, duplicate, id_logic, duplicate_ids)?;
             Ok(place_top_level_id(parent, &object_sk))
         }
         BundleNesting::Inline => {
-            let parent = parent.ok_or_else(|| invalid_bundle("child bundle requires a parent"))?;
+            let parent =
+                parent.ok_or_else(|| DynamoInvalidBundle::new("child bundle requires a parent"))?;
             let component = object_sk_component(&item.id.original_sk, &item.id.label)?;
             let component = destination_object_sk(component, duplicate, id_logic, duplicate_ids)?;
             Ok(place_inline_id(parent, &component))
@@ -123,12 +126,12 @@ fn place_child(
             let original_parent = item
                 .parent
                 .as_ref()
-                .ok_or_else(|| invalid_bundle("inline child had no parent"))?;
+                .ok_or_else(|| DynamoInvalidBundle::new("inline child had no parent"))?;
             let relative = relative_child_sk(&item.id.original_sk, &original_parent.original_sk)?;
             let relative = destination_object_sk(relative, duplicate, id_logic, duplicate_ids)?;
             Ok(place_inline_id(parent, &relative))
         }
-        BundleNesting::Root => Err(invalid_bundle("non-root item had root nesting")),
+        BundleNesting::Root => Err(DynamoInvalidBundle::new("non-root item had root nesting")),
     }
 }
 
@@ -180,7 +183,7 @@ fn destination_object_sk(
         | BundleIdLogic::BatchOptimized
         | BundleIdLogic::SingletonExt
         | BundleIdLogic::IndexedSingletonExt => Ok(strip_ext_suffix(original_sk).to_string()),
-        BundleIdLogic::Phantom => Err(invalid_bundle(
+        BundleIdLogic::Phantom => Err(DynamoInvalidBundle::new(
             "persisted bundle item used phantom ID logic",
         )),
     }

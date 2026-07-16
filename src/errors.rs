@@ -28,6 +28,16 @@ define_client_error!(
     { details: &str }
 );
 define_client_error!(
+    DynamoInvalidBundle,
+    "Invalid Dynamo bundle: {details}.",
+    { details: &str }
+);
+define_client_error!(
+    DynamoInvalidBundleValue,
+    "Invalid Dynamo bundle value: {details}.",
+    { details: &str }
+);
+define_client_error!(
     DynamoInvalidPhantomObjectUsage,
     "Phantom objects are placement handles and cannot be persisted or mutated."
 );

@@ -7,15 +7,15 @@ use fractic_server_error::ServerError;
 use serde_json::Value;
 
 use crate::{
-    errors::DynamoInvalidOperation,
+    errors::{DynamoInvalidBundle, DynamoInvalidOperation},
     ext::crud::DynamoCrudAlgorithms,
     schema::{DynamoFieldRename, DynamoObject, IdLogic, NestingLogic, PkSk},
     util::{AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, EXPAND_DATA_RESERVED_KEY},
 };
 
 use super::{
-    invalid_bundle, BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle,
-    DynamoBundleItem, DynamoBundleReferenceEncoding,
+    BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
+    DynamoBundleReferenceEncoding,
 };
 
 // Definitions.
@@ -376,12 +376,14 @@ pub(crate) fn validate_import_policy(
 
     for (owner, omissions) in &bundle.omitted_descendants {
         if !labels.contains(owner.as_str()) {
-            return Err(invalid_bundle(
+            return Err(DynamoInvalidBundle::new(
                 "omission policy referenced an owner label absent from the bundle",
             ));
         }
         if owner.is_empty() || omissions.iter().any(String::is_empty) {
-            return Err(invalid_bundle("omission policy contained an empty label"));
+            return Err(DynamoInvalidBundle::new(
+                "omission policy contained an empty label",
+            ));
         }
     }
 
@@ -405,7 +407,7 @@ pub(crate) fn validate_import_policy(
         let local_id_logic = local.id_logic();
         let expected = if item.id == bundle.root {
             if local_id_logic != root_id_logic {
-                return Err(invalid_bundle(&format!(
+                return Err(DynamoInvalidBundle::new(&format!(
                     "root ID logic {root_id_logic:?} did not match local policy {local_id_logic:?}"
                 )));
             }
@@ -414,7 +416,7 @@ pub(crate) fn validate_import_policy(
             local_id_logic
         };
         if item.id_logic != expected {
-            return Err(invalid_bundle(&format!(
+            return Err(DynamoInvalidBundle::new(&format!(
                 "item label `{}` used ID logic {:?}, but the local policy requires {expected:?}",
                 item.id.label, item.id_logic
             )));
@@ -426,7 +428,7 @@ pub(crate) fn validate_import_policy(
                 .parent
                 .as_ref()
                 .and_then(|parent| items.get(parent))
-                .ok_or_else(|| invalid_bundle("bundle item parent was missing"))?;
+                .ok_or_else(|| DynamoInvalidBundle::new("bundle item parent was missing"))?;
             BundleItemParent::Bundled(&parent.id.label)
         };
         local.validate_schema(item, parent)?;
@@ -486,7 +488,7 @@ impl DynamoBundleObjectPolicy {
             .filter(|variant| variant.topology.matches(item.nesting, parent))
             .collect::<Vec<_>>();
         if matching.is_empty() {
-            return Err(invalid_bundle(&format!(
+            return Err(DynamoInvalidBundle::new(&format!(
                 "item label `{}` used {:?} nesting below {}, which does not match any local schema",
                 item.id.label,
                 item.nesting,
@@ -501,7 +503,7 @@ impl DynamoBundleObjectPolicy {
                 Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
             }
         }
-        Err(invalid_bundle(&format!(
+        Err(DynamoInvalidBundle::new(&format!(
             "item label `{}` data did not match its local schema: {}",
             item.id.label,
             errors.join("; "),

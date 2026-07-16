@@ -7,6 +7,7 @@ use futures_util::{stream, StreamExt as _, TryStreamExt as _};
 use serde_json::Value;
 
 use crate::{
+    errors::DynamoInvalidBundle,
     errors::{DynamoCalloutError, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
@@ -25,9 +26,9 @@ use super::{
     entities_policy::{
         configured_bundle_policy, DynamoBundleObjectPolicy, DynamoBundleReferenceMatchTarget,
     },
-    invalid_bundle, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
-    DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
-    DynamoBundleReferenceTarget, DynamoBundleStorage,
+    BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
+    DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
+    DynamoBundleStorage,
 };
 
 const QUERY_CONCURRENCY: usize = 16;
@@ -138,7 +139,7 @@ async fn export_bundle(
                 by_pk_sk
                     .get(parent)
                     .cloned()
-                    .ok_or_else(|| invalid_bundle("bundle item preceded its parent"))
+                    .ok_or_else(|| DynamoInvalidBundle::new("bundle item preceded its parent"))
             })
             .transpose()?;
         by_pk_sk.insert(item.id, id.clone());
@@ -155,7 +156,7 @@ async fn export_bundle(
     let root = by_pk_sk
         .get(&root_id)
         .cloned()
-        .ok_or_else(|| invalid_bundle("source root was not returned by DynamoDB"))?;
+        .ok_or_else(|| DynamoInvalidBundle::new("source root was not returned by DynamoDB"))?;
     let mut bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
         source_root: root_id,
@@ -258,7 +259,7 @@ fn collect_references(
             for matched in (rule.selector)(item)? {
                 let original = item
                     .value_at(&matched.path)
-                    .ok_or_else(|| invalid_bundle("reference path was missing"))?;
+                    .ok_or_else(|| DynamoInvalidBundle::new("reference path was missing"))?;
                 let target = match matched.target {
                     DynamoBundleReferenceMatchTarget::Bundled {
                         target_label,
@@ -376,14 +377,14 @@ fn normalize_rows(rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Value), 
     if partitioned {
         let collapsed = collapse_partitioned_items(rows)?;
         let [map] = collapsed.as_slice() else {
-            return Err(invalid_bundle(
+            return Err(DynamoInvalidBundle::new(
                 "partitioned logical object did not collapse to one item",
             ));
         };
         return Ok((DynamoBundleStorage::ExtPartitioned, normalized_data(map)?));
     }
     let [map] = rows.as_slice() else {
-        return Err(invalid_bundle(
+        return Err(DynamoInvalidBundle::new(
             "non-partitioned logical object had multiple physical rows",
         ));
     };
@@ -414,10 +415,10 @@ fn find_bundled_target(
 ) -> Result<BundleId, ServerError> {
     let raw = value
         .as_str()
-        .ok_or_else(|| invalid_bundle("reference value was not a string"))?;
+        .ok_or_else(|| DynamoInvalidBundle::new("reference value was not a string"))?;
     if encoding == DynamoBundleReferenceEncoding::PkSk {
-        let id =
-            PkSk::from_string(raw).map_err(|_| invalid_bundle("pk/sk reference was invalid"))?;
+        let id = PkSk::from_string(raw)
+            .map_err(|_| DynamoInvalidBundle::new("pk/sk reference was invalid"))?;
         let target = original_ids
             .get(&id)
             .filter(|target| target_label.is_none_or(|label| target.label == label))
@@ -429,7 +430,7 @@ fn find_bundled_target(
         return Ok(target.id.clone());
     }
     let reference = serde_json::from_value::<ForeignRef<'static>>(Value::String(raw.to_owned()))
-        .map_err(|_| invalid_bundle("foreign reference was invalid"))?;
+        .map_err(|_| DynamoInvalidBundle::new("foreign reference was invalid"))?;
     unique_foreign_target(bundle, reference.raw(), target_label)?
         .map(|target| target.id.clone())
         .ok_or_else(|| missing_internal_target(bundle, source, path, raw, target_label))
@@ -446,7 +447,9 @@ fn unique_foreign_target<'a>(
     });
     let target = matches.next();
     if target.is_some() && matches.next().is_some() {
-        return Err(invalid_bundle("bundled reference target was ambiguous"));
+        return Err(DynamoInvalidBundle::new(
+            "bundled reference target was ambiguous",
+        ));
     }
     Ok(target)
 }
@@ -458,7 +461,7 @@ fn missing_internal_target(
     raw_target: &str,
     target_label: Option<&str>,
 ) -> ServerError {
-    invalid_bundle(&format!(
+    DynamoInvalidBundle::new(&format!(
         "portable export rooted at `{}` was not closed: `{}` item `{}` path `{path}` requires \
          internal {}target `{raw_target}`, but that target was outside the exported scope",
         bundle.source_root,

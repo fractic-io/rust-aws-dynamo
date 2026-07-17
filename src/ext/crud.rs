@@ -137,10 +137,9 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
     pub async fn import_replace(
         &self,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::Replace, valid_out_of_table_refs)
+            .import::<O>(None, bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -258,10 +257,9 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
     pub async fn import_deep_replace(
         &self,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::Replace, valid_out_of_table_refs)
+            .import::<O>(None, bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -328,10 +326,9 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
     pub async fn import_replace(
         &self,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::Replace, valid_out_of_table_refs)
+            .import::<O>(None, bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -406,10 +403,9 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
     pub async fn import_replace(
         &self,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::Replace, valid_out_of_table_refs)
+            .import::<O>(None, bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -553,18 +549,12 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(
-                Some(parent.id()),
-                bundle,
-                ImportMode::Replace,
-                valid_out_of_table_refs,
-            )
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -724,18 +714,12 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(
-                Some(parent.id()),
-                bundle,
-                ImportMode::Replace,
-                valid_out_of_table_refs,
-            )
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -854,18 +838,12 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(
-                Some(parent.id()),
-                bundle,
-                ImportMode::Replace,
-                valid_out_of_table_refs,
-            )
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -1001,18 +979,12 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(
-                Some(parent.id()),
-                bundle,
-                ImportMode::Replace,
-                valid_out_of_table_refs,
-            )
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -1171,18 +1143,12 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(
-                Some(parent.id()),
-                bundle,
-                ImportMode::Replace,
-                valid_out_of_table_refs,
-            )
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -1304,18 +1270,12 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
         &self,
         parent: &P,
         bundle: DynamoBundle,
-        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError>
     where
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(
-                Some(parent.id()),
-                bundle,
-                ImportMode::Replace,
-                valid_out_of_table_refs,
-            )
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 

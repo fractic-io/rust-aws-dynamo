@@ -51,11 +51,15 @@ impl<'a> Bundler<'a> {
         .await
     }
 
+    /// Imports a bundle, optionally preserving New-mode out-of-table
+    /// references whose targets the caller has verified in their owning data
+    /// stores. `None` clears all such references in New mode.
     pub async fn import<O: DynamoObject>(
         &self,
         parent: Option<&PkSk>,
         bundle: DynamoBundle,
         mode: ImportMode,
+        valid_out_of_table_refs: Option<&HashSet<PkSk>>,
     ) -> Result<DynamoImportResult, ServerError> {
         impl_import::import_bundle::<O>(
             self.dynamo_util,
@@ -63,26 +67,7 @@ impl<'a> Bundler<'a> {
             parent,
             bundle,
             mode,
-        )
-        .await
-    }
-
-    /// Imports while preserving New-mode out-of-table references whose targets
-    /// the caller has independently verified in the owning data store.
-    pub async fn import_resolving_out_of_table<O: DynamoObject>(
-        &self,
-        parent: Option<&PkSk>,
-        bundle: DynamoBundle,
-        mode: ImportMode,
-        resolved_out_of_table: &HashSet<PkSk>,
-    ) -> Result<DynamoImportResult, ServerError> {
-        impl_import::import_bundle_resolving_out_of_table::<O>(
-            self.dynamo_util,
-            self.crud_algorithms,
-            parent,
-            bundle,
-            mode,
-            resolved_out_of_table,
+            valid_out_of_table_refs,
         )
         .await
     }

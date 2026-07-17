@@ -121,7 +121,7 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
 
     pub async fn import(&self, bundle: DynamoBundle) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::New { position: None })
+            .import::<O>(None, bundle, ImportMode::New { position: None }, None)
             .await
     }
 
@@ -130,7 +130,7 @@ impl<O: DynamoObject> ManageRootUnordered<O> {
         bundle: DynamoBundle,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::Replace)
+            .import::<O>(None, bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -235,24 +235,7 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
         bundle: DynamoBundle,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::New { position: None })
-            .await
-    }
-
-    /// Imports a new root while retaining only out-of-table references that
-    /// the caller has independently verified.
-    pub async fn import_deep_resolving_out_of_table(
-        &self,
-        bundle: DynamoBundle,
-        resolved_out_of_table: &std::collections::HashSet<PkSk>,
-    ) -> Result<DynamoImportResult, ServerError> {
-        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import_resolving_out_of_table::<O>(
-                None,
-                bundle,
-                ImportMode::New { position: None },
-                resolved_out_of_table,
-            )
+            .import::<O>(None, bundle, ImportMode::New { position: None }, None)
             .await
     }
 
@@ -261,7 +244,7 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
         bundle: DynamoBundle,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::Replace)
+            .import::<O>(None, bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -330,7 +313,7 @@ impl<O: DynamoObject> ManageRootSingleton<O> {
         bundle: DynamoBundle,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::Replace)
+            .import::<O>(None, bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -407,7 +390,7 @@ impl<O: DynamoObject> ManageRootIndexedSingleton<O> {
         bundle: DynamoBundle,
     ) -> Result<DynamoImportResult, ServerError> {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(None, bundle, ImportMode::Replace)
+            .import::<O>(None, bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -541,6 +524,7 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
                 ImportMode::New {
                     position: Some(position),
                 },
+                None,
             )
             .await
     }
@@ -554,7 +538,7 @@ impl<O: DynamoObject> ManageChildOrdered<O> {
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -704,6 +688,7 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
                 ImportMode::New {
                     position: Some(position),
                 },
+                None,
             )
             .await
     }
@@ -717,7 +702,7 @@ impl<O: DynamoObject> ManageChildOrderedWithChildren<O> {
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -826,6 +811,7 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
                 Some(parent.id()),
                 bundle,
                 ImportMode::New { position: None },
+                None,
             )
             .await
     }
@@ -839,7 +825,7 @@ impl<O: DynamoObject> ManageChildUnordered<O> {
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -965,6 +951,7 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
                 Some(parent.id()),
                 bundle,
                 ImportMode::New { position: None },
+                None,
             )
             .await
     }
@@ -978,7 +965,7 @@ impl<O: DynamoObject> ManageChildUnorderedWithChildren<O> {
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -1127,6 +1114,7 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
                 Some(parent.id()),
                 bundle,
                 ImportMode::New { position: None },
+                None,
             )
             .await
     }
@@ -1140,7 +1128,7 @@ impl<O: DynamoObject> ManageChildSingleton<O> {
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 
@@ -1252,6 +1240,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
                 Some(parent.id()),
                 bundle,
                 ImportMode::New { position: None },
+                None,
             )
             .await
     }
@@ -1265,7 +1254,7 @@ impl<O: DynamoObject> ManageChildIndexedSingleton<O> {
         P: DynamoObject + ParentOf<O>,
     {
         Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
-            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace)
+            .import::<O>(Some(parent.id()), bundle, ImportMode::Replace, None)
             .await
     }
 

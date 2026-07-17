@@ -63,27 +63,9 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     util: &DynamoUtil,
     algorithms: &dyn DynamoCrudAlgorithms,
     parent: Option<&PkSk>,
-    bundle: DynamoBundle,
-    mode: ImportMode,
-) -> Result<DynamoImportResult, ServerError> {
-    import_bundle_resolving_out_of_table::<O>(
-        util,
-        algorithms,
-        parent,
-        bundle,
-        mode,
-        &HashSet::new(),
-    )
-    .await
-}
-
-pub(crate) async fn import_bundle_resolving_out_of_table<O: DynamoObject>(
-    util: &DynamoUtil,
-    algorithms: &dyn DynamoCrudAlgorithms,
-    parent: Option<&PkSk>,
     mut bundle: DynamoBundle,
     mode: ImportMode,
-    resolved_out_of_table: &HashSet<PkSk>,
+    valid_out_of_table_refs: Option<&HashSet<PkSk>>,
 ) -> Result<DynamoImportResult, ServerError> {
     validate_bundle(&bundle)?;
     let root_item = bundle
@@ -176,7 +158,7 @@ pub(crate) async fn import_bundle_resolving_out_of_table<O: DynamoObject>(
         &id_map,
         created_new,
         replace_plan.as_ref().map(|plan| &plan.delete_ids),
-        resolved_out_of_table,
+        valid_out_of_table_refs,
     )
     .await?;
     if created_new {
@@ -270,7 +252,7 @@ async fn resolve_references(
     id_map: &HashMap<BundleId, PkSk>,
     created_new: bool,
     pending_deletes: Option<&HashSet<PkSk>>,
-    resolved_out_of_table: &HashSet<PkSk>,
+    valid_out_of_table_refs: Option<&HashSet<PkSk>>,
 ) -> Result<Vec<DynamoImportWarning>, ServerError> {
     let in_table_ids = bundle
         .references
@@ -339,7 +321,8 @@ async fn resolve_references(
                 continue;
             }
             DynamoBundleReferenceTarget::OutOfTable { lookup_id, .. }
-                if !created_new || resolved_out_of_table.contains(lookup_id) =>
+                if !created_new
+                    || valid_out_of_table_refs.is_some_and(|refs| refs.contains(lookup_id)) =>
             {
                 continue;
             }

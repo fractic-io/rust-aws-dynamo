@@ -239,6 +239,23 @@ impl<O: DynamoObject> ManageRootUnorderedWithChildren<O> {
             .await
     }
 
+    /// Imports a new root while retaining only out-of-table references that
+    /// the caller has independently verified.
+    pub async fn import_deep_resolving_out_of_table(
+        &self,
+        bundle: DynamoBundle,
+        resolved_out_of_table: &std::collections::HashSet<PkSk>,
+    ) -> Result<DynamoImportResult, ServerError> {
+        Bundler::new(&self.dynamo_util, &*self.crud_algorithms)
+            .import_resolving_out_of_table::<O>(
+                None,
+                bundle,
+                ImportMode::New { position: None },
+                resolved_out_of_table,
+            )
+            .await
+    }
+
     pub async fn import_deep_replace(
         &self,
         bundle: DynamoBundle,

@@ -13,6 +13,8 @@ pub use entities_policy::{
     DynamoBundlePolicy, DynamoBundleReferenceMatch, DynamoBundleReferenceRule,
 };
 
+use std::collections::HashSet;
+
 use fractic_server_error::ServerError;
 
 use crate::{
@@ -63,6 +65,34 @@ impl<'a> Bundler<'a> {
             mode,
         )
         .await
+    }
+
+    /// Imports while preserving New-mode out-of-table references whose targets
+    /// the caller has independently verified in the owning data store.
+    pub async fn import_resolving_out_of_table<O: DynamoObject>(
+        &self,
+        parent: Option<&PkSk>,
+        bundle: DynamoBundle,
+        mode: ImportMode,
+        resolved_out_of_table: &HashSet<PkSk>,
+    ) -> Result<DynamoImportResult, ServerError> {
+        impl_import::import_bundle_resolving_out_of_table::<O>(
+            self.dynamo_util,
+            self.crud_algorithms,
+            parent,
+            bundle,
+            mode,
+            resolved_out_of_table,
+        )
+        .await
+    }
+}
+
+impl DynamoBundle {
+    /// Validates the portable bundle's version, topology, IDs, data shape, and
+    /// reference paths without performing database access.
+    pub fn validate(&self) -> Result<(), ServerError> {
+        utils_bundle_validation::validate_bundle(self)
     }
 }
 

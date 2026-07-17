@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -37,7 +37,7 @@ use super::{
         configured_bundle_policy, validate_import_policy, DynamoBundleReferenceMatchTarget,
     },
     impl_export::export_from_config,
-    impl_import::import_bundle,
+    impl_import::{import_bundle, import_bundle_resolving_out_of_table},
     utils_id_mapping::build_id_map,
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
     DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
@@ -1430,6 +1430,70 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
             DynamoImportWarning::ZeroedOutOfTableReference,
         ]
     );
+    assert!(result.created_new);
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn new_preserves_independently_resolved_out_of_table_references() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let out_of_table = PkSk {
+        pk: "ROOT".into(),
+        sk: "ROUTE#outside".into(),
+    };
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![bundle_item(
+            root.clone(),
+            None,
+            BundleNesting::Root,
+            json!({"route": out_of_table.to_string()}),
+        )],
+        references: vec![DynamoBundleReference {
+            source: root,
+            path: BundleDataPath::field("route"),
+            target: DynamoBundleReferenceTarget::OutOfTable {
+                lookup_id: out_of_table.clone(),
+                clear_path: BundleDataPath::field("route"),
+            },
+        }],
+    };
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(1)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(table, vec![])])))
+                .build())
+        });
+    let expected = out_of_table.clone();
+    backend
+        .expect_batch_put_item()
+        .times(1)
+        .returning(move |_, items| {
+            assert_eq!(items[0]["route"], AttributeValue::S(expected.to_string()));
+            Ok(BatchWriteItemOutput::builder().build())
+        });
+
+    let result = import_bundle_resolving_out_of_table::<TestRoot>(
+        &util(backend),
+        &TestAlgorithms,
+        None,
+        bundle,
+        ImportMode::New { position: None },
+        &HashSet::from([out_of_table]),
+    )
+    .await
+    .unwrap();
+
+    assert!(result.warnings.is_empty());
     assert!(result.created_new);
 }
 

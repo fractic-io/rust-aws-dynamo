@@ -65,6 +65,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     parent: Option<&PkSk>,
     mut bundle: DynamoBundle,
     mode: ImportMode,
+    valid_out_of_table_refs: Option<&HashSet<PkSk>>,
 ) -> Result<DynamoImportResult, ServerError> {
     validate_bundle(&bundle)?;
     let root_item = bundle
@@ -157,6 +158,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         &id_map,
         created_new,
         replace_plan.as_ref().map(|plan| &plan.delete_ids),
+        valid_out_of_table_refs,
     )
     .await?;
     if created_new {
@@ -250,6 +252,7 @@ async fn resolve_references(
     id_map: &HashMap<BundleId, PkSk>,
     created_new: bool,
     pending_deletes: Option<&HashSet<PkSk>>,
+    valid_out_of_table_refs: Option<&HashSet<PkSk>>,
 ) -> Result<Vec<DynamoImportWarning>, ServerError> {
     let in_table_ids = bundle
         .references
@@ -317,7 +320,12 @@ async fn resolve_references(
                 missing_clears.push((source_index, clear_path));
                 continue;
             }
-            DynamoBundleReferenceTarget::OutOfTable { .. } if !created_new => continue,
+            DynamoBundleReferenceTarget::OutOfTable { lookup_id, .. }
+                if !created_new
+                    || valid_out_of_table_refs.is_some_and(|refs| refs.contains(lookup_id)) =>
+            {
+                continue;
+            }
             DynamoBundleReferenceTarget::OutOfTable { clear_path, .. } => {
                 warnings.push(DynamoImportWarning::ZeroedOutOfTableReference);
                 missing_clears.push((source_index, clear_path));
@@ -508,15 +516,18 @@ async fn build_replace_plan(
             .collect::<Result<Vec<_>, ServerError>>()?;
 
     let no_omissions = BTreeMap::new();
-    let delete_groups = stream::iter(&stale_roots)
-        .map(|(id, nesting)| async {
-            let (items, _) =
-                collect_bundle_items(util, policy, id, *nesting, Some(&no_omissions)).await?;
-            items
-                .into_iter()
-                .flat_map(|item| item.rows)
-                .map(|row| Ok((PkSk::from_map(&row)?, row)))
-                .collect::<Result<Vec<_>, ServerError>>()
+    let delete_groups = stream::iter(stale_roots.iter().cloned())
+        .map(|(id, nesting)| {
+            let no_omissions = &no_omissions;
+            async move {
+                let (items, _) =
+                    collect_bundle_items(util, policy, &id, nesting, Some(no_omissions)).await?;
+                items
+                    .into_iter()
+                    .flat_map(|item| item.rows)
+                    .map(|row| Ok((PkSk::from_map(&row)?, row)))
+                    .collect::<Result<Vec<_>, ServerError>>()
+            }
         })
         .buffer_unordered(DELETE_CONCURRENCY)
         .try_collect::<Vec<_>>()

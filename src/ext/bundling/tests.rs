@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -1116,6 +1116,7 @@ async fn merge_and_replace_reject_reparenting_before_database_access() {
             Some(&destination_parent),
             bundle.clone(),
             mode,
+            None,
         )
         .await
         .unwrap_err();
@@ -1153,6 +1154,7 @@ async fn import_rejects_singleton_destination_parents_before_database_access() {
         }),
         bundle,
         ImportMode::New { position: None },
+        None,
     )
     .await
     .unwrap_err();
@@ -1220,6 +1222,7 @@ async fn ordered_new_gets_a_fresh_id_and_is_placed_last() {
         ImportMode::New {
             position: Some(DynamoInsertPosition::Last),
         },
+        None,
     )
     .await
     .unwrap();
@@ -1276,6 +1279,7 @@ async fn new_without_an_insertion_position_clears_the_source_sort() {
         Some(&parent),
         bundle,
         ImportMode::New { position: None },
+        None,
     )
     .await
     .unwrap();
@@ -1416,6 +1420,7 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
         None,
         bundle.clone(),
         ImportMode::New { position: None },
+        None,
     )
     .await
     .unwrap();
@@ -1430,6 +1435,70 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
             DynamoImportWarning::ZeroedOutOfTableReference,
         ]
     );
+    assert!(result.created_new);
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn new_preserves_valid_out_of_table_references() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let out_of_table = PkSk {
+        pk: "ROOT".into(),
+        sk: "ROUTE#outside".into(),
+    };
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![bundle_item(
+            root.clone(),
+            None,
+            BundleNesting::Root,
+            json!({"route": out_of_table.to_string()}),
+        )],
+        references: vec![DynamoBundleReference {
+            source: root,
+            path: BundleDataPath::field("route"),
+            target: DynamoBundleReferenceTarget::OutOfTable {
+                lookup_id: out_of_table.clone(),
+                clear_path: BundleDataPath::field("route"),
+            },
+        }],
+    };
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(1)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(table, vec![])])))
+                .build())
+        });
+    let expected = out_of_table.clone();
+    backend
+        .expect_batch_put_item()
+        .times(1)
+        .returning(move |_, items| {
+            assert_eq!(items[0]["route"], AttributeValue::S(expected.to_string()));
+            Ok(BatchWriteItemOutput::builder().build())
+        });
+
+    let result = import_bundle::<TestRoot>(
+        &util(backend),
+        &TestAlgorithms,
+        None,
+        bundle,
+        ImportMode::New { position: None },
+        Some(&HashSet::from([out_of_table])),
+    )
+    .await
+    .unwrap();
+
+    assert!(result.warnings.is_empty());
     assert!(result.created_new);
 }
 
@@ -1503,6 +1572,7 @@ async fn external_reference_to_an_incoming_id_is_not_cleared() {
         None,
         bundle,
         ImportMode::Merge,
+        None,
     )
     .await
     .unwrap();
@@ -1588,6 +1658,7 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
         None,
         bundle,
         ImportMode::Merge,
+        None,
     )
     .await
     .unwrap();
@@ -1720,6 +1791,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
         None,
         bundle,
         ImportMode::Replace,
+        None,
     )
     .await
     .unwrap();
@@ -1769,6 +1841,7 @@ async fn new_rejects_a_fixed_singleton_root_at_its_source_placement() {
         None,
         bundle,
         ImportMode::New { position: None },
+        None,
     )
     .await
     .is_err());
@@ -1806,6 +1879,7 @@ async fn new_rejects_a_fixed_batch_root_at_its_source_placement() {
         Some(&parent),
         bundle,
         ImportMode::New { position: None },
+        None,
     )
     .await
     .unwrap_err();
@@ -1876,6 +1950,7 @@ async fn new_allows_a_fixed_batch_root_below_a_different_parent() {
         }),
         bundle,
         ImportMode::New { position: None },
+        None,
     )
     .await
     .unwrap();
@@ -1920,6 +1995,7 @@ async fn import_rejects_reference_paths_that_are_not_present() {
         None,
         bundle,
         ImportMode::Merge,
+        None,
     )
     .await
     .is_err());

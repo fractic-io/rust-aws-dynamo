@@ -51,9 +51,8 @@ impl<'a> Bundler<'a> {
         .await
     }
 
-    /// Imports a bundle, optionally preserving New-mode out-of-table
-    /// references whose targets the caller has verified in their owning data
-    /// stores. `None` clears all such references in New mode.
+    /// Imports a bundle. On ImportMode::New, all external references are zeroed
+    /// unless included in [`valid_out_of_table_refs`].
     pub async fn import<O: DynamoObject>(
         &self,
         parent: Option<&PkSk>,

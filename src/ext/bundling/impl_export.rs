@@ -238,7 +238,7 @@ pub(crate) async fn collect_bundle_items(
     Ok((collected, recorded))
 }
 
-fn collect_references(
+pub(crate) fn collect_references(
     policy: &DynamoBundlePolicy,
     bundle: &DynamoBundle,
     original_ids: &HashMap<PkSk, BundleId>,
@@ -286,6 +286,36 @@ fn collect_references(
                     source: item.id.clone(),
                     path: matched.path,
                     target,
+                });
+            }
+        }
+    }
+    Ok(references)
+}
+
+pub(crate) fn collect_out_of_table_references(
+    policy: &DynamoBundlePolicy,
+    bundle: &DynamoBundle,
+) -> Result<Vec<DynamoBundleReference>, ServerError> {
+    let mut references = Vec::new();
+    for item in &bundle.items {
+        let object = policy.require(&item.id.label)?;
+        for rule in object.reference_rules() {
+            for matched in (rule.selector)(item)? {
+                let DynamoBundleReferenceMatchTarget::OutOfTable {
+                    lookup_id,
+                    clear_path,
+                } = matched.target
+                else {
+                    continue;
+                };
+                references.push(DynamoBundleReference {
+                    source: item.id.clone(),
+                    path: matched.path,
+                    target: DynamoBundleReferenceTarget::OutOfTable {
+                        lookup_id,
+                        clear_path,
+                    },
                 });
             }
         }

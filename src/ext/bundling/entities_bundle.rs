@@ -125,7 +125,9 @@ pub enum DynamoBundleReferenceTarget {
         clear_path: BundleDataPath,
     },
     /// The target is stored outside the importing table and cannot be checked.
-    /// Merge and Replace preserve the bundled value; New clears it.
+    /// Merge preserves the bundled value. Replace preserves the local value by
+    /// default, while New clears it; either mode can accept a caller-validated
+    /// bundled value.
     OutOfTable {
         lookup_id: PkSk,
         /// The reference path itself for scalar options, or a containing path

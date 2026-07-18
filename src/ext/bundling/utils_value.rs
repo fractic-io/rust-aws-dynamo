@@ -32,6 +32,14 @@ pub(crate) fn set_value_at_path(
             *value = replacement;
             return Ok(());
         };
+        if rest.is_empty() {
+            if let BundleDataPathSegment::Field(field) = segment {
+                if let Value::Object(map) = value {
+                    map.insert(field.clone(), replacement);
+                    return Ok(());
+                }
+            }
+        }
         let next = match (segment, value) {
             (BundleDataPathSegment::Field(field), Value::Object(map)) => map.get_mut(field),
             (BundleDataPathSegment::Index(index), Value::Array(list)) => list.get_mut(*index),

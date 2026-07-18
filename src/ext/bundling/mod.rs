@@ -51,8 +51,10 @@ impl<'a> Bundler<'a> {
         .await
     }
 
-    /// Imports a bundle. On ImportMode::New, all external references are zeroed
-    /// unless included in [`valid_out_of_table_refs`].
+    /// Imports a bundle. On ImportMode::New, out-of-table references are zeroed
+    /// unless included in [`valid_out_of_table_refs`]. On ImportMode::Replace,
+    /// the local association is preserved unless the bundled target is included
+    /// in the validated set.
     pub async fn import<O: DynamoObject>(
         &self,
         parent: Option<&PkSk>,

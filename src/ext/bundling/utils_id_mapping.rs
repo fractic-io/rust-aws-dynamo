@@ -70,6 +70,64 @@ pub(crate) fn build_id_map(
     Ok(result)
 }
 
+/// Reconstructs the IDs represented by the bundle before any New remapping.
+pub(crate) fn build_source_id_map(
+    bundle: &DynamoBundle,
+) -> Result<HashMap<BundleId, PkSk>, ServerError> {
+    let root = bundle
+        .items
+        .iter()
+        .find(|item| item.id == bundle.root)
+        .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
+    let mut children = HashMap::<&BundleId, Vec<&DynamoBundleItem>>::new();
+    for item in &bundle.items {
+        if let Some(parent) = &item.parent {
+            children.entry(parent).or_default().push(item);
+        }
+    }
+
+    let mut result = HashMap::with_capacity(bundle.items.len());
+    result.insert(root.id.clone(), bundle.source_root.clone());
+    let mut frontier = VecDeque::from([root]);
+    while let Some(mapped_parent) = frontier.pop_front() {
+        if let Some(child_items) = children.remove(&mapped_parent.id) {
+            let parent_id = result
+                .get(&mapped_parent.id)
+                .cloned()
+                .ok_or_else(|| DynamoInvalidBundle::new("mapped bundle parent was missing"))?;
+            for item in child_items {
+                let id = match item.nesting {
+                    BundleNesting::TopLevel => PkSk {
+                        pk: parent_id.sk.clone(),
+                        sk: RawIdPath::new(&item.id.original_sk)
+                            .logical_path()
+                            .to_owned(),
+                    },
+                    BundleNesting::Inline => PkSk {
+                        pk: parent_id.pk.clone(),
+                        sk: RawIdPath::new(&item.id.original_sk)
+                            .logical_path()
+                            .to_owned(),
+                    },
+                    BundleNesting::Root => {
+                        return Err(DynamoInvalidBundle::new("non-root item had root nesting"));
+                    }
+                };
+                if result.insert(item.id.clone(), id).is_some() {
+                    return Err(DynamoInvalidBundle::new("bundle IDs were invalid"));
+                }
+                frontier.push_back(item);
+            }
+        }
+    }
+    if result.len() != bundle.items.len() {
+        return Err(DynamoInvalidBundle::new(
+            "bundle item parent graph was invalid",
+        ));
+    }
+    Ok(result)
+}
+
 // Internal.
 // ----------------------------------------------------------------------------
 

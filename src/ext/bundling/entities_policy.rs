@@ -185,8 +185,9 @@ impl DynamoBundleObjectPolicy {
         self
     }
 
-    /// Preserves an out-of-table `PkSk` on Merge and Replace without checking
-    /// it, and clears it with a warning when importing as New.
+    /// Preserves an out-of-table `PkSk` on Merge. Replace preserves the local
+    /// value by default, while New clears it; either mode can accept a
+    /// caller-validated bundled value.
     pub fn out_of_table_pksk(&mut self, path: &'static str) -> &mut Self {
         let path = BundleDataPath::dotted(path);
         self.reference_rules

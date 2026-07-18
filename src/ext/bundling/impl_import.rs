@@ -24,16 +24,17 @@ use crate::{
 
 use super::{
     entities_policy::{configured_bundle_policy, validate_import_policy},
-    impl_export::{
-        collect_bundle_items, collect_out_of_table_references, collect_references,
-        export_with_omissions,
+    impl_export::{collect_bundle_items, export_with_omissions},
+    reference_manifest::{
+        derive_out_of_table_references, derive_reference_manifest, BundleReference,
+        BundleReferenceTarget,
     },
     utils_bundle_validation::validate_bundle,
     utils_id_mapping::{build_id_map, build_source_id_map},
-    utils_value::set_value_at_path,
+    utils_value::{set_value_at_path, upsert_value_at_path},
     BundleDataPath, BundleId, BundleIdLogic, DynamoBundle, DynamoBundlePolicy,
-    DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget, DynamoBundleStorage,
-    DynamoImportResult, DynamoImportWarning, ImportMode,
+    DynamoBundleReferenceEncoding, DynamoBundleStorage, DynamoImportResult, DynamoImportWarning,
+    ImportMode,
 };
 
 const DELETE_CONCURRENCY: usize = 16;
@@ -55,6 +56,11 @@ struct ReplacePlan {
     delete_ids: HashSet<PkSk>,
     stale_rows: Vec<DynamoMap>,
     stale_root_count: usize,
+}
+
+struct IncomingOutOfTableAssociation {
+    reference_count: usize,
+    all_targets_valid: bool,
 }
 
 struct PartitionPayload<'a>(&'a serde_json::Map<String, Value>);
@@ -89,6 +95,12 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let policy = configured_bundle_policy(algorithms);
     let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic, parent)?;
+    let source_ids = build_source_id_map(&bundle)?;
+    let original_ids = source_ids
+        .into_iter()
+        .map(|(bundle_id, id)| (id, bundle_id))
+        .collect::<HashMap<_, _>>();
+    let references = derive_reference_manifest(&policy, &bundle, &original_ids)?;
     let replacing = matches!(mode, ImportMode::Replace);
     let (id_map, existing, created_new, new_position) = match mode {
         ImportMode::New { position } => {
@@ -130,15 +142,13 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
             "multiple bundle items mapped to the same destination ID",
         ));
     }
-    let source_ids = build_source_id_map(&bundle)?;
-    let original_ids = source_ids
-        .into_iter()
-        .map(|(bundle_id, id)| (id, bundle_id))
-        .collect::<HashMap<_, _>>();
-    // The importing application's policy is authoritative. Rebuilding the
-    // manifest binds external lookup IDs to the stored values and prevents an
-    // omitted declaration from bypassing reference handling.
-    bundle.references = collect_references(&policy, &bundle, &original_ids)?;
+    let (replace_out_of_table_references, references) = if replacing {
+        references.into_iter().partition(|reference| {
+            matches!(reference.target, BundleReferenceTarget::OutOfTable { .. })
+        })
+    } else {
+        (Vec::new(), references)
+    };
     let root_id = id_map
         .get(&bundle.root)
         .cloned()
@@ -167,6 +177,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     let mut warnings = if replacing {
         reconcile_replace_out_of_table_references(
             &mut bundle,
+            &replace_out_of_table_references,
             &id_map,
             old.as_ref(),
             &policy,
@@ -179,6 +190,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
         resolve_references(
             util,
             &mut bundle,
+            &references,
             &id_map,
             created_new,
             replace_plan.as_ref().map(|plan| &plan.delete_ids),
@@ -227,6 +239,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
 
 pub(super) fn reconcile_replace_out_of_table_references(
     bundle: &mut DynamoBundle,
+    references: &[BundleReference],
     destination_ids: &HashMap<BundleId, PkSk>,
     old: Option<&DynamoBundle>,
     policy: &DynamoBundlePolicy,
@@ -242,9 +255,8 @@ pub(super) fn reconcile_replace_out_of_table_references(
             .iter()
             .map(|item| (&item.id, item))
             .collect::<HashMap<_, _>>();
-        for reference in collect_out_of_table_references(policy, old)? {
-            let DynamoBundleReferenceTarget::OutOfTable { clear_path, .. } = reference.target
-            else {
+        for reference in derive_out_of_table_references(policy, old)? {
+            let BundleReferenceTarget::OutOfTable { clear_path, .. } = reference.target else {
                 unreachable!("collector returned a non-out-of-table reference")
             };
             let source_id = old_ids.get(&reference.source).cloned().ok_or_else(|| {
@@ -261,9 +273,9 @@ pub(super) fn reconcile_replace_out_of_table_references(
         }
     }
 
-    let mut incoming = HashMap::<AssociationKey, (usize, bool)>::new();
-    for reference in &bundle.references {
-        let DynamoBundleReferenceTarget::OutOfTable {
+    let mut incoming = HashMap::<AssociationKey, IncomingOutOfTableAssociation>::new();
+    for reference in references {
+        let BundleReferenceTarget::OutOfTable {
             lookup_id,
             clear_path,
         } = &reference.target
@@ -274,11 +286,15 @@ pub(super) fn reconcile_replace_out_of_table_references(
             .get(&reference.source)
             .cloned()
             .ok_or_else(|| DynamoInvalidBundle::new("reference source had no destination ID"))?;
-        let entry = incoming
-            .entry((source_id, clear_path.clone()))
-            .or_insert((0, true));
-        entry.0 += 1;
-        entry.1 &= valid_out_of_table_refs.is_some_and(|refs| refs.contains(lookup_id));
+        let entry = incoming.entry((source_id, clear_path.clone())).or_insert(
+            IncomingOutOfTableAssociation {
+                reference_count: 0,
+                all_targets_valid: true,
+            },
+        );
+        entry.reference_count += 1;
+        entry.all_targets_valid &=
+            valid_out_of_table_refs.is_some_and(|refs| refs.contains(lookup_id));
     }
 
     let source_indexes = bundle
@@ -294,8 +310,8 @@ pub(super) fn reconcile_replace_out_of_table_references(
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
     let mut warnings = Vec::new();
-    for ((source_id, clear_path), (reference_count, all_valid)) in &incoming {
-        if *all_valid {
+    for ((source_id, clear_path), association) in &incoming {
+        if association.all_targets_valid {
             continue;
         }
         let source_index = source_indexes
@@ -314,7 +330,7 @@ pub(super) fn reconcile_replace_out_of_table_references(
         if !local_values.contains_key(&(source_id.clone(), clear_path.clone())) {
             warnings.extend(std::iter::repeat_n(
                 DynamoImportWarning::ZeroedOutOfTableReference,
-                *reference_count,
+                association.reference_count,
             ));
         }
     }
@@ -325,14 +341,8 @@ pub(super) fn reconcile_replace_out_of_table_references(
         let Some(source_index) = source_indexes.get(&source_id).copied() else {
             continue;
         };
-        set_value_at_path(&mut bundle.items[source_index].data, &clear_path, value)?;
+        upsert_value_at_path(&mut bundle.items[source_index].data, &clear_path, value)?;
     }
-    bundle.references.retain(|reference| {
-        !matches!(
-            reference.target,
-            DynamoBundleReferenceTarget::OutOfTable { .. }
-        )
-    });
     Ok(warnings)
 }
 
@@ -388,18 +398,19 @@ async fn find_existing(
 async fn resolve_references(
     util: &DynamoUtil,
     bundle: &mut DynamoBundle,
+    references: &[BundleReference],
     id_map: &HashMap<BundleId, PkSk>,
     created_new: bool,
     pending_deletes: Option<&HashSet<PkSk>>,
     valid_out_of_table_refs: Option<&HashSet<PkSk>>,
 ) -> Result<Vec<DynamoImportWarning>, ServerError> {
-    let in_table_ids = bundle
-        .references
+    let in_table_ids = references
         .iter()
         .filter_map(|reference| match &reference.target {
-            DynamoBundleReferenceTarget::InTable { lookup_id, .. } => Some(lookup_id.clone()),
-            DynamoBundleReferenceTarget::Bundled { .. }
-            | DynamoBundleReferenceTarget::OutOfTable { .. } => None,
+            BundleReferenceTarget::InTable { lookup_id, .. } => Some(lookup_id.clone()),
+            BundleReferenceTarget::Bundled { .. } | BundleReferenceTarget::OutOfTable { .. } => {
+                None
+            }
         })
         .collect::<HashSet<_>>();
     let mut existing_in_table = if in_table_ids.is_empty() {
@@ -424,13 +435,13 @@ async fn resolve_references(
         .collect::<HashMap<_, _>>();
     let mut warnings = Vec::new();
     let mut missing_clears = Vec::new();
-    for reference in &bundle.references {
+    for reference in references {
         let source_index = source_indexes
             .get(&reference.source.value)
             .copied()
             .ok_or_else(|| DynamoInvalidBundle::new("reference source was absent"))?;
         let replacement = match &reference.target {
-            DynamoBundleReferenceTarget::Bundled {
+            BundleReferenceTarget::Bundled {
                 id: target,
                 encoding,
             } => {
@@ -449,23 +460,23 @@ async fn resolve_references(
                     }
                 }
             }
-            DynamoBundleReferenceTarget::InTable { lookup_id, .. }
+            BundleReferenceTarget::InTable { lookup_id, .. }
                 if existing_in_table.contains(lookup_id) =>
             {
                 continue;
             }
-            DynamoBundleReferenceTarget::InTable { clear_path, .. } => {
+            BundleReferenceTarget::InTable { clear_path, .. } => {
                 warnings.push(DynamoImportWarning::ZeroedInTableReference);
                 missing_clears.push((source_index, clear_path));
                 continue;
             }
-            DynamoBundleReferenceTarget::OutOfTable { lookup_id, .. }
+            BundleReferenceTarget::OutOfTable { lookup_id, .. }
                 if !created_new
                     || valid_out_of_table_refs.is_some_and(|refs| refs.contains(lookup_id)) =>
             {
                 continue;
             }
-            DynamoBundleReferenceTarget::OutOfTable { clear_path, .. } => {
+            BundleReferenceTarget::OutOfTable { clear_path, .. } => {
                 warnings.push(DynamoImportWarning::ZeroedOutOfTableReference);
                 missing_clears.push((source_index, clear_path));
                 continue;

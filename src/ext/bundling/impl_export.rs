@@ -11,8 +11,7 @@ use crate::{
     errors::{DynamoCalloutError, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        identifiers::RawIdPath, parsing::dynamo_map_to_serde_value, pk_sk::id_fields_from_map,
-        ForeignRef, PkSk,
+        identifiers::RawIdPath, parsing::dynamo_map_to_serde_value, pk_sk::id_fields_from_map, PkSk,
     },
     util::{
         collapse_helpers::{collapse_partitioned_items, ext_base_id},
@@ -22,11 +21,9 @@ use crate::{
 };
 
 use super::{
-    entities_policy::{
-        configured_bundle_policy, DynamoBundleObjectPolicy, DynamoBundleReferenceMatchTarget,
-    },
+    entities_policy::{configured_bundle_policy, DynamoBundleObjectPolicy},
+    reference_manifest::derive_reference_manifest,
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
-    DynamoBundleReference, DynamoBundleReferenceEncoding, DynamoBundleReferenceTarget,
     DynamoBundleStorage,
 };
 
@@ -47,7 +44,7 @@ struct ExportOptions<'a> {
     root_nesting: BundleNesting,
     root_id_logic: BundleIdLogic,
     fixed_omissions: Option<&'a BTreeMap<String, BTreeSet<String>>>,
-    include_references: bool,
+    validate_reference_closure: bool,
 }
 
 // Private interface.
@@ -69,7 +66,7 @@ pub(crate) async fn export_from_config(
             root_nesting,
             root_id_logic,
             fixed_omissions: None,
-            include_references: true,
+            validate_reference_closure: true,
         },
     )
     .await
@@ -92,7 +89,7 @@ pub(crate) async fn export_with_omissions(
             root_nesting,
             root_id_logic,
             fixed_omissions: Some(omissions),
-            include_references: false,
+            validate_reference_closure: false,
         },
     )
     .await
@@ -153,21 +150,20 @@ async fn export_bundle(
         .get(&root_id)
         .cloned()
         .ok_or_else(|| DynamoInvalidBundle::new("source root was not returned by DynamoDB"))?;
-    let mut bundle = DynamoBundle {
+    let bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
         source_root: root_id,
         root,
         omitted_descendants,
         items,
-        references: Vec::new(),
     };
-    if options.include_references {
-        bundle.references = collect_references(policy, &bundle, &by_pk_sk)?;
+    if options.validate_reference_closure {
+        derive_reference_manifest(policy, &bundle, &by_pk_sk)?;
     }
     Ok(bundle)
 }
 
-// Item / ref collection.
+// Item collection.
 // ----------------------------------------------------------------------------
 
 pub(crate) async fn collect_bundle_items(
@@ -236,91 +232,6 @@ pub(crate) async fn collect_bundle_items(
         }
     }
     Ok((collected, recorded))
-}
-
-pub(crate) fn collect_references(
-    policy: &DynamoBundlePolicy,
-    bundle: &DynamoBundle,
-    original_ids: &HashMap<PkSk, BundleId>,
-) -> Result<Vec<DynamoBundleReference>, ServerError> {
-    let mut references = Vec::new();
-    for item in &bundle.items {
-        let object = policy.require(&item.id.label)?;
-        for rule in object.reference_rules() {
-            for matched in (rule.selector)(item)? {
-                let original = item
-                    .value_at(&matched.path)
-                    .ok_or_else(|| DynamoInvalidBundle::new("reference path was missing"))?;
-                let target = match matched.target {
-                    DynamoBundleReferenceMatchTarget::Bundled {
-                        target_label,
-                        encoding,
-                    } => {
-                        let id = find_bundled_target(
-                            bundle,
-                            original_ids,
-                            item,
-                            &matched.path,
-                            original,
-                            encoding,
-                            Some(&target_label),
-                        )?;
-                        DynamoBundleReferenceTarget::Bundled { id, encoding }
-                    }
-                    DynamoBundleReferenceMatchTarget::InTable {
-                        lookup_id,
-                        clear_path,
-                    } => DynamoBundleReferenceTarget::InTable {
-                        lookup_id,
-                        clear_path,
-                    },
-                    DynamoBundleReferenceMatchTarget::OutOfTable {
-                        lookup_id,
-                        clear_path,
-                    } => DynamoBundleReferenceTarget::OutOfTable {
-                        lookup_id,
-                        clear_path,
-                    },
-                };
-                references.push(DynamoBundleReference {
-                    source: item.id.clone(),
-                    path: matched.path,
-                    target,
-                });
-            }
-        }
-    }
-    Ok(references)
-}
-
-pub(crate) fn collect_out_of_table_references(
-    policy: &DynamoBundlePolicy,
-    bundle: &DynamoBundle,
-) -> Result<Vec<DynamoBundleReference>, ServerError> {
-    let mut references = Vec::new();
-    for item in &bundle.items {
-        let object = policy.require(&item.id.label)?;
-        for rule in object.reference_rules() {
-            for matched in (rule.selector)(item)? {
-                let DynamoBundleReferenceMatchTarget::OutOfTable {
-                    lookup_id,
-                    clear_path,
-                } = matched.target
-                else {
-                    continue;
-                };
-                references.push(DynamoBundleReference {
-                    source: item.id.clone(),
-                    path: matched.path,
-                    target: DynamoBundleReferenceTarget::OutOfTable {
-                        lookup_id,
-                        clear_path,
-                    },
-                });
-            }
-        }
-    }
-    Ok(references)
 }
 
 // Helpers.
@@ -423,73 +334,6 @@ fn normalized_data(map: &DynamoMap) -> Result<Value, ServerError> {
     data.remove(AUTO_FIELDS_CREATED_AT);
     data.remove(AUTO_FIELDS_UPDATED_AT);
     Ok(Value::Object(data))
-}
-
-fn find_bundled_target(
-    bundle: &DynamoBundle,
-    original_ids: &HashMap<PkSk, BundleId>,
-    source: &DynamoBundleItem,
-    path: &super::BundleDataPath,
-    value: &Value,
-    encoding: DynamoBundleReferenceEncoding,
-    target_label: Option<&str>,
-) -> Result<BundleId, ServerError> {
-    let raw = value
-        .as_str()
-        .ok_or_else(|| DynamoInvalidBundle::new("reference value was not a string"))?;
-    if encoding == DynamoBundleReferenceEncoding::PkSk {
-        let id = PkSk::from_string(raw)
-            .map_err(|_| DynamoInvalidBundle::new("pk/sk reference was invalid"))?;
-        let target = original_ids
-            .get(&id)
-            .filter(|target| target_label.is_none_or(|label| target.label == label))
-            .ok_or_else(|| missing_internal_target(bundle, source, path, raw, target_label))?;
-        return Ok(target.clone());
-    }
-
-    if let Some(target) = unique_foreign_target(bundle, raw, target_label)? {
-        return Ok(target.id.clone());
-    }
-    let reference = serde_json::from_value::<ForeignRef<'static>>(Value::String(raw.to_owned()))
-        .map_err(|_| DynamoInvalidBundle::new("foreign reference was invalid"))?;
-    unique_foreign_target(bundle, reference.raw(), target_label)?
-        .map(|target| target.id.clone())
-        .ok_or_else(|| missing_internal_target(bundle, source, path, raw, target_label))
-}
-
-fn unique_foreign_target<'a>(
-    bundle: &'a DynamoBundle,
-    reference: &str,
-    target_label: Option<&str>,
-) -> Result<Option<&'a DynamoBundleItem>, ServerError> {
-    let mut matches = bundle.items.iter().filter(|item| {
-        target_label.is_none_or(|label| item.id.label == label)
-            && RawIdPath::new(&item.id.original_sk).foreign_ref_value() == reference
-    });
-    let target = matches.next();
-    if target.is_some() && matches.next().is_some() {
-        return Err(DynamoInvalidBundle::new(
-            "bundled reference target was ambiguous",
-        ));
-    }
-    Ok(target)
-}
-
-fn missing_internal_target(
-    bundle: &DynamoBundle,
-    source: &DynamoBundleItem,
-    path: &super::BundleDataPath,
-    raw_target: &str,
-    target_label: Option<&str>,
-) -> ServerError {
-    DynamoInvalidBundle::new(&format!(
-        "portable export rooted at `{}` was not closed: `{}` item `{}` path `{path}` requires \
-         internal {}target `{raw_target}`, but that target was outside the exported scope",
-        bundle.source_root,
-        source.id.label,
-        source.id.original_sk,
-        target_label.map_or_else(String::new, |label| format!("`{label}` ")),
-    ))
 }
 
 fn group_logical_rows(rows: Vec<DynamoMap>) -> Result<HashMap<PkSk, Vec<DynamoMap>>, ServerError> {

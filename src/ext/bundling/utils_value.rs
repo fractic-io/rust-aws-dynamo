@@ -23,16 +23,34 @@ pub(crate) fn set_value_at_path(
     path: &BundleDataPath,
     replacement: Value,
 ) -> Result<(), ServerError> {
+    set_value_at_path_inner(root, path, replacement, false)
+}
+
+pub(crate) fn upsert_value_at_path(
+    root: &mut Value,
+    path: &BundleDataPath,
+    replacement: Value,
+) -> Result<(), ServerError> {
+    set_value_at_path_inner(root, path, replacement, true)
+}
+
+fn set_value_at_path_inner(
+    root: &mut Value,
+    path: &BundleDataPath,
+    replacement: Value,
+    insert_terminal_field: bool,
+) -> Result<(), ServerError> {
     fn descend(
         value: &mut Value,
         path: &[BundleDataPathSegment],
         replacement: Value,
+        insert_terminal_field: bool,
     ) -> Result<(), ServerError> {
         let Some((segment, rest)) = path.split_first() else {
             *value = replacement;
             return Ok(());
         };
-        if rest.is_empty() {
+        if insert_terminal_field && rest.is_empty() {
             if let BundleDataPathSegment::Field(field) = segment {
                 if let Value::Object(map) = value {
                     map.insert(field.clone(), replacement);
@@ -48,8 +66,8 @@ pub(crate) fn set_value_at_path(
         .ok_or_else(|| {
             DynamoInvalidBundleValue::new("reference path did not match bundled data")
         })?;
-        descend(next, rest, replacement)
+        descend(next, rest, replacement, insert_terminal_field)
     }
 
-    descend(root, path.segments(), replacement)
+    descend(root, path.segments(), replacement, insert_terminal_field)
 }

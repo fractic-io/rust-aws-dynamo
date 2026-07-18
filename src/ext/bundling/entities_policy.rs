@@ -15,7 +15,6 @@ use crate::{
 
 use super::{
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
-    DynamoBundleReferenceEncoding,
 };
 
 // Definitions.
@@ -75,6 +74,14 @@ type BundleDataValidator = dyn Fn(&DynamoBundleItem) -> Result<(), String> + Sen
 pub struct DynamoBundleReferenceMatch {
     pub path: BundleDataPath,
     pub(crate) target: DynamoBundleReferenceMatchTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamoBundleReferenceEncoding {
+    /// The bundled value contains a complete `pk|sk` identifier.
+    PkSk,
+    /// The bundled value contains the target object's terminal foreign ID.
+    ForeignRef,
 }
 
 // Public interface.

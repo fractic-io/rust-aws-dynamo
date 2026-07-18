@@ -53,8 +53,6 @@ pub struct DynamoBundle {
     #[serde(default)]
     pub omitted_descendants: BTreeMap<String, BTreeSet<String>>,
     pub items: Vec<DynamoBundleItem>,
-    #[serde(default)]
-    pub references: Vec<DynamoBundleReference>,
 }
 
 /// One logical Dynamo object. Batch-optimized records remain opaque values.
@@ -91,50 +89,6 @@ pub enum BundleNesting {
 /// A location within the serialized data of a [`DynamoBundleItem`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BundleDataPath(Vec<BundleDataPathSegment>);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DynamoBundleReferenceEncoding {
-    /// The bundled value contains a complete `pk|sk` identifier.
-    PkSk,
-    /// The bundled value contains the target object's terminal foreign ID.
-    ForeignRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DynamoBundleReference {
-    pub source: BundleId,
-    pub path: BundleDataPath,
-    pub target: DynamoBundleReferenceTarget,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DynamoBundleReferenceTarget {
-    /// The target is in the bundle and must be remapped on duplication.
-    Bundled {
-        id: BundleId,
-        encoding: DynamoBundleReferenceEncoding,
-    },
-    /// The target is outside the bundle but in the importing table. Import
-    /// preserves the reference when the target exists and clears it otherwise.
-    InTable {
-        lookup_id: PkSk,
-        /// The reference path itself for scalar options, or a containing path
-        /// when one missing member must clear a compound optional value.
-        clear_path: BundleDataPath,
-    },
-    /// The target is stored outside the importing table and cannot be checked.
-    /// Merge preserves the bundled value. Replace preserves the local value by
-    /// default, while New clears it; either mode can accept a caller-validated
-    /// bundled value.
-    OutOfTable {
-        lookup_id: PkSk,
-        /// The reference path itself for scalar options, or a containing path
-        /// when creating a new identity must clear a compound optional value.
-        clear_path: BundleDataPath,
-    },
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

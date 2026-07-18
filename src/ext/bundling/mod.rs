@@ -4,13 +4,15 @@ mod entities_bundle;
 mod entities_policy;
 mod impl_export;
 mod impl_import;
+mod reference_manifest;
 mod utils_bundle_validation;
 mod utils_id_mapping;
 mod utils_value;
 
 pub use entities_bundle::*;
 pub use entities_policy::{
-    DynamoBundlePolicy, DynamoBundleReferenceMatch, DynamoBundleReferenceRule,
+    DynamoBundlePolicy, DynamoBundleReferenceEncoding, DynamoBundleReferenceMatch,
+    DynamoBundleReferenceRule,
 };
 
 use std::collections::HashSet;
@@ -75,8 +77,8 @@ impl<'a> Bundler<'a> {
 }
 
 impl DynamoBundle {
-    /// Validates the portable bundle's version, topology, IDs, data shape, and
-    /// reference paths without performing database access.
+    /// Validates the portable bundle's version, topology, IDs, and data shape
+    /// without performing database access.
     pub fn validate(&self) -> Result<(), ServerError> {
         utils_bundle_validation::validate_bundle(self)
     }

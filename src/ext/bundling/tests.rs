@@ -99,6 +99,19 @@ crate::dynamo_object!(
 );
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct TestRenamedBatchData {
+    pub canonical_name: Option<String>,
+}
+crate::dynamo_object!(
+    TestRenamedBatch,
+    TestRenamedBatchData,
+    "RENAMEDBATCH",
+    IdLogic::BatchOptimized { batch_size: 10 },
+    NestingLogic::TopLevelChildOfAny,
+    renamed = ["legacy_name" => "canonical_name"]
+);
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TestOrderedData {
     pub name: Option<String>,
 }
@@ -189,6 +202,22 @@ impl DynamoCrudAlgorithms for RequiredReferenceAlgorithms {
             .include::<TestRoot>()
             .bundled_pksk::<TestOrdered>("required_target")
             .omit_descendants::<TestOrdered>();
+        bundles.include::<TestOrdered>();
+    }
+}
+
+struct RenamedReferenceAlgorithms;
+
+#[async_trait]
+impl DynamoCrudAlgorithms for RenamedReferenceAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
+        bundles
+            .include::<TestRenamedRoot>()
+            .bundled_pksk::<TestOrdered>("canonical_ref");
         bundles.include::<TestOrdered>();
     }
 }
@@ -963,7 +992,7 @@ fn bundle_config_normalizes_top_level_renames_before_selecting_references() {
         }),
     );
 
-    object.normalize_renamed_fields(&mut item.data);
+    object.normalize_data(&mut item.data);
 
     assert_eq!(
         item.data,
@@ -986,6 +1015,140 @@ fn bundle_config_normalizes_top_level_renames_before_selecting_references() {
         &out_of_table[0].target,
         DynamoBundleReferenceMatchTarget::OutOfTable { .. }
     ));
+}
+
+#[test]
+fn bundle_policy_normalizes_batch_members_and_prefers_canonical_fields() {
+    let root = id(0, "RENAMEDROOT", "RENAMEDROOT#root");
+    let batch = id(1, "RENAMEDBATCH", "RENAMEDBATCH#0");
+    let mut batch_item = bundle_item(
+        batch,
+        Some(root.clone()),
+        BundleNesting::TopLevel,
+        json!({
+            "..": [
+                {"legacy_name": "legacy"},
+                {"legacy_name": "discarded", "canonical_name": "canonical"}
+            ]
+        }),
+    );
+    batch_item.id_logic = BundleIdLogic::BatchOptimized;
+    let mut bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![
+            bundle_item(
+                root,
+                None,
+                BundleNesting::Root,
+                json!({
+                    "legacy_ref": "ROOT|TARGET#legacy",
+                    "canonical_ref": "ROOT|TARGET#canonical"
+                }),
+            ),
+            batch_item,
+        ],
+    };
+    let mut policy = DynamoBundlePolicy::new();
+    policy.include::<TestRenamedRoot>();
+    policy.include::<TestRenamedBatch>();
+
+    policy.normalize_bundle_data(&mut bundle).unwrap();
+
+    assert_eq!(
+        bundle.items[0].data,
+        json!({"canonical_ref": "ROOT|TARGET#canonical"})
+    );
+    assert_eq!(
+        bundle.items[1].data,
+        json!({
+            "..": [
+                {"canonical_name": "legacy"},
+                {"canonical_name": "canonical"}
+            ]
+        })
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn import_normalizes_legacy_reference_fields_before_remapping_and_writing() {
+    let root = id(0, "RENAMEDROOT", "RENAMEDROOT#source");
+    let target = id(1, "ORDERED", "ORDERED#source");
+    let original_target = PkSk {
+        pk: root.original_sk.clone(),
+        sk: target.original_sk.clone(),
+    };
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![
+            bundle_item(
+                root.clone(),
+                None,
+                BundleNesting::Root,
+                json!({"legacy_ref": original_target.to_string()}),
+            ),
+            bundle_item(
+                target,
+                Some(root),
+                BundleNesting::TopLevel,
+                json!({"name": "target"}),
+            ),
+        ],
+    };
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(1)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(table, Vec::new())])))
+                .build())
+        });
+    backend
+        .expect_batch_put_item()
+        .times(1)
+        .returning(move |_, items| {
+            let root = items
+                .iter()
+                .find(|item| item["pk"].as_s().is_ok_and(|pk| pk == "ROOT"))
+                .unwrap();
+            let target = items
+                .iter()
+                .find(|item| item["pk"].as_s().is_ok_and(|pk| pk != "ROOT"))
+                .unwrap();
+            let remapped = PkSk::from_string(root["canonical_ref"].as_s().unwrap()).unwrap();
+
+            assert_eq!(remapped, PkSk::from_map(target).unwrap());
+            assert_ne!(remapped, original_target);
+            assert!(!root.contains_key("legacy_ref"));
+            Ok(BatchWriteItemOutput::builder().build())
+        });
+
+    let result = import_bundle::<TestRenamedRoot>(
+        &util(backend),
+        &RenamedReferenceAlgorithms,
+        None,
+        bundle,
+        ImportMode::New { position: None },
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.created_new);
+    assert!(result.warnings.is_empty());
 }
 
 #[test]

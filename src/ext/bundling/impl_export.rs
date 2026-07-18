@@ -117,7 +117,7 @@ async fn export_bundle(
         let label = RawIdPath::new(&item.id.sk).object_label()?.to_string();
         let (storage, mut data) = normalize_rows(item.rows)?;
         let object = policy.require(&label)?;
-        object.normalize_renamed_fields(&mut data);
+        object.normalize_data(&mut data);
         let id_logic = if item.id == root_id {
             options.root_id_logic
         } else {

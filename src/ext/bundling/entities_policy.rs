@@ -340,6 +340,16 @@ impl DynamoBundlePolicy {
             ))
         })
     }
+
+    pub(crate) fn normalize_bundle_data(
+        &self,
+        bundle: &mut DynamoBundle,
+    ) -> Result<(), ServerError> {
+        for item in &mut bundle.items {
+            self.require(&item.id.label)?.normalize_data(&mut item.data);
+        }
+        Ok(())
+    }
 }
 
 impl DynamoBundleObjectPolicy {
@@ -352,8 +362,19 @@ impl DynamoBundleObjectPolicy {
         &self.reference_rules
     }
 
-    pub(crate) fn normalize_renamed_fields(&self, data: &mut Value) {
-        normalize_renamed_fields(data, self.renamed_fields);
+    pub(crate) fn normalize_data(&self, data: &mut Value) {
+        if self.id_logic == BundleIdLogic::BatchOptimized {
+            if let Some(members) = data
+                .get_mut(EXPAND_DATA_RESERVED_KEY)
+                .and_then(Value::as_array_mut)
+            {
+                for member in members {
+                    normalize_renamed_fields(member, self.renamed_fields);
+                }
+            }
+        } else {
+            normalize_renamed_fields(data, self.renamed_fields);
+        }
     }
 }
 
@@ -610,7 +631,6 @@ fn validate_item_data<O: DynamoObject>(item: &DynamoBundleItem) -> Result<(), St
 
 fn validate_data_value<O: DynamoObject>(data: &Value) -> Result<(), String> {
     let mut data = data.clone();
-    normalize_renamed_fields(&mut data, O::renamed_fields());
     if let Value::Object(data) = &mut data {
         data.remove(AUTO_FIELDS_SORT);
         data.remove(AUTO_FIELDS_TTL);

@@ -94,6 +94,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     }
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let policy = configured_bundle_policy(algorithms);
+    policy.normalize_bundle_data(&mut bundle)?;
     let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic, parent)?;
     let source_ids = build_source_id_map(&bundle)?;
     let original_ids = source_ids

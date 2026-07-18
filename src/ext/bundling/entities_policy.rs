@@ -15,7 +15,6 @@ use crate::{
 
 use super::{
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
-    DynamoBundleReferenceEncoding,
 };
 
 // Definitions.
@@ -75,6 +74,14 @@ type BundleDataValidator = dyn Fn(&DynamoBundleItem) -> Result<(), String> + Sen
 pub struct DynamoBundleReferenceMatch {
     pub path: BundleDataPath,
     pub(crate) target: DynamoBundleReferenceMatchTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamoBundleReferenceEncoding {
+    /// The bundled value contains a complete `pk|sk` identifier.
+    PkSk,
+    /// The bundled value contains the target object's terminal foreign ID.
+    ForeignRef,
 }
 
 // Public interface.
@@ -185,8 +192,9 @@ impl DynamoBundleObjectPolicy {
         self
     }
 
-    /// Preserves an out-of-table `PkSk` on Merge and Replace without checking
-    /// it, and clears it with a warning when importing as New.
+    /// Preserves an out-of-table `PkSk` on Merge. Replace preserves the local
+    /// value by default, while New clears it; either mode can accept a
+    /// caller-validated bundled value.
     pub fn out_of_table_pksk(&mut self, path: &'static str) -> &mut Self {
         let path = BundleDataPath::dotted(path);
         self.reference_rules
@@ -332,6 +340,16 @@ impl DynamoBundlePolicy {
             ))
         })
     }
+
+    pub(crate) fn normalize_bundle_data(
+        &self,
+        bundle: &mut DynamoBundle,
+    ) -> Result<(), ServerError> {
+        for item in &mut bundle.items {
+            self.require(&item.id.label)?.normalize_data(&mut item.data);
+        }
+        Ok(())
+    }
 }
 
 impl DynamoBundleObjectPolicy {
@@ -344,8 +362,19 @@ impl DynamoBundleObjectPolicy {
         &self.reference_rules
     }
 
-    pub(crate) fn normalize_renamed_fields(&self, data: &mut Value) {
-        normalize_renamed_fields(data, self.renamed_fields);
+    pub(crate) fn normalize_data(&self, data: &mut Value) {
+        if self.id_logic == BundleIdLogic::BatchOptimized {
+            if let Some(members) = data
+                .get_mut(EXPAND_DATA_RESERVED_KEY)
+                .and_then(Value::as_array_mut)
+            {
+                for member in members {
+                    normalize_renamed_fields(member, self.renamed_fields);
+                }
+            }
+        } else {
+            normalize_renamed_fields(data, self.renamed_fields);
+        }
     }
 }
 
@@ -602,7 +631,6 @@ fn validate_item_data<O: DynamoObject>(item: &DynamoBundleItem) -> Result<(), St
 
 fn validate_data_value<O: DynamoObject>(data: &Value) -> Result<(), String> {
     let mut data = data.clone();
-    normalize_renamed_fields(&mut data, O::renamed_fields());
     if let Value::Object(data) = &mut data {
         data.remove(AUTO_FIELDS_SORT);
         data.remove(AUTO_FIELDS_TTL);
@@ -621,9 +649,7 @@ fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRenam
             continue;
         }
         if let Some(value) = data.remove(renamed.from) {
-            if !data.contains_key(renamed.to) {
-                data.insert(renamed.to.to_owned(), value);
-            }
+            data.entry(renamed.to).or_insert(value);
         }
     }
 }

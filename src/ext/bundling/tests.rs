@@ -37,11 +37,12 @@ use super::{
         configured_bundle_policy, validate_import_policy, DynamoBundleReferenceMatchTarget,
     },
     impl_export::export_from_config,
-    impl_import::import_bundle,
+    impl_import::{import_bundle, reconcile_replace_out_of_table_references},
     utils_id_mapping::build_id_map,
+    utils_reference_manifest::{BundleReference, BundleReferenceTarget},
     BundleDataPath, BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem,
-    DynamoBundlePolicy, DynamoBundleReference, DynamoBundleReferenceEncoding,
-    DynamoBundleReferenceTarget, DynamoBundleStorage, DynamoImportWarning, ImportMode,
+    DynamoBundlePolicy, DynamoBundleReferenceEncoding, DynamoBundleReferenceMatch,
+    DynamoBundleReferenceRule, DynamoBundleStorage, DynamoImportWarning, ImportMode,
 };
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -95,6 +96,19 @@ crate::dynamo_object!(
     "BATCH",
     IdLogic::BatchOptimized { batch_size: 10 },
     NestingLogic::TopLevelChildOfAny
+);
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct TestRenamedBatchData {
+    pub canonical_name: Option<String>,
+}
+crate::dynamo_object!(
+    TestRenamedBatch,
+    TestRenamedBatchData,
+    "RENAMEDBATCH",
+    IdLogic::BatchOptimized { batch_size: 10 },
+    NestingLogic::TopLevelChildOfAny,
+    renamed = ["legacy_name" => "canonical_name"]
 );
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -163,7 +177,8 @@ impl DynamoCrudAlgorithms for TestAlgorithms {
         bundles
             .include_label("ROOTOBJ", BundleIdLogic::Uuid, &[])
             .omit_descendant_label("RECALC")
-            .omit_descendant_label("EXCLUDED");
+            .omit_descendant_label("EXCLUDED")
+            .custom_references(test_references());
         bundles
             .include_label("CHILD", BundleIdLogic::Uuid, &[])
             .omit_descendant_label("GRAND");
@@ -191,6 +206,61 @@ impl DynamoCrudAlgorithms for RequiredReferenceAlgorithms {
     }
 }
 
+struct RenamedReferenceAlgorithms;
+
+#[async_trait]
+impl DynamoCrudAlgorithms for RenamedReferenceAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
+        bundles
+            .include::<TestRenamedRoot>()
+            .bundled_pksk::<TestOrdered>("canonical_ref");
+        bundles.include::<TestOrdered>();
+    }
+}
+
+struct OutOfTableAlgorithms;
+
+#[async_trait]
+impl DynamoCrudAlgorithms for OutOfTableAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
+        bundles
+            .include::<TestRoot>()
+            .out_of_table_pksk("out_of_table")
+            .out_of_table_pksk("route");
+    }
+}
+
+struct InvalidReferenceAlgorithms;
+
+#[async_trait]
+impl DynamoCrudAlgorithms for InvalidReferenceAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
+        bundles
+            .include::<TestRoot>()
+            .custom_references(DynamoBundleReferenceRule::custom(|_| {
+                Ok(vec![DynamoBundleReferenceMatch::in_table(
+                    BundleDataPath::field("missing"),
+                    PkSk {
+                        pk: "ROOT".into(),
+                        sk: "TARGET#one".into(),
+                    },
+                )])
+            }));
+    }
+}
+
 struct CleanupAlgorithms {
     stale_ids: Arc<Mutex<Vec<PkSk>>>,
 }
@@ -215,6 +285,51 @@ impl DynamoCrudAlgorithms for CleanupAlgorithms {
     fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
         TestAlgorithms.bundle_policy(bundles);
     }
+}
+
+fn test_references() -> DynamoBundleReferenceRule {
+    DynamoBundleReferenceRule::custom(|item| {
+        let mut references = Vec::new();
+        let local_path = BundleDataPath::field("local");
+        if item.value_at(&local_path).and_then(Value::as_str).is_some() {
+            references.push(DynamoBundleReferenceMatch::bundled_label(
+                local_path,
+                DynamoBundleReferenceEncoding::ForeignRef,
+                "TARGET",
+            ));
+        }
+        for field in ["kept", "missing", "external", "stale_ref"] {
+            let path = BundleDataPath::field(field);
+            if let Some(raw) = item.value_at(&path).and_then(Value::as_str) {
+                references.push(DynamoBundleReferenceMatch::in_table(
+                    path,
+                    PkSk::from_string(raw)?,
+                ));
+            }
+        }
+        let compound_path = BundleDataPath::field("compound");
+        let compound_reference_path = compound_path.clone().then_index(0);
+        if let Some(raw) = item
+            .value_at(&compound_reference_path)
+            .and_then(Value::as_str)
+        {
+            references.push(DynamoBundleReferenceMatch::in_table_clearing(
+                compound_reference_path,
+                PkSk::from_string(raw)?,
+                compound_path,
+            ));
+        }
+        for field in ["out_of_table", "route", "out_of_table_ref"] {
+            let path = BundleDataPath::field(field);
+            if let Some(raw) = item.value_at(&path).and_then(Value::as_str) {
+                references.push(DynamoBundleReferenceMatch::out_of_table(
+                    path,
+                    PkSk::from_string(raw)?,
+                ));
+            }
+        }
+        Ok(references)
+    })
 }
 
 struct CountingAlgorithms(AtomicUsize);
@@ -616,7 +731,6 @@ fn import_omissions_are_the_strict_union_and_require_present_owner_labels() {
             BTreeSet::from(["BUNDLE_ONLY".into()]),
         )]),
         items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
-        references: vec![],
     };
     let effective = validate_import_policy(
         &bundle,
@@ -654,7 +768,6 @@ fn import_rejects_unconfigured_bundle_items() {
             root: root.clone(),
             omitted_descendants: BTreeMap::new(),
             items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
-            references: vec![],
         };
 
         assert!(validate_import_policy(
@@ -690,7 +803,6 @@ fn import_rejects_id_logic_metadata_that_disagrees_with_local_policy() {
             bundle_item(root, None, BundleNesting::Root, json!({})),
             child_item,
         ],
-        references: vec![],
     };
 
     assert!(validate_import_policy(
@@ -714,7 +826,6 @@ fn import_rejects_root_policy_that_disagrees_with_crud_type() {
         root: root.clone(),
         omitted_descendants: BTreeMap::new(),
         items: vec![bundle_item(root, None, BundleNesting::Root, json!({}))],
-        references: vec![],
     };
 
     assert!(validate_import_policy(
@@ -747,7 +858,6 @@ fn import_validates_local_topology_and_data_shape() {
                 json!({"required_name": "valid", "sort": 4.0}),
             ),
         ],
-        references: vec![],
     };
     let policy = configured_bundle_policy(&SchemaValidationAlgorithms);
 
@@ -799,7 +909,6 @@ fn import_validates_batch_optimized_payload_members() {
         root,
         omitted_descendants: BTreeMap::new(),
         items: vec![root_item],
-        references: vec![],
     };
     let parent = PkSk {
         pk: "ROOT".into(),
@@ -847,7 +956,6 @@ fn import_accepts_registered_schema_variants_sharing_a_label() {
                 json!({"required_name": "valid"}),
             ),
         ],
-        references: vec![],
     };
 
     validate_import_policy(
@@ -884,7 +992,7 @@ fn bundle_config_normalizes_top_level_renames_before_selecting_references() {
         }),
     );
 
-    object.normalize_renamed_fields(&mut item.data);
+    object.normalize_data(&mut item.data);
 
     assert_eq!(
         item.data,
@@ -907,6 +1015,140 @@ fn bundle_config_normalizes_top_level_renames_before_selecting_references() {
         &out_of_table[0].target,
         DynamoBundleReferenceMatchTarget::OutOfTable { .. }
     ));
+}
+
+#[test]
+fn bundle_policy_normalizes_batch_members_and_prefers_canonical_fields() {
+    let root = id(0, "RENAMEDROOT", "RENAMEDROOT#root");
+    let batch = id(1, "RENAMEDBATCH", "RENAMEDBATCH#0");
+    let mut batch_item = bundle_item(
+        batch,
+        Some(root.clone()),
+        BundleNesting::TopLevel,
+        json!({
+            "..": [
+                {"legacy_name": "legacy"},
+                {"legacy_name": "discarded", "canonical_name": "canonical"}
+            ]
+        }),
+    );
+    batch_item.id_logic = BundleIdLogic::BatchOptimized;
+    let mut bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![
+            bundle_item(
+                root,
+                None,
+                BundleNesting::Root,
+                json!({
+                    "legacy_ref": "ROOT|TARGET#legacy",
+                    "canonical_ref": "ROOT|TARGET#canonical"
+                }),
+            ),
+            batch_item,
+        ],
+    };
+    let mut policy = DynamoBundlePolicy::new();
+    policy.include::<TestRenamedRoot>();
+    policy.include::<TestRenamedBatch>();
+
+    policy.normalize_bundle_data(&mut bundle).unwrap();
+
+    assert_eq!(
+        bundle.items[0].data,
+        json!({"canonical_ref": "ROOT|TARGET#canonical"})
+    );
+    assert_eq!(
+        bundle.items[1].data,
+        json!({
+            "..": [
+                {"canonical_name": "legacy"},
+                {"canonical_name": "canonical"}
+            ]
+        })
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn import_normalizes_legacy_reference_fields_before_remapping_and_writing() {
+    let root = id(0, "RENAMEDROOT", "RENAMEDROOT#source");
+    let target = id(1, "ORDERED", "ORDERED#source");
+    let original_target = PkSk {
+        pk: root.original_sk.clone(),
+        sk: target.original_sk.clone(),
+    };
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![
+            bundle_item(
+                root.clone(),
+                None,
+                BundleNesting::Root,
+                json!({"legacy_ref": original_target.to_string()}),
+            ),
+            bundle_item(
+                target,
+                Some(root),
+                BundleNesting::TopLevel,
+                json!({"name": "target"}),
+            ),
+        ],
+    };
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(1)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(table, Vec::new())])))
+                .build())
+        });
+    backend
+        .expect_batch_put_item()
+        .times(1)
+        .returning(move |_, items| {
+            let root = items
+                .iter()
+                .find(|item| item["pk"].as_s().is_ok_and(|pk| pk == "ROOT"))
+                .unwrap();
+            let target = items
+                .iter()
+                .find(|item| item["pk"].as_s().is_ok_and(|pk| pk != "ROOT"))
+                .unwrap();
+            let remapped = PkSk::from_string(root["canonical_ref"].as_s().unwrap()).unwrap();
+
+            assert_eq!(remapped, PkSk::from_map(target).unwrap());
+            assert_ne!(remapped, original_target);
+            assert!(!root.contains_key("legacy_ref"));
+            Ok(BatchWriteItemOutput::builder().build())
+        });
+
+    let result = import_bundle::<TestRenamedRoot>(
+        &util(backend),
+        &RenamedReferenceAlgorithms,
+        None,
+        bundle,
+        ImportMode::New { position: None },
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.created_new);
+    assert!(result.warnings.is_empty());
 }
 
 #[test]
@@ -1003,7 +1245,6 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
             ),
             bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
         ],
-        references: vec![],
     };
 
     let mapped = build_id_map(&bundle, None, true, BundleIdLogic::Uuid).unwrap();
@@ -1057,7 +1298,6 @@ fn duplicate_mapping_preserves_batch_ids_and_increments_timestamp_millis() {
             second_timestamp_item,
             batch_item,
         ],
-        references: vec![],
     };
 
     let mapped = build_id_map(&bundle, None, true, BundleIdLogic::Uuid).unwrap();
@@ -1106,7 +1346,6 @@ async fn merge_and_replace_reject_reparenting_before_database_access() {
             BundleNesting::TopLevel,
             json!({"name": "item"}),
         )],
-        references: vec![],
     };
 
     for mode in [ImportMode::Merge, ImportMode::Replace] {
@@ -1142,7 +1381,6 @@ async fn import_rejects_singleton_destination_parents_before_database_access() {
             BundleNesting::TopLevel,
             json!({"name": "item"}),
         )],
-        references: vec![],
     };
 
     let error = import_bundle::<TestOrdered>(
@@ -1186,7 +1424,6 @@ async fn ordered_new_gets_a_fresh_id_and_is_placed_last() {
             BundleNesting::TopLevel,
             json!({"name": "duplicate", "sort": 3.0}),
         )],
-        references: vec![],
     };
     let mut backend = MockDynamoBackend::new();
     backend
@@ -1253,7 +1490,6 @@ async fn new_without_an_insertion_position_clears_the_source_sort() {
             BundleNesting::TopLevel,
             json!({"name": "new", "sort": 3.0}),
         )],
-        references: vec![],
     };
     let mut backend = MockDynamoBackend::new();
     backend
@@ -1329,48 +1565,6 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
                 BundleNesting::TopLevel,
                 json!({}),
             ),
-        ],
-        references: vec![
-            DynamoBundleReference {
-                source: root.clone(),
-                path: BundleDataPath::field("local"),
-                target: DynamoBundleReferenceTarget::Bundled {
-                    id: target,
-                    encoding: DynamoBundleReferenceEncoding::ForeignRef,
-                },
-            },
-            DynamoBundleReference {
-                source: root.clone(),
-                path: BundleDataPath::field("kept"),
-                target: DynamoBundleReferenceTarget::InTable {
-                    lookup_id: existing_external.clone(),
-                    clear_path: BundleDataPath::field("kept"),
-                },
-            },
-            DynamoBundleReference {
-                source: root.clone(),
-                path: BundleDataPath::field("missing"),
-                target: DynamoBundleReferenceTarget::InTable {
-                    lookup_id: missing_external.clone(),
-                    clear_path: BundleDataPath::field("missing"),
-                },
-            },
-            DynamoBundleReference {
-                source: root.clone(),
-                path: BundleDataPath::field("compound").then_index(0),
-                target: DynamoBundleReferenceTarget::InTable {
-                    lookup_id: missing_external,
-                    clear_path: BundleDataPath::field("compound"),
-                },
-            },
-            DynamoBundleReference {
-                source: root,
-                path: BundleDataPath::field("out_of_table"),
-                target: DynamoBundleReferenceTarget::OutOfTable {
-                    lookup_id: out_of_table,
-                    clear_path: BundleDataPath::field("out_of_table"),
-                },
-            },
         ],
     };
     let mut backend = MockDynamoBackend::new();
@@ -1460,14 +1654,6 @@ async fn new_preserves_valid_out_of_table_references() {
             BundleNesting::Root,
             json!({"route": out_of_table.to_string()}),
         )],
-        references: vec![DynamoBundleReference {
-            source: root,
-            path: BundleDataPath::field("route"),
-            target: DynamoBundleReferenceTarget::OutOfTable {
-                lookup_id: out_of_table.clone(),
-                clear_path: BundleDataPath::field("route"),
-            },
-        }],
     };
     let mut backend = MockDynamoBackend::new();
     backend
@@ -1489,7 +1675,7 @@ async fn new_preserves_valid_out_of_table_references() {
 
     let result = import_bundle::<TestRoot>(
         &util(backend),
-        &TestAlgorithms,
+        &OutOfTableAlgorithms,
         None,
         bundle,
         ImportMode::New { position: None },
@@ -1500,6 +1686,115 @@ async fn new_preserves_valid_out_of_table_references() {
 
     assert!(result.warnings.is_empty());
     assert!(result.created_new);
+}
+
+#[test]
+fn replace_preserves_local_out_of_table_associations_and_clears_without_local_state() {
+    let root = id(0, "ROOTOBJ", "ROOTOBJ#root");
+    let root_id = PkSk {
+        pk: "ROOT".into(),
+        sk: root.original_sk.clone(),
+    };
+    let local = PkSk {
+        pk: "ROOT".into(),
+        sk: "ARCHIVE#local".into(),
+    };
+    let incoming = PkSk {
+        pk: "ROOT".into(),
+        sk: "ARCHIVE#incoming".into(),
+    };
+    let policy = configured_bundle_policy(&OutOfTableAlgorithms);
+    let old = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: root_id.clone(),
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![bundle_item(
+            root.clone(),
+            None,
+            BundleNesting::Root,
+            json!({"out_of_table": local.to_string()}),
+        )],
+    };
+    let mut bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: root_id.clone(),
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![bundle_item(
+            root.clone(),
+            None,
+            BundleNesting::Root,
+            json!({}),
+        )],
+    };
+    let destination_ids = HashMap::from([(root.clone(), root_id)]);
+
+    let warnings = reconcile_replace_out_of_table_references(
+        &mut bundle,
+        &[],
+        &destination_ids,
+        Some(&old),
+        &policy,
+        None,
+    )
+    .unwrap();
+
+    assert!(warnings.is_empty());
+    assert_eq!(
+        bundle.items[0].data["out_of_table"],
+        Value::String(local.to_string())
+    );
+
+    bundle.items[0].data = json!({"out_of_table": incoming.to_string()});
+    let references = vec![BundleReference {
+        source: root,
+        path: BundleDataPath::field("out_of_table"),
+        target: BundleReferenceTarget::OutOfTable {
+            lookup_id: incoming.clone(),
+            clear_path: BundleDataPath::field("out_of_table"),
+        },
+    }];
+    let warnings = reconcile_replace_out_of_table_references(
+        &mut bundle,
+        &references,
+        &destination_ids,
+        None,
+        &policy,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        warnings,
+        vec![DynamoImportWarning::ZeroedOutOfTableReference]
+    );
+    assert!(bundle.items[0].data["out_of_table"].is_null());
+
+    bundle.items[0].data = json!({"out_of_table": incoming.to_string()});
+    let references = vec![BundleReference {
+        source: bundle.root.clone(),
+        path: BundleDataPath::field("out_of_table"),
+        target: BundleReferenceTarget::OutOfTable {
+            lookup_id: incoming.clone(),
+            clear_path: BundleDataPath::field("out_of_table"),
+        },
+    }];
+    let warnings = reconcile_replace_out_of_table_references(
+        &mut bundle,
+        &references,
+        &destination_ids,
+        Some(&old),
+        &policy,
+        Some(&HashSet::from([incoming.clone()])),
+    )
+    .unwrap();
+
+    assert!(warnings.is_empty());
+    assert_eq!(
+        bundle.items[0].data["out_of_table"],
+        Value::String(incoming.to_string())
+    );
 }
 
 #[tokio::test]
@@ -1533,14 +1828,6 @@ async fn external_reference_to_an_incoming_id_is_not_cleared() {
                 json!({}),
             ),
         ],
-        references: vec![DynamoBundleReference {
-            source: root,
-            path: BundleDataPath::field("external"),
-            target: DynamoBundleReferenceTarget::InTable {
-                lookup_id: target_id.clone(),
-                clear_path: BundleDataPath::field("external"),
-            },
-        }],
     };
     let mut backend = MockDynamoBackend::new();
     backend
@@ -1598,7 +1885,6 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
             BundleNesting::Root,
             json!({"value": "ordinary"}),
         )],
-        references: vec![],
     };
     let mut backend = MockDynamoBackend::new();
     backend
@@ -1683,6 +1969,10 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
         pk: "ROOT".into(),
         sk: "ARCHIVE#pipeline".into(),
     };
+    let local_out_of_table_id = PkSk {
+        pk: "ROOT".into(),
+        sk: "ARCHIVE#local".into(),
+    };
     let bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
         source_root: PkSk {
@@ -1704,24 +1994,6 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
                 "out_of_table_ref": out_of_table_id.to_string()
             }),
         )],
-        references: vec![
-            DynamoBundleReference {
-                source: root_id.clone(),
-                path: BundleDataPath::field("stale_ref"),
-                target: DynamoBundleReferenceTarget::InTable {
-                    lookup_id: stale_id.clone(),
-                    clear_path: BundleDataPath::field("stale_ref"),
-                },
-            },
-            DynamoBundleReference {
-                source: root_id,
-                path: BundleDataPath::field("out_of_table_ref"),
-                target: DynamoBundleReferenceTarget::OutOfTable {
-                    lookup_id: out_of_table_id.clone(),
-                    clear_path: BundleDataPath::field("out_of_table_ref"),
-                },
-            },
-        ],
     };
 
     let mut backend = MockDynamoBackend::new();
@@ -1738,30 +2010,38 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
                 .set_responses(Some(HashMap::from([(table, rows)])))
                 .build())
         });
-    backend
-        .expect_query()
-        .times(6)
-        .returning(|_, _, _, values, _| {
+    backend.expect_query().times(6).returning({
+        let local_out_of_table_id = local_out_of_table_id.clone();
+        move |_, _, _, values, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
-                "ROOT" => vec![row("ROOT", "ROOTOBJ#root")],
+                "ROOT" => {
+                    let mut root = row("ROOT", "ROOTOBJ#root");
+                    root.insert(
+                        "out_of_table_ref".into(),
+                        AttributeValue::S(local_out_of_table_id.to_string()),
+                    );
+                    vec![root]
+                }
                 "ROOTOBJ#root" => vec![row("ROOTOBJ#root", "STEP#old")],
                 "STEP#old" => vec![row("STEP#old", "RECALC#history")],
                 "RECALC#history" => vec![],
                 unexpected => panic!("unexpected partition query: {unexpected}"),
             };
             Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
-        });
+        }
+    });
+    let expected_local_out_of_table_id = local_out_of_table_id.clone();
     backend
         .expect_batch_put_item()
         .times(1)
-        .returning(|_, items| {
+        .returning(move |_, items| {
             assert_eq!(items.len(), 1);
             assert_eq!(items[0]["value"], AttributeValue::S("new".into()));
             assert!(!items[0].contains_key("stale_ref"));
             assert_eq!(
                 items[0]["out_of_table_ref"],
-                AttributeValue::S("ROOT|ARCHIVE#pipeline".into())
+                AttributeValue::S(expected_local_out_of_table_id.to_string())
             );
             Ok(BatchWriteItemOutput::builder().build())
         });
@@ -1833,7 +2113,6 @@ async fn new_rejects_a_fixed_singleton_root_at_its_source_placement() {
         root: root.clone(),
         omitted_descendants: BTreeMap::new(),
         items: vec![root_item],
-        references: vec![],
     };
     assert!(import_bundle::<TestSingleton>(
         &util(MockDynamoBackend::new()),
@@ -1871,7 +2150,6 @@ async fn new_rejects_a_fixed_batch_root_at_its_source_placement() {
         root,
         omitted_descendants: BTreeMap::new(),
         items: vec![root_item],
-        references: vec![],
     };
     let error = import_bundle::<TestBatch>(
         &util(MockDynamoBackend::new()),
@@ -1915,7 +2193,6 @@ async fn new_allows_a_fixed_batch_root_below_a_different_parent() {
         root,
         omitted_descendants: BTreeMap::new(),
         items: vec![root_item],
-        references: vec![],
     };
     let mut backend = MockDynamoBackend::new();
     backend
@@ -1971,27 +2248,16 @@ async fn import_rejects_reference_paths_that_are_not_present() {
         root: root.clone(),
         omitted_descendants: BTreeMap::new(),
         items: vec![bundle_item(
-            root.clone(),
+            root,
             None,
             BundleNesting::Root,
             json!({"present": "value"}),
         )],
-        references: vec![DynamoBundleReference {
-            source: root,
-            path: BundleDataPath::field("missing"),
-            target: DynamoBundleReferenceTarget::InTable {
-                lookup_id: PkSk {
-                    pk: "ROOT".into(),
-                    sk: "TARGET#one".into(),
-                },
-                clear_path: BundleDataPath::field("missing"),
-            },
-        }],
     };
 
     assert!(import_bundle::<TestRoot>(
         &util(MockDynamoBackend::new()),
-        &TestAlgorithms,
+        &InvalidReferenceAlgorithms,
         None,
         bundle,
         ImportMode::Merge,

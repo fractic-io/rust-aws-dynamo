@@ -27,19 +27,47 @@ pub(crate) fn build_id_map(
         .iter()
         .find(|item| item.id == bundle.root)
         .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
+    let mut duplicate_ids = DuplicateIdGenerator::new();
+    let root_id = place_root(root, parent, duplicate, root_id_logic, &mut duplicate_ids)?;
+    map_bundle_tree(bundle, root, root_id, |item, parent_id| {
+        place_child(
+            item,
+            parent_id,
+            duplicate,
+            item.id_logic,
+            &mut duplicate_ids,
+        )
+    })
+}
+
+/// Reconstructs the IDs represented by the bundle before any New remapping.
+pub(crate) fn build_source_id_map(
+    bundle: &DynamoBundle,
+) -> Result<HashMap<BundleId, PkSk>, ServerError> {
+    let root = bundle
+        .items
+        .iter()
+        .find(|item| item.id == bundle.root)
+        .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
+    map_bundle_tree(bundle, root, bundle.source_root.clone(), place_source_child)
+}
+
+// Internal.
+// ----------------------------------------------------------------------------
+
+fn map_bundle_tree(
+    bundle: &DynamoBundle,
+    root: &DynamoBundleItem,
+    root_id: PkSk,
+    mut map_child: impl FnMut(&DynamoBundleItem, &PkSk) -> Result<PkSk, ServerError>,
+) -> Result<HashMap<BundleId, PkSk>, ServerError> {
     let mut children = HashMap::<&BundleId, Vec<&DynamoBundleItem>>::new();
     for item in &bundle.items {
         if let Some(parent) = &item.parent {
             children.entry(parent).or_default().push(item);
         }
     }
-
-    let mut result = HashMap::with_capacity(bundle.items.len());
-    let mut duplicate_ids = DuplicateIdGenerator::new();
-    result.insert(
-        root.id.clone(),
-        place_root(root, parent, duplicate, root_id_logic, &mut duplicate_ids)?,
-    );
+    let mut result = HashMap::from([(root.id.clone(), root_id)]);
     let mut frontier = VecDeque::from([root]);
     while let Some(mapped_parent) = frontier.pop_front() {
         if let Some(child_items) = children.remove(&mapped_parent.id) {
@@ -48,14 +76,10 @@ pub(crate) fn build_id_map(
                 .cloned()
                 .ok_or_else(|| DynamoInvalidBundle::new("mapped bundle parent was missing"))?;
             for item in child_items {
-                let mapped = place_child(
-                    item,
-                    &parent_id,
-                    duplicate,
-                    item.id_logic,
-                    &mut duplicate_ids,
-                )?;
-                if result.insert(item.id.clone(), mapped).is_some() {
+                if result
+                    .insert(item.id.clone(), map_child(item, &parent_id)?)
+                    .is_some()
+                {
                     return Err(DynamoInvalidBundle::new("bundle IDs were invalid"));
                 }
                 frontier.push_back(item);
@@ -70,8 +94,22 @@ pub(crate) fn build_id_map(
     Ok(result)
 }
 
-// Internal.
-// ----------------------------------------------------------------------------
+fn place_source_child(item: &DynamoBundleItem, parent: &PkSk) -> Result<PkSk, ServerError> {
+    let sk = RawIdPath::new(&item.id.original_sk)
+        .logical_path()
+        .to_owned();
+    match item.nesting {
+        BundleNesting::TopLevel => Ok(PkSk {
+            pk: parent.sk.clone(),
+            sk,
+        }),
+        BundleNesting::Inline => Ok(PkSk {
+            pk: parent.pk.clone(),
+            sk,
+        }),
+        BundleNesting::Root => Err(DynamoInvalidBundle::new("non-root item had root nesting")),
+    }
+}
 
 fn place_root(
     item: &DynamoBundleItem,

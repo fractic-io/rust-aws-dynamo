@@ -9,7 +9,7 @@ use crate::{
     util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT},
 };
 
-use super::{BundleNesting, DynamoBundle, DynamoBundleReferenceTarget};
+use super::{BundleNesting, DynamoBundle};
 
 // Private interface.
 // ----------------------------------------------------------------------------
@@ -90,47 +90,6 @@ pub(crate) fn validate_bundle(bundle: &DynamoBundle) -> Result<(), ServerError> 
         return Err(DynamoInvalidBundle::new(
             "bundle source root metadata was invalid",
         ));
-    }
-    let mut reference_paths = HashSet::new();
-    for reference in &bundle.references {
-        let Some(source) = items.get(&reference.source) else {
-            return Err(DynamoInvalidBundle::new(
-                "bundle reference source was invalid",
-            ));
-        };
-        if !reference_paths.insert((&reference.source, &reference.path)) {
-            return Err(DynamoInvalidBundle::new(
-                "bundle contained multiple references at the same path",
-            ));
-        }
-        if !source
-            .value_at(&reference.path)
-            .is_some_and(Value::is_string)
-        {
-            return Err(DynamoInvalidBundle::new(
-                "bundle reference path was invalid or not a string",
-            ));
-        }
-        if matches!(
-            &reference.target,
-            DynamoBundleReferenceTarget::Bundled { id: target, .. } if !ids.contains(target)
-        ) {
-            return Err(DynamoInvalidBundle::new(
-                "bundle reference target was invalid",
-            ));
-        }
-        let clear_path = match &reference.target {
-            DynamoBundleReferenceTarget::InTable { clear_path, .. }
-            | DynamoBundleReferenceTarget::OutOfTable { clear_path, .. } => Some(clear_path),
-            DynamoBundleReferenceTarget::Bundled { .. } => None,
-        };
-        if clear_path.is_some_and(|clear_path| {
-            !clear_path.is_prefix_of(&reference.path) || source.value_at(clear_path).is_none()
-        }) {
-            return Err(DynamoInvalidBundle::new(
-                "external reference clear path was not a containing value",
-            ));
-        }
     }
     Ok(())
 }

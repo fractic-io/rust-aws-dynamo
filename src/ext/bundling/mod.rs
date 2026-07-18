@@ -6,11 +6,13 @@ mod impl_export;
 mod impl_import;
 mod utils_bundle_validation;
 mod utils_id_mapping;
+mod utils_reference_manifest;
 mod utils_value;
 
 pub use entities_bundle::*;
 pub use entities_policy::{
-    DynamoBundlePolicy, DynamoBundleReferenceMatch, DynamoBundleReferenceRule,
+    DynamoBundlePolicy, DynamoBundleReferenceEncoding, DynamoBundleReferenceMatch,
+    DynamoBundleReferenceRule,
 };
 
 use std::collections::HashSet;
@@ -51,8 +53,10 @@ impl<'a> Bundler<'a> {
         .await
     }
 
-    /// Imports a bundle. On ImportMode::New, all external references are zeroed
-    /// unless included in [`valid_out_of_table_refs`].
+    /// Imports a bundle. On ImportMode::New, out-of-table references are zeroed
+    /// unless included in [`valid_out_of_table_refs`]. On ImportMode::Replace,
+    /// the local association is preserved unless the bundled target is included
+    /// in the validated set.
     pub async fn import<O: DynamoObject>(
         &self,
         parent: Option<&PkSk>,
@@ -73,8 +77,8 @@ impl<'a> Bundler<'a> {
 }
 
 impl DynamoBundle {
-    /// Validates the portable bundle's version, topology, IDs, data shape, and
-    /// reference paths without performing database access.
+    /// Validates the portable bundle's version, topology, IDs, and data shape
+    /// without performing database access.
     pub fn validate(&self) -> Result<(), ServerError> {
         utils_bundle_validation::validate_bundle(self)
     }

@@ -21,7 +21,7 @@ use crate::{
 
 use super::{
     entities_policy::{configured_bundle_policy, DynamoBundleObjectPolicy},
-    reference_manifest::derive_reference_manifest,
+    utils_reference_manifest::derive_reference_manifest,
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
     DynamoBundleStorage,
 };

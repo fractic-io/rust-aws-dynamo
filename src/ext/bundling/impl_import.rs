@@ -25,12 +25,12 @@ use crate::{
 use super::{
     entities_policy::{configured_bundle_policy, validate_import_policy},
     impl_export::{collect_bundle_items, export_with_omissions},
-    reference_manifest::{
+    utils_bundle_validation::validate_bundle,
+    utils_id_mapping::{build_id_map, build_source_id_map},
+    utils_reference_manifest::{
         derive_out_of_table_references, derive_reference_manifest, BundleReference,
         BundleReferenceTarget,
     },
-    utils_bundle_validation::validate_bundle,
-    utils_id_mapping::{build_id_map, build_source_id_map},
     utils_value::{set_value_at_path, upsert_value_at_path},
     BundleDataPath, BundleId, BundleIdLogic, DynamoBundle, DynamoBundlePolicy,
     DynamoBundleReferenceEncoding, DynamoBundleStorage, DynamoImportResult, DynamoImportWarning,

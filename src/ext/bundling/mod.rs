@@ -4,9 +4,9 @@ mod entities_bundle;
 mod entities_policy;
 mod impl_export;
 mod impl_import;
-mod reference_manifest;
 mod utils_bundle_validation;
 mod utils_id_mapping;
+mod utils_reference_manifest;
 mod utils_value;
 
 pub use entities_bundle::*;

@@ -649,9 +649,7 @@ fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRenam
             continue;
         }
         if let Some(value) = data.remove(renamed.from) {
-            if !data.contains_key(renamed.to) {
-                data.insert(renamed.to.to_owned(), value);
-            }
+            data.entry(renamed.to).or_insert(value);
         }
     }
 }

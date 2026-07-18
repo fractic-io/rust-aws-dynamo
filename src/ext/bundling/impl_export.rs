@@ -7,8 +7,7 @@ use futures_util::{stream, StreamExt as _, TryStreamExt as _};
 use serde_json::Value;
 
 use crate::{
-    errors::DynamoInvalidBundle,
-    errors::{DynamoCalloutError, DynamoNotFound},
+    errors::{DynamoCalloutError, DynamoInvalidBundle, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
         identifiers::RawIdPath, parsing::dynamo_map_to_serde_value, pk_sk::id_fields_from_map, PkSk,
@@ -128,13 +127,16 @@ async fn export_bundle(
             label,
             original_sk: item.id.sk.clone(),
         };
-        let parent = item.parent.as_ref().map_or(Ok(None), |parent| {
-            by_pk_sk
-                .get(parent)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| DynamoInvalidBundle::new("bundle item preceded its parent"))
-        })?;
+        let parent = item
+            .parent
+            .as_ref()
+            .map(|parent| {
+                by_pk_sk
+                    .get(parent)
+                    .cloned()
+                    .ok_or_else(|| DynamoInvalidBundle::new("bundle item preceded its parent"))
+            })
+            .transpose()?;
         by_pk_sk.insert(item.id, id.clone());
         items.push(DynamoBundleItem {
             id,
@@ -381,7 +383,7 @@ async fn raw_query(
         .map_err(|error| DynamoCalloutError::with_debug(&error))?;
     Ok(pages
         .into_iter()
-        .flat_map(|page| page.items.unwrap_or_default())
+        .flat_map(|page| page.items.into_iter().flatten())
         .collect())
 }
 

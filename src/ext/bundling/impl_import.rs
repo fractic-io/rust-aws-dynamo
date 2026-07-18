@@ -96,8 +96,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     let policy = configured_bundle_policy(algorithms);
     policy.normalize_bundle_data(&mut bundle)?;
     let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic, parent)?;
-    let source_ids = build_source_id_map(&bundle)?;
-    let original_ids = source_ids
+    let original_ids = build_source_id_map(&bundle)?
         .into_iter()
         .map(|(bundle_id, id)| (id, bundle_id))
         .collect::<HashMap<_, _>>();
@@ -311,34 +310,33 @@ pub(super) fn reconcile_replace_out_of_table_references(
         })
         .collect::<Result<HashMap<_, _>, _>>()?;
     let mut warnings = Vec::new();
-    for ((source_id, clear_path), association) in &incoming {
+    for (key, association) in &incoming {
         if association.all_targets_valid {
             continue;
         }
+        let (source_id, clear_path) = key;
         let source_index = source_indexes
             .get(source_id)
             .copied()
             .ok_or_else(|| DynamoInvalidBundle::new("reference source was absent"))?;
-        let replacement = local_values
-            .get(&(source_id.clone(), clear_path.clone()))
-            .cloned()
-            .unwrap_or(Value::Null);
+        let replacement = local_values.get(key).cloned().unwrap_or(Value::Null);
         set_value_at_path(
             &mut bundle.items[source_index].data,
             clear_path,
             replacement,
         )?;
-        if !local_values.contains_key(&(source_id.clone(), clear_path.clone())) {
+        if !local_values.contains_key(key) {
             warnings.extend(std::iter::repeat_n(
                 DynamoImportWarning::ZeroedOutOfTableReference,
                 association.reference_count,
             ));
         }
     }
-    for ((source_id, clear_path), value) in local_values {
-        if incoming.contains_key(&(source_id.clone(), clear_path.clone())) {
+    for (key, value) in local_values {
+        if incoming.contains_key(&key) {
             continue;
         }
+        let (source_id, clear_path) = key;
         let Some(source_index) = source_indexes.get(&source_id).copied() else {
             continue;
         };

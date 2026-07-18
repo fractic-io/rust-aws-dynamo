@@ -67,7 +67,7 @@ pub(crate) fn derive_reference_manifest(
                             &matched.path,
                             original,
                             encoding,
-                            Some(&target_label),
+                            &target_label,
                         )?,
                         encoding,
                     },
@@ -188,7 +188,7 @@ fn find_bundled_target(
     path: &BundleDataPath,
     value: &Value,
     encoding: DynamoBundleReferenceEncoding,
-    target_label: Option<&str>,
+    target_label: &str,
 ) -> Result<BundleId, ServerError> {
     let raw = value
         .as_str()
@@ -198,7 +198,7 @@ fn find_bundled_target(
             .map_err(|_| DynamoInvalidBundle::new("pk/sk reference was invalid"))?;
         let target = original_ids
             .get(&id)
-            .filter(|target| target_label.is_none_or(|label| target.label == label))
+            .filter(|target| target.label == target_label)
             .ok_or_else(|| missing_internal_target(bundle, source, path, raw, target_label))?;
         return Ok(target.clone());
     }
@@ -216,10 +216,10 @@ fn find_bundled_target(
 fn unique_foreign_target<'a>(
     bundle: &'a DynamoBundle,
     reference: &str,
-    target_label: Option<&str>,
+    target_label: &str,
 ) -> Result<Option<&'a DynamoBundleItem>, ServerError> {
     let mut matches = bundle.items.iter().filter(|item| {
-        target_label.is_none_or(|label| item.id.label == label)
+        item.id.label == target_label
             && RawIdPath::new(&item.id.original_sk).foreign_ref_value() == reference
     });
     let target = matches.next();
@@ -236,14 +236,12 @@ fn missing_internal_target(
     source: &DynamoBundleItem,
     path: &BundleDataPath,
     raw_target: &str,
-    target_label: Option<&str>,
+    target_label: &str,
 ) -> ServerError {
     DynamoInvalidBundle::new(&format!(
         "portable export rooted at `{}` was not closed: `{}` item `{}` path `{path}` requires \
-         internal {}target `{raw_target}`, but that target was outside the exported scope",
-        bundle.source_root,
-        source.id.label,
-        source.id.original_sk,
-        target_label.map_or_else(String::new, |label| format!("`{label}` ")),
+         internal `{target_label}` target `{raw_target}`, but that target was outside the exported \
+         scope",
+        bundle.source_root, source.id.label, source.id.original_sk,
     ))
 }

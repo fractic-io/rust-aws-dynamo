@@ -23,7 +23,8 @@ pub(crate) fn set_value_at_path(
     path: &BundleDataPath,
     replacement: Value,
 ) -> Result<(), ServerError> {
-    set_value_at_path_inner(root, path, replacement, false)
+    *value_at_segments_mut(root, path.segments())? = replacement;
+    Ok(())
 }
 
 pub(crate) fn upsert_value_at_path(
@@ -31,43 +32,24 @@ pub(crate) fn upsert_value_at_path(
     path: &BundleDataPath,
     replacement: Value,
 ) -> Result<(), ServerError> {
-    set_value_at_path_inner(root, path, replacement, true)
+    if let Some((BundleDataPathSegment::Field(field), parent_path)) = path.segments().split_last() {
+        if let Value::Object(parent) = value_at_segments_mut(root, parent_path)? {
+            parent.insert(field.clone(), replacement);
+            return Ok(());
+        }
+    }
+    set_value_at_path(root, path, replacement)
 }
 
-fn set_value_at_path_inner(
-    root: &mut Value,
-    path: &BundleDataPath,
-    replacement: Value,
-    insert_terminal_field: bool,
-) -> Result<(), ServerError> {
-    fn descend(
-        value: &mut Value,
-        path: &[BundleDataPathSegment],
-        replacement: Value,
-        insert_terminal_field: bool,
-    ) -> Result<(), ServerError> {
-        let Some((segment, rest)) = path.split_first() else {
-            *value = replacement;
-            return Ok(());
-        };
-        if insert_terminal_field && rest.is_empty() {
-            if let BundleDataPathSegment::Field(field) = segment {
-                if let Value::Object(map) = value {
-                    map.insert(field.clone(), replacement);
-                    return Ok(());
-                }
-            }
-        }
-        let next = match (segment, value) {
+fn value_at_segments_mut<'a>(
+    root: &'a mut Value,
+    path: &[BundleDataPathSegment],
+) -> Result<&'a mut Value, ServerError> {
+    path.iter()
+        .try_fold(root, |value, segment| match (segment, value) {
             (BundleDataPathSegment::Field(field), Value::Object(map)) => map.get_mut(field),
             (BundleDataPathSegment::Index(index), Value::Array(list)) => list.get_mut(*index),
             _ => None,
-        }
-        .ok_or_else(|| {
-            DynamoInvalidBundleValue::new("reference path did not match bundled data")
-        })?;
-        descend(next, rest, replacement, insert_terminal_field)
-    }
-
-    descend(root, path.segments(), replacement, insert_terminal_field)
+        })
+        .ok_or_else(|| DynamoInvalidBundleValue::new("reference path did not match bundled data"))
 }

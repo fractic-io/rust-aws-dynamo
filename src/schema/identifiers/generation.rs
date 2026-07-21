@@ -172,6 +172,14 @@ fn uuid_v7_bound_value(timestamp_millis: i64, upper: bool) -> Result<Base62Uuid,
     Ok(Base62Uuid::encode(uuid::Uuid::from_u128(value)))
 }
 
+pub(crate) fn uuid_v7_value_lower_bound(timestamp_millis: i64) -> Result<String, ServerError> {
+    Ok(uuid_v7_bound_value(timestamp_millis, false)?.to_string())
+}
+
+pub(crate) fn uuid_v7_value_upper_bound(timestamp_millis: i64) -> Result<String, ServerError> {
+    Ok(uuid_v7_bound_value(timestamp_millis, true)?.to_string())
+}
+
 fn validate_timestamp_millis(timestamp_millis: i64) -> Result<u64, ServerError> {
     if !(0..=MAX_UUID_V7_TIMESTAMP_MILLIS).contains(&timestamp_millis) {
         return Err(DynamoInvalidOperation::with_debug(

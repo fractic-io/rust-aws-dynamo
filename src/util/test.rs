@@ -282,7 +282,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(DynamoQuery::partition("ROOT").begins_with("GROUP#123"))
+            .query::<TestDynamoObject>(DynamoQuery::pk("ROOT").sk_begins_with("GROUP#123"))
             .await
             .unwrap();
 
@@ -343,7 +343,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(DynamoQuery::partition("ROOT").begins_with("GROUP#123"))
+            .query::<TestDynamoObject>(DynamoQuery::pk("ROOT").sk_begins_with("GROUP#123"))
             .await
             .unwrap();
 
@@ -429,7 +429,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(DynamoQuery::partition("GROUP#456").begins_with("TEST#"))
+            .query::<TestDynamoObject>(DynamoQuery::pk("GROUP#456").sk_begins_with("TEST#"))
             .await
             .unwrap();
 
@@ -519,7 +519,7 @@ mod tests {
         let util = build_util(backend).await;
 
         let result = util
-            .query_generic(DynamoGenericQuery::partition("ROOT").begins_with("GROUP#123#TEST"))
+            .query_generic(DynamoGenericQuery::pk("ROOT").sk_begins_with("GROUP#123#TEST"))
             .await
             .unwrap();
 
@@ -547,12 +547,8 @@ mod tests {
             .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
 
         let util = build_util(backend).await;
-        let parent = PkSk {
-            pk: "ROOT".into(),
-            sk: "PARENT#1".into(),
-        };
-        let query = DynamoGenericQuery::partition(&parent)
-            .uuid_v7_range::<TestUuidV7DynamoObject>(1_000, 2_000)
+        let query = DynamoGenericQuery::pk("ROOT")
+            .sk_uuidv7_range::<TestUuidV7DynamoObject>("PARENT#1#TIMETEST#", 1_000, 2_000)
             .unwrap();
         let result = util.query_generic(query).await.unwrap();
 
@@ -586,9 +582,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<PartitionedSingleton>(
-                DynamoQuery::partition("ROOT").begins_with("@PARTSINGLE"),
-            )
+            .query::<PartitionedSingleton>(DynamoQuery::pk("ROOT").sk_begins_with("@PARTSINGLE"))
             .await
             .unwrap();
 

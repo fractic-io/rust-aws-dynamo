@@ -219,7 +219,7 @@ impl DynamoUtil {
         &self,
         query: DynamoQuery<T>,
     ) -> Result<Vec<T>, ServerError> {
-        self.query_generic(query.into_generic())
+        self.query_generic(query.into())
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -239,7 +239,7 @@ impl DynamoUtil {
     ) -> Result<Vec<T>, ServerError> {
         validate_parent_for::<T>(parent_id)?;
         let prefix = child_query_prefix::<T>(parent_id);
-        self.query::<T>(DynamoQuery::partition(prefix.pk).begins_with(prefix.sk))
+        self.query::<T>(DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk))
             .await
     }
 
@@ -295,7 +295,7 @@ impl DynamoUtil {
         if is_partitioned_id_logic::<T>() {
             let prefix = ext_base_id(&id);
             let items = self
-                .query::<T>(DynamoQuery::partition(prefix.pk).begins_with(prefix.sk))
+                .query::<T>(DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk))
                 .await?;
             match items.len() {
                 0 => Ok(None),

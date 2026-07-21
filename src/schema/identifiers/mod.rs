@@ -26,6 +26,7 @@ mod tests;
 
 pub(crate) use generation::{
     generate_id, regenerate_uuid_v4, regenerate_uuid_v7, uuid_v7_lower_bound, uuid_v7_upper_bound,
+    uuid_v7_value_lower_bound, uuid_v7_value_upper_bound,
 };
 pub(crate) use id_path::{ParsedIdPath, RawIdPath, TerminalSegmentKind};
 pub(crate) use placement::{

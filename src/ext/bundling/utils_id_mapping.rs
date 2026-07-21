@@ -5,7 +5,7 @@ use fractic_server_error::ServerError;
 use crate::errors::DynamoInvalidBundle;
 use crate::schema::{
     identifiers::{
-        place_terminal_segment_with, regenerate_timestamp, regenerate_uuid, IdPlacement, RawIdPath,
+        place_terminal_segment_with, regenerate_uuid_v4, regenerate_uuid_v7, IdPlacement, RawIdPath,
     },
     PkSk,
 };
@@ -182,8 +182,8 @@ fn destination_object_sk(
         return Ok(RawIdPath::new(original_sk).logical_path().to_string());
     }
     match id_logic {
-        BundleIdLogic::Uuid => regenerate_uuid(original_sk),
-        BundleIdLogic::Timestamp => regenerate_timestamp(original_sk),
+        BundleIdLogic::UuidV4 => regenerate_uuid_v4(original_sk),
+        BundleIdLogic::UuidV7 => regenerate_uuid_v7(original_sk),
         BundleIdLogic::Singleton
         | BundleIdLogic::IndexedSingleton
         | BundleIdLogic::BatchOptimized

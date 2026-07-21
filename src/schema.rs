@@ -19,7 +19,7 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// cases.
     ///
     /// Format: `LABEL#<base62-uuid-v4>`
-    Uuid,
+    UuidV4,
 
     /// New IDs are generated as UUID v7 values and losslessly encoded as 22
     /// fixed-width base62 characters. UUID v7 places a Unix epoch timestamp in
@@ -34,11 +34,11 @@ pub enum IdLogic<T: DynamoObjectData> {
     /// - UUID-v7 ordering within one process is monotonic, but callers should
     ///   use the explicit ordered APIs when application-defined order matters.
     ///
-    /// [`PkSk::timestamp_lower_bound`] and [`PkSk::timestamp_upper_bound`]
+    /// [`PkSk::uuid_v7_lower_bound`] and [`PkSk::uuid_v7_upper_bound`]
     /// construct keys suitable for UUID-v7 range queries.
     ///
     /// Format: `LABEL#<base62-uuid-v7>`
-    Timestamp,
+    UuidV7,
 
     /// Only one version of this object exists for a given parent, prefixed with
     /// a '@'. Subsequent writes always overwrite the existing object.
@@ -557,7 +557,13 @@ mod tests {
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
     pub struct Test1Data {}
-    dynamo_object!(Test1, Test1Data, "TEST1", IdLogic::Uuid, NestingLogic::Root);
+    dynamo_object!(
+        Test1,
+        Test1Data,
+        "TEST1",
+        IdLogic::UuidV4,
+        NestingLogic::Root
+    );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
     pub struct Test2Data {}
@@ -565,7 +571,7 @@ mod tests {
         Test2,
         Test2Data,
         "TEST2",
-        IdLogic::Timestamp,
+        IdLogic::UuidV7,
         NestingLogic::InlineChildOfAny
     );
 
@@ -668,8 +674,8 @@ mod tests {
 
     #[test]
     fn test_id_logic_accessor() {
-        assert!(matches!(Test1::id_logic(), IdLogic::Uuid));
-        assert!(matches!(Test2::id_logic(), IdLogic::Timestamp));
+        assert!(matches!(Test1::id_logic(), IdLogic::UuidV4));
+        assert!(matches!(Test2::id_logic(), IdLogic::UuidV7));
         assert!(matches!(Test3::id_logic(), IdLogic::Singleton));
         assert!(matches!(Test4::id_logic(), IdLogic::IndexedSingleton(_)));
     }

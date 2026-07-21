@@ -53,10 +53,13 @@ pub(crate) mod collapse_helpers;
 mod expand_helpers;
 mod id_relations;
 mod metadata_helpers;
+mod query;
 mod raw_batch_helpers;
 mod rename_safety_helpers;
 mod test;
 mod update_helpers;
+
+pub use query::{DynamoQuery, IndexConfig, NoSchema, RawDynamoQuery};
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
 pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
@@ -83,32 +86,6 @@ use raw_batch_helpers::{
     MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES,
 };
 
-#[derive(Debug, PartialEq)]
-pub enum DynamoQueryMatchType {
-    /// Match items whose sort key starts with the provided value.
-    BeginsWith,
-    /// Match items whose sort key exactly equals the provided value.
-    Equals,
-    /// Match items whose sort key is greater than the provided value.
-    GreaterThan,
-    /// Match items whose sort key is greater than or equal to the provided value.
-    GreaterThanOrEquals,
-    /// Match items whose sort key is less than the provided value.
-    LessThan,
-    /// Match items whose sort key is less than or equal to the provided value.
-    LessThanOrEquals,
-    /// Match items with the same prefix up to `delim` and suffix greater than
-    /// or equal to the provided value.
-    SuffixGreaterThanOrEquals(char),
-    /// Match items with the same prefix up to `delim` and suffix less than or
-    /// equal to the provided value.
-    SuffixLessThanOrEquals(char),
-    /// Match items whose sort key falls between the provided value and this
-    /// inclusive upper bound. Use this to build custom DynamoDB `BETWEEN`
-    /// queries from a lower-bound `PkSk` plus an explicit upper-bound string.
-    UntilInclusive(String),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamoInsertPosition {
@@ -124,13 +101,6 @@ pub enum TtlConfig {
     OneYear,
     CustomDuration(Duration),
     CustomDate(DateTime<Utc>),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct IndexConfig {
-    pub name: &'static str,
-    pub partition_field: &'static str,
-    pub sort_field: &'static str,
 }
 
 #[derive(Debug)]
@@ -241,13 +211,15 @@ impl DynamoUtil {
         })
     }
 
+    /// Executes a typed key query and deserializes matching objects.
+    ///
+    /// The query's schema marker determines the returned object type, so the
+    /// type only needs to be supplied when constructing the query.
     pub async fn query<T: DynamoObject>(
         &self,
-        index: Option<IndexConfig>,
-        id: PkSk,
-        match_type: DynamoQueryMatchType,
+        query: DynamoQuery<T>,
     ) -> Result<Vec<T>, ServerError> {
-        self.query_generic(index, id, match_type)
+        self.query_generic(query)
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -266,117 +238,28 @@ impl DynamoUtil {
         parent_id: &PkSk,
     ) -> Result<Vec<T>, ServerError> {
         validate_parent_for::<T>(parent_id)?;
-        self.query::<T>(
-            None,
-            child_query_prefix::<T>(parent_id),
-            DynamoQueryMatchType::BeginsWith,
-        )
-        .await
+        let prefix = child_query_prefix::<T>(parent_id);
+        self.query(DynamoQuery::<T>::begins_with(prefix.pk, prefix.sk))
+            .await
     }
 
-    pub async fn query_generic(
+    /// Executes any typed or schema-free key query and returns raw Dynamo maps.
+    ///
+    /// Accepting every schema marker allows validated helpers such as
+    /// [`DynamoQuery::<T>::uuid_v7_range`](DynamoQuery::uuid_v7_range) to be
+    /// used without giving up generic results.
+    pub async fn query_generic<S>(
         &self,
-        index: Option<IndexConfig>,
-        id: PkSk,
-        match_type: DynamoQueryMatchType,
+        query: DynamoQuery<S>,
     ) -> Result<Vec<DynamoMap>, ServerError> {
-        let (index_name, partition_field, sort_field) = match index {
-            Some(index) => (
-                Some(index.name.to_owned()),
-                index.partition_field,
-                index.sort_field,
-            ),
-            None => (None, "pk", "sk"),
-        };
-        let condition = match match_type {
-            DynamoQueryMatchType::BeginsWith if id.sk.is_empty() => {
-                format!("{partition_field} = :pk_val")
-            }
-            DynamoQueryMatchType::BeginsWith => {
-                format!("{partition_field} = :pk_val AND begins_with({sort_field}, :sk_val)")
-            }
-            DynamoQueryMatchType::Equals => {
-                format!("{partition_field} = :pk_val AND {sort_field} = :sk_val")
-            }
-            DynamoQueryMatchType::GreaterThan => {
-                format!("{partition_field} = :pk_val AND {sort_field} > :sk_val")
-            }
-            DynamoQueryMatchType::GreaterThanOrEquals => {
-                format!("{partition_field} = :pk_val AND {sort_field} >= :sk_val")
-            }
-            DynamoQueryMatchType::LessThan => {
-                format!("{partition_field} = :pk_val AND {sort_field} < :sk_val")
-            }
-            DynamoQueryMatchType::LessThanOrEquals => {
-                format!("{partition_field} = :pk_val AND {sort_field} <= :sk_val")
-            }
-            DynamoQueryMatchType::SuffixGreaterThanOrEquals(_)
-            | DynamoQueryMatchType::UntilInclusive(_) => {
-                format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_val AND :sk_max")
-            }
-            DynamoQueryMatchType::SuffixLessThanOrEquals(_) => {
-                format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_min AND :sk_val")
-            }
-        };
-        let mut attribute_values = HashMap::new();
-        attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
-        match match_type {
-            DynamoQueryMatchType::SuffixGreaterThanOrEquals(delim) => {
-                // '~' is the last ASCII character, so we can use it as an upper
-                // bound to limit the query to a given prefix (similar to using
-                // begins_with). Since queries can only have one condition per
-                // key, this allows us to effectively do >= and begins_with at
-                // the same time, by using a BETWEEN condition.
-                attribute_values.insert(
-                    ":sk_max".to_string(),
-                    AttributeValue::S(format!(
-                        "{}~",
-                        id.sk
-                            .rsplit_once(delim)
-                            .ok_or_else(|| {
-                                DynamoInvalidOperation::with_debug(
-                                    "sort field filter did not contain the delimiter char, so \
-                                     could not extract the prefix for matching",
-                                    &id.sk,
-                                )
-                            })?
-                            .0
-                    )),
-                );
-            }
-            DynamoQueryMatchType::SuffixLessThanOrEquals(delim) => {
-                attribute_values.insert(
-                    ":sk_min".to_string(),
-                    AttributeValue::S(
-                        id.sk
-                            .rsplit_once(delim)
-                            .ok_or_else(|| {
-                                DynamoInvalidOperation::with_debug(
-                                    "sort field filter did not contain the delimiter char, so \
-                                     could not extract the prefix for matching",
-                                    &id.sk,
-                                )
-                            })?
-                            .0
-                            .to_string(),
-                    ),
-                );
-            }
-            DynamoQueryMatchType::UntilInclusive(sk_max) => {
-                attribute_values.insert(":sk_max".to_string(), AttributeValue::S(sk_max));
-            }
-            _ => {}
-        }
-        if !id.sk.is_empty() {
-            attribute_values.insert(":sk_val".to_string(), AttributeValue::S(id.sk));
-        }
+        let expression = query.into_expression()?;
         let response = self
             .backend
             .query(
                 self.table.clone(),
-                index_name,
-                condition,
-                attribute_values,
+                expression.index_name,
+                expression.condition,
+                expression.attribute_values,
                 None,
             )
             .await
@@ -414,8 +297,9 @@ impl DynamoUtil {
         reject_batch_optimized_ids::<T>()?;
         validate_object_id::<T>(&id)?;
         if is_partitioned_id_logic::<T>() {
+            let prefix = ext_base_id(&id);
             let items = self
-                .query::<T>(None, ext_base_id(&id), DynamoQueryMatchType::BeginsWith)
+                .query(DynamoQuery::<T>::begins_with(prefix.pk, prefix.sk))
                 .await?;
             match items.len() {
                 0 => Ok(None),
@@ -640,7 +524,7 @@ impl DynamoUtil {
     }
 
     /// Use when complex ordering is required (for simple ordering, consider
-    /// using timestamp-based IDs).
+    /// using UUID-v7 IDs).
     ///
     /// Complex ordering works based on a 'sort' field, a floating point value
     /// such that a new item can always always be place in between any two
@@ -655,7 +539,7 @@ impl DynamoUtil {
     /// WARNING: This function requires checking all existing sort values to
     /// place the new item appropriately, which can be expensive. If inserting
     /// many ordered items, use batch_create_item_ordered (which only fetches
-    /// sort values once), or consider using timestamp-based IDs instead.
+    /// sort values once), or consider using UUID-v7 IDs instead.
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
         parent_id: &PkSk,

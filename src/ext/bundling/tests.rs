@@ -51,7 +51,7 @@ crate::dynamo_object!(
     TestRoot,
     TestRootData,
     "ROOTOBJ",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::Root
 );
 
@@ -61,7 +61,7 @@ crate::dynamo_object!(
     TestOtherRoot,
     TestOtherRootData,
     "OTHERROOT",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::Root
 );
 
@@ -73,7 +73,7 @@ crate::dynamo_object!(
     TestRenamedRoot,
     TestRenamedRootData,
     "RENAMEDROOT",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::Root,
     renamed = ["legacy_ref" => "canonical_ref"]
 );
@@ -119,7 +119,7 @@ crate::dynamo_object!(
     TestOrdered,
     TestOrderedData,
     "ORDERED",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::TopLevelChildOfAny
 );
 
@@ -132,7 +132,7 @@ crate::dynamo_object!(
     TestStrictChild,
     TestStrictChildData,
     "STRICTCHILD",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::TopLevelChildOf("ROOTOBJ")
 );
 
@@ -140,14 +140,14 @@ crate::dynamo_object!(
     TestSharedChildOfRoot,
     TestStrictChildData,
     "SHAREDCHILD",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::TopLevelChildOf("ROOTOBJ")
 );
 crate::dynamo_object!(
     TestSharedChildOfOtherRoot,
     TestStrictChildData,
     "SHAREDCHILD",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::TopLevelChildOf("OTHERROOT")
 );
 
@@ -172,15 +172,15 @@ impl DynamoCrudAlgorithms for TestAlgorithms {
             "EXTERNAL",
             "STEP",
         ] {
-            bundles.include_label(label, BundleIdLogic::Uuid, &[]);
+            bundles.include_label(label, BundleIdLogic::UuidV4, &[]);
         }
         bundles
-            .include_label("ROOTOBJ", BundleIdLogic::Uuid, &[])
+            .include_label("ROOTOBJ", BundleIdLogic::UuidV4, &[])
             .omit_descendant_label("RECALC")
             .omit_descendant_label("EXCLUDED")
             .custom_references(test_references());
         bundles
-            .include_label("CHILD", BundleIdLogic::Uuid, &[])
+            .include_label("CHILD", BundleIdLogic::UuidV4, &[])
             .omit_descendant_label("GRAND");
         bundles.include_label("BIG", BundleIdLogic::SingletonExt, &[]);
         bundles.include_label("BATCH", BundleIdLogic::BatchOptimized, &[]);
@@ -342,7 +342,7 @@ impl DynamoCrudAlgorithms for CountingAlgorithms {
 
     fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
         self.0.fetch_add(1, Ordering::Relaxed);
-        bundles.include_label("ROOTOBJ", BundleIdLogic::Uuid, &[]);
+        bundles.include_label("ROOTOBJ", BundleIdLogic::UuidV4, &[]);
     }
 }
 
@@ -397,7 +397,7 @@ fn bundle_item(
 ) -> DynamoBundleItem {
     DynamoBundleItem {
         id,
-        id_logic: BundleIdLogic::Uuid,
+        id_logic: BundleIdLogic::UuidV4,
         parent,
         nesting,
         storage: DynamoBundleStorage::Standard,
@@ -490,7 +490,7 @@ async fn recursive_export_scopes_omissions_and_normalizes_ext_partitioning() {
             sk: root_sk.into(),
         },
         BundleNesting::Root,
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
     )
     .await
     .unwrap();
@@ -586,7 +586,7 @@ async fn recursive_export_omits_configured_subtrees_and_records_the_omission() {
             sk: root_sk.into(),
         },
         BundleNesting::Root,
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
     )
     .await
     .unwrap();
@@ -624,7 +624,7 @@ async fn recursive_export_rejects_denied_descendants() {
             sk: root_sk.into(),
         },
         BundleNesting::Root,
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
     )
     .await
     .unwrap_err();
@@ -669,7 +669,7 @@ async fn export_reports_required_internal_targets_outside_the_scope() {
             sk: root_sk.into(),
         },
         BundleNesting::Root,
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
     )
     .await
     .unwrap_err();
@@ -708,7 +708,7 @@ async fn export_loads_bundle_configuration_once() {
             sk: "ROOTOBJ#root".into(),
         },
         BundleNesting::Root,
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
     )
     .await
     .unwrap();
@@ -735,7 +735,7 @@ fn import_omissions_are_the_strict_union_and_require_present_owner_labels() {
     let effective = validate_import_policy(
         &bundle,
         &configured_bundle_policy(&TestAlgorithms),
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
         None,
     )
     .unwrap();
@@ -749,7 +749,7 @@ fn import_omissions_are_the_strict_union_and_require_present_owner_labels() {
     assert!(validate_import_policy(
         &bundle,
         &configured_bundle_policy(&TestAlgorithms),
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
         None,
     )
     .is_err());
@@ -773,7 +773,7 @@ fn import_rejects_unconfigured_bundle_items() {
         assert!(validate_import_policy(
             &bundle,
             &configured_bundle_policy(&TestAlgorithms),
-            BundleIdLogic::Uuid,
+            BundleIdLogic::UuidV4,
             None,
         )
         .is_err());
@@ -790,7 +790,7 @@ fn import_rejects_id_logic_metadata_that_disagrees_with_local_policy() {
         BundleNesting::TopLevel,
         json!({}),
     );
-    child_item.id_logic = BundleIdLogic::Timestamp;
+    child_item.id_logic = BundleIdLogic::UuidV7;
     let bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
         source_root: PkSk {
@@ -808,7 +808,7 @@ fn import_rejects_id_logic_metadata_that_disagrees_with_local_policy() {
     assert!(validate_import_policy(
         &bundle,
         &configured_bundle_policy(&TestAlgorithms),
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
         None,
     )
     .is_err());
@@ -831,7 +831,7 @@ fn import_rejects_root_policy_that_disagrees_with_crud_type() {
     assert!(validate_import_policy(
         &bundle,
         &configured_bundle_policy(&TestAlgorithms),
-        BundleIdLogic::Timestamp,
+        BundleIdLogic::UuidV7,
         None,
     )
     .is_err());
@@ -861,17 +861,17 @@ fn import_validates_local_topology_and_data_shape() {
     };
     let policy = configured_bundle_policy(&SchemaValidationAlgorithms);
 
-    validate_import_policy(&bundle, &policy, BundleIdLogic::Uuid, None).unwrap();
+    validate_import_policy(&bundle, &policy, BundleIdLogic::UuidV4, None).unwrap();
 
     bundle.items[1].nesting = BundleNesting::Inline;
     let topology_error =
-        validate_import_policy(&bundle, &policy, BundleIdLogic::Uuid, None).unwrap_err();
+        validate_import_policy(&bundle, &policy, BundleIdLogic::UuidV4, None).unwrap_err();
     assert!(topology_error.to_string().contains("local schema"));
 
     bundle.items[1].nesting = BundleNesting::TopLevel;
     bundle.items[1].data = json!({"required_name": 4});
     let data_error =
-        validate_import_policy(&bundle, &policy, BundleIdLogic::Uuid, None).unwrap_err();
+        validate_import_policy(&bundle, &policy, BundleIdLogic::UuidV4, None).unwrap_err();
     assert!(data_error.to_string().contains("data did not match"));
 
     bundle.items[1].data = json!({"required_name": "valid", "sort": 4.0});
@@ -884,7 +884,7 @@ fn import_validates_local_topology_and_data_shape() {
     bundle.root = bundle.items[0].id.clone();
     bundle.items[1].parent = Some(bundle.root.clone());
     let parent_error =
-        validate_import_policy(&bundle, &policy, BundleIdLogic::Uuid, None).unwrap_err();
+        validate_import_policy(&bundle, &policy, BundleIdLogic::UuidV4, None).unwrap_err();
     assert!(parent_error
         .to_string()
         .contains("bundled parent label `OTHERROOT`"));
@@ -961,7 +961,7 @@ fn import_accepts_registered_schema_variants_sharing_a_label() {
     validate_import_policy(
         &bundle,
         &configured_bundle_policy(&SchemaValidationAlgorithms),
-        BundleIdLogic::Uuid,
+        BundleIdLogic::UuidV4,
         None,
     )
     .unwrap();
@@ -1247,7 +1247,7 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
         ],
     };
 
-    let mapped = build_id_map(&bundle, None, true, BundleIdLogic::Uuid).unwrap();
+    let mapped = build_id_map(&bundle, None, true, BundleIdLogic::UuidV4).unwrap();
     assert_eq!(mapped[&root].pk, "ROOT");
     assert_ne!(mapped[&root].sk, root.original_sk);
     assert_eq!(mapped[&top].pk, mapped[&root].sk);
@@ -1269,14 +1269,14 @@ fn duplicate_mapping_preserves_batch_ids_and_regenerates_ordered_timestamp_uuids
         BundleNesting::TopLevel,
         json!({}),
     );
-    first_timestamp_item.id_logic = BundleIdLogic::Timestamp;
+    first_timestamp_item.id_logic = BundleIdLogic::UuidV7;
     let mut second_timestamp_item = bundle_item(
         second_timestamp.clone(),
         Some(root.clone()),
         BundleNesting::TopLevel,
         json!({}),
     );
-    second_timestamp_item.id_logic = BundleIdLogic::Timestamp;
+    second_timestamp_item.id_logic = BundleIdLogic::UuidV7;
     let mut batch_item = bundle_item(
         batch.clone(),
         Some(root.clone()),
@@ -1300,7 +1300,7 @@ fn duplicate_mapping_preserves_batch_ids_and_regenerates_ordered_timestamp_uuids
         ],
     };
 
-    let mapped = build_id_map(&bundle, None, true, BundleIdLogic::Uuid).unwrap();
+    let mapped = build_id_map(&bundle, None, true, BundleIdLogic::UuidV4).unwrap();
     let first_value = mapped[&first_timestamp]
         .sk
         .rsplit_once('#')

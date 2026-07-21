@@ -10,7 +10,7 @@ use serde::{
 use crate::{errors::DynamoInvalidId, util::DynamoMap};
 
 use super::{
-    identifiers::{generate_id, timestamp_lower_bound, timestamp_upper_bound, RawIdPath, ROOT_KEY},
+    identifiers::{generate_id, uuid_v7_lower_bound, uuid_v7_upper_bound, RawIdPath, ROOT_KEY},
     DynamoObject, ForeignRef, PkSk,
 };
 
@@ -33,27 +33,27 @@ impl PkSk {
         generate_id::<T>(data, parent_id)
     }
 
-    /// Constructs the first possible ID for a timestamp-based object at the
-    /// given Unix epoch millisecond.
+    /// Constructs the first possible ID for a UUID-v7 object at the given Unix
+    /// epoch millisecond.
     ///
     /// This can be used as the lower key in a UUID-v7 timestamp range query.
-    pub fn timestamp_lower_bound<T: DynamoObject>(
+    pub fn uuid_v7_lower_bound<T: DynamoObject>(
         parent_id: &PkSk,
         timestamp_millis: i64,
     ) -> Result<PkSk, ServerError> {
-        timestamp_lower_bound::<T>(parent_id, timestamp_millis)
+        uuid_v7_lower_bound::<T>(parent_id, timestamp_millis)
     }
 
-    /// Constructs the last possible ID for a timestamp-based object at the
-    /// given Unix epoch millisecond.
+    /// Constructs the last possible ID for a UUID-v7 object at the given Unix
+    /// epoch millisecond.
     ///
     /// This can be used as the inclusive upper key in a UUID-v7 timestamp
     /// range query.
-    pub fn timestamp_upper_bound<T: DynamoObject>(
+    pub fn uuid_v7_upper_bound<T: DynamoObject>(
         parent_id: &PkSk,
         timestamp_millis: i64,
     ) -> Result<PkSk, ServerError> {
-        timestamp_upper_bound::<T>(parent_id, timestamp_millis)
+        uuid_v7_upper_bound::<T>(parent_id, timestamp_millis)
     }
 
     /// Parses the client-facing `pk|sk` representation.

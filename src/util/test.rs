@@ -13,8 +13,8 @@ mod tests {
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
         util::{
-            backend::MockDynamoBackend, DynamoQueryMatchType, DynamoUtil, AUTO_FIELDS_CREATED_AT,
-            AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
+            backend::MockDynamoBackend, DynamoQuery, DynamoUtil, RawDynamoQuery,
+            AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
         },
     };
 
@@ -46,20 +46,20 @@ mod tests {
         TestDynamoObject,
         TestDynamoObjectData,
         "TEST",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::InlineChildOfAny
     );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-    pub struct TestTimestampDynamoObjectData {
+    pub struct TestUuidV7DynamoObjectData {
         val_non_null: String,
         val_nullable: Option<String>,
     }
     dynamo_object!(
-        TestTimestampDynamoObject,
-        TestTimestampDynamoObjectData,
+        TestUuidV7DynamoObject,
+        TestUuidV7DynamoObjectData,
         "TIMETEST",
-        IdLogic::Timestamp,
+        IdLogic::UuidV7,
         NestingLogic::InlineChildOfAny
     );
 
@@ -71,7 +71,7 @@ mod tests {
         RenamedUpdateObject,
         RenamedUpdateObjectData,
         "RENAMEDUPDATE",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::InlineChildOfAny,
         renamed = ["old_name" -> "name"]
     );
@@ -88,7 +88,7 @@ mod tests {
         RenamedNestedUpdateObject,
         RenamedNestedUpdateObjectData,
         "RENAMEDNESTEDUPDATE",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::InlineChildOfAny,
         renamed = ["old_profile" -> "profile"]
     );
@@ -282,14 +282,10 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(
-                None,
-                PkSk {
-                    pk: "ROOT".to_string(),
-                    sk: "GROUP#123".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query(DynamoQuery::<TestDynamoObject>::begins_with(
+                "ROOT",
+                "GROUP#123",
+            ))
             .await
             .unwrap();
 
@@ -350,14 +346,10 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(
-                None,
-                PkSk {
-                    pk: "ROOT".to_string(),
-                    sk: "GROUP#123".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query(DynamoQuery::<TestDynamoObject>::begins_with(
+                "ROOT",
+                "GROUP#123",
+            ))
             .await
             .unwrap();
 
@@ -443,14 +435,10 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(
-                None,
-                PkSk {
-                    pk: "GROUP#456".to_string(),
-                    sk: "TEST#".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query(DynamoQuery::<TestDynamoObject>::begins_with(
+                "GROUP#456",
+                "TEST#",
+            ))
             .await
             .unwrap();
 
@@ -540,14 +528,7 @@ mod tests {
         let util = build_util(backend).await;
 
         let result = util
-            .query_generic(
-                None,
-                PkSk {
-                    pk: "ROOT".to_string(),
-                    sk: "GROUP#123#TEST".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query_generic(RawDynamoQuery::begins_with("ROOT", "GROUP#123#TEST"))
             .await
             .unwrap();
 
@@ -556,6 +537,34 @@ mod tests {
         // Lower sort value item first.
         assert_eq!(result[0], build_item_low_sort().1);
         assert_eq!(result[1], build_item_high_sort().1);
+    }
+
+    #[tokio::test]
+    async fn test_query_generic_accepts_typed_uuid_v7_range() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .withf(|table, index, condition, values, projection| {
+                table == "my_table"
+                    && index.is_none()
+                    && condition == "pk = :pk_val AND sk BETWEEN :sk_val AND :sk_max"
+                    && projection.is_none()
+                    && matches!(values.get(":pk_val"), Some(AttributeValue::S(pk)) if pk == "ROOT")
+                    && matches!(values.get(":sk_val"), Some(AttributeValue::S(sk)) if sk.starts_with("PARENT#1#TIMETEST#"))
+                    && matches!(values.get(":sk_max"), Some(AttributeValue::S(sk)) if sk.starts_with("PARENT#1#TIMETEST#"))
+            })
+            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+
+        let util = build_util(backend).await;
+        let parent = PkSk {
+            pk: "ROOT".into(),
+            sk: "PARENT#1".into(),
+        };
+        let query =
+            DynamoQuery::<TestUuidV7DynamoObject>::uuid_v7_range(&parent, 1_000, 2_000).unwrap();
+        let result = util.query_generic(query).await.unwrap();
+
+        assert!(result.is_empty());
     }
 
     #[tokio::test]
@@ -585,14 +594,10 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<PartitionedSingleton>(
-                None,
-                PkSk {
-                    pk: "ROOT".to_string(),
-                    sk: "@PARTSINGLE".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query(DynamoQuery::<PartitionedSingleton>::begins_with(
+                "ROOT",
+                "@PARTSINGLE",
+            ))
             .await
             .unwrap();
 
@@ -962,7 +967,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_create_item_timestamp_ids_are_unique_uuid_v7_values() {
+    async fn test_batch_create_item_uuid_v7_ids_are_unique() {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_batch_put_item()
@@ -995,12 +1000,12 @@ mod tests {
             sk: "GROUP#123".to_string(),
         };
         let result = util
-            .batch_create_item::<TestTimestampDynamoObject>(
+            .batch_create_item::<TestUuidV7DynamoObject>(
                 &parent_id,
                 vec![
-                    TestTimestampDynamoObjectData::default(),
-                    TestTimestampDynamoObjectData::default(),
-                    TestTimestampDynamoObjectData::default(),
+                    TestUuidV7DynamoObjectData::default(),
+                    TestUuidV7DynamoObjectData::default(),
+                    TestUuidV7DynamoObjectData::default(),
                 ],
             )
             .await

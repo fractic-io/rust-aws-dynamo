@@ -4,7 +4,7 @@
 //!
 //! | ID logic | Terminal segment |
 //! | --- | --- |
-//! | UUID, timestamp, batch | `LABEL#value` |
+//! | UUID-v4, UUID-v7, batch | `LABEL#value` |
 //! | Singleton | `@LABEL` |
 //! | Indexed singleton | `@LABEL[key]` |
 //!
@@ -25,8 +25,7 @@ mod relations;
 mod tests;
 
 pub(crate) use generation::{
-    generate_id, regenerate_timestamp, regenerate_uuid, timestamp_lower_bound,
-    timestamp_upper_bound,
+    generate_id, regenerate_uuid_v4, regenerate_uuid_v7, uuid_v7_lower_bound, uuid_v7_upper_bound,
 };
 pub(crate) use id_path::{ParsedIdPath, RawIdPath, TerminalSegmentKind};
 pub(crate) use placement::{

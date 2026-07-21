@@ -34,7 +34,7 @@ pub fn validate_object_id<T: DynamoObject>(id: &PkSk) -> Result<(), ServerError>
         IdLogic::IndexedSingleton(_) | IdLogic::IndexedSingletonExt(_) => {
             Some(TerminalSegmentKind::IndexedSingleton)
         }
-        IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {
+        IdLogic::UuidV4 | IdLogic::UuidV7 | IdLogic::BatchOptimized { .. } => {
             Some(TerminalSegmentKind::Regular)
         }
         IdLogic::Phantom => None,
@@ -119,35 +119,35 @@ mod tests {
         RootGroup,
         RootGroupData,
         "GROUP",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::Root
     );
     dynamo_object!(
         GroupTask,
         GroupTaskData,
         "TASK",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::InlineChildOf("GROUP")
     );
     dynamo_object!(
         GroupEvent,
         GroupEventData,
         "EVENT",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::TopLevelChildOf("GROUP")
     );
     dynamo_object!(
         InlineChildOfAny,
         InlineChildOfAnyData,
         "ANYINL",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::InlineChildOfAny
     );
     dynamo_object!(
         TopLevelChildOfAny,
         TopLevelChildOfAnyData,
         "ANYTOP",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::TopLevelChildOfAny
     );
     dynamo_object!(

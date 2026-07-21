@@ -32,9 +32,7 @@ pub struct BundleId {
 #[serde(rename_all = "snake_case")]
 pub enum BundleIdLogic {
     #[default]
-    #[serde(rename = "uuid", alias = "uuid_v4")]
     UuidV4,
-    #[serde(rename = "timestamp", alias = "uuid_v7")]
     UuidV7,
     Singleton,
     IndexedSingleton,

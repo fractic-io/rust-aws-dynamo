@@ -13,7 +13,7 @@ mod tests {
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
         util::{
-            backend::MockDynamoBackend, DynamoQuery, DynamoUtil, RawDynamoQuery,
+            backend::MockDynamoBackend, DynamoGenericQuery, DynamoQuery, DynamoUtil,
             AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
         },
     };
@@ -282,10 +282,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query(DynamoQuery::<TestDynamoObject>::begins_with(
-                "ROOT",
-                "GROUP#123",
-            ))
+            .query::<TestDynamoObject>(DynamoQuery::partition("ROOT").begins_with("GROUP#123"))
             .await
             .unwrap();
 
@@ -346,10 +343,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query(DynamoQuery::<TestDynamoObject>::begins_with(
-                "ROOT",
-                "GROUP#123",
-            ))
+            .query::<TestDynamoObject>(DynamoQuery::partition("ROOT").begins_with("GROUP#123"))
             .await
             .unwrap();
 
@@ -435,10 +429,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query(DynamoQuery::<TestDynamoObject>::begins_with(
-                "GROUP#456",
-                "TEST#",
-            ))
+            .query::<TestDynamoObject>(DynamoQuery::partition("GROUP#456").begins_with("TEST#"))
             .await
             .unwrap();
 
@@ -528,7 +519,7 @@ mod tests {
         let util = build_util(backend).await;
 
         let result = util
-            .query_generic(RawDynamoQuery::begins_with("ROOT", "GROUP#123#TEST"))
+            .query_generic(DynamoGenericQuery::partition("ROOT").begins_with("GROUP#123#TEST"))
             .await
             .unwrap();
 
@@ -540,7 +531,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_generic_accepts_typed_uuid_v7_range() {
+    async fn test_query_generic_accepts_uuid_v7_range() {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
@@ -560,8 +551,9 @@ mod tests {
             pk: "ROOT".into(),
             sk: "PARENT#1".into(),
         };
-        let query =
-            DynamoQuery::<TestUuidV7DynamoObject>::uuid_v7_range(&parent, 1_000, 2_000).unwrap();
+        let query = DynamoGenericQuery::partition(&parent)
+            .uuid_v7_range::<TestUuidV7DynamoObject>(1_000, 2_000)
+            .unwrap();
         let result = util.query_generic(query).await.unwrap();
 
         assert!(result.is_empty());
@@ -594,10 +586,9 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query(DynamoQuery::<PartitionedSingleton>::begins_with(
-                "ROOT",
-                "@PARTSINGLE",
-            ))
+            .query::<PartitionedSingleton>(
+                DynamoQuery::partition("ROOT").begins_with("@PARTSINGLE"),
+            )
             .await
             .unwrap();
 

@@ -80,7 +80,7 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
         sk: sk_strip_tail::<T>(T::id_logic(), example.sk)?,
     };
     let query = util
-        .query(DynamoQuery::<T>::begins_with(search_id.pk, search_id.sk))
+        .query::<T>(DynamoQuery::partition(search_id.pk).begins_with(search_id.sk))
         .await?;
     let mut existing_vals = query
         .iter()

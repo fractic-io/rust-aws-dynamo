@@ -59,7 +59,7 @@ mod rename_safety_helpers;
 mod test;
 mod update_helpers;
 
-pub use query::{DynamoQuery, IndexConfig, NoSchema, RawDynamoQuery};
+pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig};
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
 pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
@@ -219,7 +219,7 @@ impl DynamoUtil {
         &self,
         query: DynamoQuery<T>,
     ) -> Result<Vec<T>, ServerError> {
-        self.query_generic(query)
+        self.query_generic(query.into_generic())
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -239,18 +239,14 @@ impl DynamoUtil {
     ) -> Result<Vec<T>, ServerError> {
         validate_parent_for::<T>(parent_id)?;
         let prefix = child_query_prefix::<T>(parent_id);
-        self.query(DynamoQuery::<T>::begins_with(prefix.pk, prefix.sk))
+        self.query::<T>(DynamoQuery::partition(prefix.pk).begins_with(prefix.sk))
             .await
     }
 
-    /// Executes any typed or schema-free key query and returns raw Dynamo maps.
-    ///
-    /// Accepting every schema marker allows validated helpers such as
-    /// [`DynamoQuery::<T>::uuid_v7_range`](DynamoQuery::uuid_v7_range) to be
-    /// used without giving up generic results.
-    pub async fn query_generic<S>(
+    /// Executes a generic key query and returns raw Dynamo maps.
+    pub async fn query_generic(
         &self,
-        query: DynamoQuery<S>,
+        query: DynamoGenericQuery,
     ) -> Result<Vec<DynamoMap>, ServerError> {
         let expression = query.into_expression()?;
         let response = self
@@ -299,7 +295,7 @@ impl DynamoUtil {
         if is_partitioned_id_logic::<T>() {
             let prefix = ext_base_id(&id);
             let items = self
-                .query(DynamoQuery::<T>::begins_with(prefix.pk, prefix.sk))
+                .query::<T>(DynamoQuery::partition(prefix.pk).begins_with(prefix.sk))
                 .await?;
             match items.len() {
                 0 => Ok(None),

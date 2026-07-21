@@ -4,7 +4,7 @@
 /// Syntax:
 /// ```rust,ignore
 /// let (a, b, c) = query_generic!(
-///     dynamo_util => DynamoQuery::begins_with(id.pk, id.sk);
+///     dynamo_util => DynamoGenericQuery::partition(id.pk).begins_with(id.sk);
 ///     TypeA, TypeB, TypeC
 /// );
 /// ```

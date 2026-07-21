@@ -212,9 +212,6 @@ impl DynamoUtil {
     }
 
     /// Executes a typed key query and deserializes matching objects.
-    ///
-    /// The query's schema marker determines the returned object type, so the
-    /// type only needs to be supplied when constructing the query.
     pub async fn query<T: DynamoObject>(
         &self,
         query: DynamoQuery<T>,

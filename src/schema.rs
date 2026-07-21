@@ -14,28 +14,38 @@ pub mod timestamp;
 type IdKeyFn<T> = dyn for<'a> Fn(&'a T) -> Cow<'a, str>;
 
 pub enum IdLogic<T: DynamoObjectData> {
-    /// New IDs are generated as UUID v4 values and losslessly encoded as 22
-    /// fixed-width base62 characters. This option should be used in almost all
-    /// cases.
+    /// New IDs are generated as UUID v4 values, encoded as 22 base62 characters
+    /// (lossless, 122 bits of entropy). This option should be used in almost
+    /// all cases.
     ///
     /// Format: `LABEL#<base62-uuid-v4>`
     UuidV4,
 
-    /// New IDs are generated as UUID v7 values and losslessly encoded as 22
-    /// fixed-width base62 characters. UUID v7 places a Unix epoch timestamp in
-    /// the high bits, so DynamoDB's lexicographical sort order provides
-    /// efficient date-based ordering and filtering while retaining strong
-    /// random uniqueness within each millisecond.
+    /// New IDs are generated as UUID v7 values, encoded as 22 base62 characters
+    /// (lossless, 74 bits of entropy / ms). UUID v7 places a Unix epoch
+    /// timestamp in the high bits, so DynamoDB's lexicographical sort order
+    /// provides efficient date-based ordering and filtering while retaining
+    /// strong random uniqueness within each millisecond.
     ///
-    /// Important considerations:
+    /// This is a solid option for simple ordering and efficient filtering.
+    /// Since UUID-v7 is monotonic within-process, even batch-add operations
+    /// (that may generate many IDs within the same millisecond) result in
+    /// stable lexicographical ID ordering automatically.
+    ///
+    /// Note, however:
     /// - Object creation date is leaked to users by object ID.
+    /// - Re-ordering is not possible.
     /// - Changing ID logic later can be very risky / complex, so should
     ///   consider all future use-cases from the beginning.
-    /// - UUID-v7 ordering within one process is monotonic, but callers should
-    ///   use the explicit ordered APIs when application-defined order matters.
     ///
-    /// [`PkSk::uuid_v7_lower_bound`] and [`PkSk::uuid_v7_upper_bound`]
-    /// construct keys suitable for UUID-v7 range queries.
+    /// For complex ordering, re-ordering, and stronger order guarantees, use
+    /// UuidV4 with ordered insertion (flexible but inneficient) or a GSI based
+    /// on a separate timestamp field (efficient but requires extra storage).
+    ///
+    /// Use [`PkSk::uuid_v7_lower_bound`] and [`PkSk::uuid_v7_upper_bound`] to
+    /// construct keys for UUID-v7 comparisons, or UUID-v7-specific
+    /// [`DynamoQuery::pk(...).sk_uuidv7_range(...)`] queries for efficient
+    /// filtering.
     ///
     /// Format: `LABEL#<base62-uuid-v7>`
     UuidV7,
@@ -477,9 +487,9 @@ pub struct PkSk {
 }
 
 /// Custom struct to hold a minimal reference to a PkSk for efficient database
-/// storage, generally only storing the terminal ID value. The original
-/// PkSk can be reconstructed by manually providing the context Pk and Sk
-/// prefixes. This can be particularly useful for indexed singleton keys or GSIs.
+/// storage, generally only storing the terminal ID value. The original PkSk can
+/// be reconstructed by manually providing the context Pk and Sk prefixes. This
+/// can be particularly useful for indexed singleton keys or GSIs.
 #[derive(Debug, PartialEq, Clone, Hash, Eq)]
 pub struct ForeignRef<'a>(Cow<'a, str>);
 

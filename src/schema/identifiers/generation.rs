@@ -90,17 +90,9 @@ pub(crate) fn uuid_v7_upper_bound<T: DynamoObject>(
     uuid_v7_bound::<T>(parent, timestamp_millis, true)
 }
 
-/// Regenerates the terminal segment value of a UUID-v4 ID.
-pub(crate) fn regenerate_uuid_v4(sk: &str) -> Result<String, ServerError> {
-    let value = new_uuid_v4_value();
-    Ok(RawIdPath::new(sk)
-        .parse()?
-        .with_terminal_segment_value(value.as_str()))
-}
-
-/// Regenerates the terminal segment value of a UUID-v7 ID.
-pub(crate) fn regenerate_uuid_v7(sk: &str) -> Result<String, ServerError> {
-    let value = new_uuid_v7_value();
+/// Replaces the terminal segment value of a UUID-identified sort key.
+pub(crate) fn regenerate_uuid(sk: &str, uuid: uuid::Uuid) -> Result<String, ServerError> {
+    let value = Base62Uuid::encode(uuid);
     Ok(RawIdPath::new(sk)
         .parse()?
         .with_terminal_segment_value(value.as_str()))

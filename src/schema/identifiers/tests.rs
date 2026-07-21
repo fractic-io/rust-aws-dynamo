@@ -172,16 +172,18 @@ fn generation_enforces_parent_relationships() {
 
 #[test]
 fn regenerates_only_non_singleton_segment_values() {
-    let regenerated = regenerate_uuid_v4("PARENT#old#CHILD#old").unwrap();
+    let regenerated = regenerate_uuid("PARENT#old#CHILD#old", uuid::Uuid::new_v4()).unwrap();
     assert!(regenerated.starts_with("PARENT#old#CHILD#"));
     assert_ne!(regenerated, "PARENT#old#CHILD#old");
 
     assert_eq!(
-        regenerate_uuid_v7("#CHILD#old").unwrap().len(),
+        regenerate_uuid("#CHILD#old", uuid::Uuid::now_v7())
+            .unwrap()
+            .len(),
         "#CHILD#".len() + 22
     );
     assert_eq!(
-        regenerate_uuid_v4("@SETTINGS[key]").unwrap(),
+        regenerate_uuid("@SETTINGS[key]", uuid::Uuid::new_v4()).unwrap(),
         "@SETTINGS[key]"
     );
 }

@@ -1258,25 +1258,25 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
 }
 
 #[test]
-fn duplicate_mapping_preserves_batch_ids_and_regenerates_ordered_timestamp_uuids() {
+fn duplicate_mapping_preserves_batch_ids_and_regenerates_uuid_v7_ids() {
     let root = id(0, "ROOTOBJ", "ROOTOBJ#old");
-    let first_timestamp = id(1, "EVENT", "EVENT#0000000000000001");
-    let second_timestamp = id(2, "EVENT", "EVENT#0000000000000002");
+    let first_uuid_v7 = id(1, "EVENT", "EVENT#0000000000000001");
+    let second_uuid_v7 = id(2, "EVENT", "EVENT#0000000000000002");
     let batch = id(3, "BATCH", "BATCH#0");
-    let mut first_timestamp_item = bundle_item(
-        first_timestamp.clone(),
+    let mut first_uuid_v7_item = bundle_item(
+        first_uuid_v7.clone(),
         Some(root.clone()),
         BundleNesting::TopLevel,
         json!({}),
     );
-    first_timestamp_item.id_logic = BundleIdLogic::UuidV7;
-    let mut second_timestamp_item = bundle_item(
-        second_timestamp.clone(),
+    first_uuid_v7_item.id_logic = BundleIdLogic::UuidV7;
+    let mut second_uuid_v7_item = bundle_item(
+        second_uuid_v7.clone(),
         Some(root.clone()),
         BundleNesting::TopLevel,
         json!({}),
     );
-    second_timestamp_item.id_logic = BundleIdLogic::UuidV7;
+    second_uuid_v7_item.id_logic = BundleIdLogic::UuidV7;
     let mut batch_item = bundle_item(
         batch.clone(),
         Some(root.clone()),
@@ -1294,20 +1294,20 @@ fn duplicate_mapping_preserves_batch_ids_and_regenerates_ordered_timestamp_uuids
         omitted_descendants: BTreeMap::new(),
         items: vec![
             bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
-            first_timestamp_item,
-            second_timestamp_item,
+            first_uuid_v7_item,
+            second_uuid_v7_item,
             batch_item,
         ],
     };
 
     let mapped = build_id_map(&bundle, None, true, BundleIdLogic::UuidV4).unwrap();
-    let first_value = mapped[&first_timestamp]
+    let first_value = mapped[&first_uuid_v7]
         .sk
         .rsplit_once('#')
         .unwrap()
         .1
         .to_string();
-    let second_value = mapped[&second_timestamp]
+    let second_value = mapped[&second_uuid_v7]
         .sk
         .rsplit_once('#')
         .unwrap()

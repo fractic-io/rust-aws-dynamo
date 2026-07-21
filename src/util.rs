@@ -248,7 +248,7 @@ impl DynamoUtil {
         &self,
         query: DynamoGenericQuery,
     ) -> Result<Vec<DynamoMap>, ServerError> {
-        let expression = query.into_expression()?;
+        let expression = query.into_expression();
         let response = self
             .backend
             .query(
@@ -261,32 +261,32 @@ impl DynamoUtil {
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
 
-        let mut items = expand_batched_items(
+        let items = collapse_partitioned_items(expand_batched_items(
             response
                 .into_iter()
                 .flat_map(|page| page.items.unwrap_or_default().into_iter())
                 .collect(),
-        );
-        items = collapse_partitioned_items(items)?;
+        ))?;
 
         // Sort by sort key. Since 'sort_by' is stable, ID-based ordering is
         // preserved for items without a sort key.
-        let sort = |item: &DynamoMap| {
-            item.get(AUTO_FIELDS_SORT)
-                .and_then(|value| value.as_n().ok())
-                .and_then(|value| value.parse::<f64>().ok())
-        };
-        items.sort_by(|a, b| {
-            let a_sort = sort(a);
-            let b_sort = sort(b);
-            match (a_sort, b_sort) {
-                (Some(a), Some(b)) => a.partial_cmp(&b).unwrap(),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            }
+        let mut items = items
+            .into_iter()
+            .map(|item| {
+                let sort = item
+                    .get(AUTO_FIELDS_SORT)
+                    .and_then(|value| value.as_n().ok())
+                    .and_then(|value| value.parse::<f64>().ok());
+                (item, sort)
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|(_, a_sort), (_, b_sort)| match (a_sort, b_sort) {
+            (Some(a), Some(b)) => a.total_cmp(b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
         });
-        Ok(items)
+        Ok(items.into_iter().map(|(item, _)| item).collect())
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {

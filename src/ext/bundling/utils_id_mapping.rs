@@ -4,9 +4,7 @@ use fractic_server_error::ServerError;
 
 use crate::errors::DynamoInvalidBundle;
 use crate::schema::{
-    identifiers::{
-        place_terminal_segment_with, regenerate_uuid_v4, regenerate_uuid_v7, IdPlacement, RawIdPath,
-    },
+    identifiers::{place_terminal_segment_with, regenerate_uuid, IdPlacement, RawIdPath},
     PkSk,
 };
 
@@ -59,19 +57,22 @@ fn map_bundle_tree(
             children.entry(parent).or_default().push(item);
         }
     }
-    let mut result = HashMap::from([(root.id.clone(), root_id)]);
+    let mut result = HashMap::with_capacity(bundle.items.len());
+    result.insert(root.id.clone(), root_id);
     let mut frontier = VecDeque::from([root]);
     while let Some(mapped_parent) = frontier.pop_front() {
         if let Some(child_items) = children.remove(&mapped_parent.id) {
-            let parent_id = result
-                .get(&mapped_parent.id)
-                .cloned()
-                .ok_or_else(|| DynamoInvalidBundle::new("mapped bundle parent was missing"))?;
-            for item in child_items {
-                if result
-                    .insert(item.id.clone(), map_child(item, &parent_id)?)
-                    .is_some()
-                {
+            let mapped_children = {
+                let parent_id = result
+                    .get(&mapped_parent.id)
+                    .ok_or_else(|| DynamoInvalidBundle::new("mapped bundle parent was missing"))?;
+                child_items
+                    .into_iter()
+                    .map(|item| map_child(item, parent_id).map(|id| (item, id)))
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            for (item, id) in mapped_children {
+                if result.insert(item.id.clone(), id).is_some() {
                     return Err(DynamoInvalidBundle::new("bundle IDs were invalid"));
                 }
                 frontier.push_back(item);
@@ -182,8 +183,8 @@ fn destination_object_sk(
         return Ok(RawIdPath::new(original_sk).logical_path().to_string());
     }
     match id_logic {
-        BundleIdLogic::UuidV4 => regenerate_uuid_v4(original_sk),
-        BundleIdLogic::UuidV7 => regenerate_uuid_v7(original_sk),
+        BundleIdLogic::UuidV4 => regenerate_uuid(original_sk, uuid::Uuid::new_v4()),
+        BundleIdLogic::UuidV7 => regenerate_uuid(original_sk, uuid::Uuid::now_v7()),
         BundleIdLogic::Singleton
         | BundleIdLogic::IndexedSingleton
         | BundleIdLogic::BatchOptimized

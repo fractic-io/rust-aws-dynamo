@@ -26,14 +26,16 @@ pub struct DynamoGenericQuery {
     sort: SortKeyCondition,
 }
 
-/// Builds a typed query against the primary table index.
+/// Builds a typed query after its primary or secondary index is selected.
 pub struct DynamoQueryPartition<T, P> {
+    index: Option<IndexConfig>,
     partition: P,
     schema: PhantomData<fn() -> T>,
 }
 
-/// Builds a generic query against the primary table index.
+/// Builds a generic query after its primary or secondary index is selected.
 pub struct DynamoGenericQueryPartition<P> {
+    index: Option<IndexConfig>,
     partition: P,
 }
 
@@ -46,19 +48,6 @@ pub struct DynamoQueryIndex<T> {
 /// Selects the partition queried through a secondary index for generic results.
 pub struct DynamoGenericQueryIndex {
     index: IndexConfig,
-}
-
-/// Builds a typed query against a secondary index.
-pub struct DynamoQueryIndexPartition<T, P> {
-    index: IndexConfig,
-    partition: P,
-    schema: PhantomData<fn() -> T>,
-}
-
-/// Builds a generic query against a secondary index.
-pub struct DynamoGenericQueryIndexPartition<P> {
-    index: IndexConfig,
-    partition: P,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -90,6 +79,7 @@ impl<T> DynamoQuery<T> {
     /// Starts a query against the primary table index.
     pub fn pk<P>(partition: P) -> DynamoQueryPartition<T, P> {
         DynamoQueryPartition {
+            index: None,
             partition,
             schema: PhantomData,
         }
@@ -107,7 +97,10 @@ impl<T> DynamoQuery<T> {
 impl DynamoGenericQuery {
     /// Starts a query against the primary table index.
     pub fn pk<P>(partition: P) -> DynamoGenericQueryPartition<P> {
-        DynamoGenericQueryPartition { partition }
+        DynamoGenericQueryPartition {
+            index: None,
+            partition,
+        }
     }
 
     /// Starts a query against `index`.
@@ -132,6 +125,7 @@ impl DynamoGenericQuery {
         sk_prefix: impl Into<String>,
         start_millis: i64,
         end_millis: i64,
+        index: Option<IndexConfig>,
     ) -> Result<Self, ServerError> {
         if start_millis > end_millis {
             return Err(DynamoInvalidOperation::with_debug(
@@ -155,7 +149,7 @@ impl DynamoGenericQuery {
         }
         let lower = format!("{sk_prefix}{}", uuid_v7_value_lower_bound(start_millis)?);
         let upper = format!("{sk_prefix}{}", uuid_v7_value_upper_bound(end_millis)?);
-        Self::between_inclusive(partition, lower, upper, None)
+        Self::between_inclusive(partition, lower, upper, index)
     }
 
     fn between_inclusive(
@@ -216,7 +210,7 @@ impl DynamoGenericQuery {
         Self::between_inclusive(partition, lower, sort_key, index)
     }
 
-    pub(super) fn into_expression(self) -> Result<QueryExpression, ServerError> {
+    pub(super) fn into_expression(self) -> QueryExpression {
         let (index_name, partition_field, sort_field) = match self.index {
             Some(index) => (
                 Some(index.name.to_owned()),
@@ -259,11 +253,11 @@ impl DynamoGenericQuery {
                 format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_val AND :sk_max")
             }
         };
-        Ok(QueryExpression {
+        QueryExpression {
             index_name,
             condition,
             attribute_values,
-        })
+        }
     }
 }
 
@@ -275,9 +269,9 @@ impl<T> From<DynamoQuery<T>> for DynamoGenericQuery {
 
 impl<T> DynamoQueryIndex<T> {
     /// Selects the partition-key value for this index query.
-    pub fn pk<P>(self, partition: P) -> DynamoQueryIndexPartition<T, P> {
-        DynamoQueryIndexPartition {
-            index: self.index,
+    pub fn pk<P>(self, partition: P) -> DynamoQueryPartition<T, P> {
+        DynamoQueryPartition {
+            index: Some(self.index),
             partition,
             schema: PhantomData,
         }
@@ -286,15 +280,15 @@ impl<T> DynamoQueryIndex<T> {
 
 impl DynamoGenericQueryIndex {
     /// Selects the partition-key value for this index query.
-    pub fn pk<P>(self, partition: P) -> DynamoGenericQueryIndexPartition<P> {
-        DynamoGenericQueryIndexPartition {
-            index: self.index,
+    pub fn pk<P>(self, partition: P) -> DynamoGenericQueryPartition<P> {
+        DynamoGenericQueryPartition {
+            index: Some(self.index),
             partition,
         }
     }
 }
 
-macro_rules! ordinary_partition_terminals {
+macro_rules! partition_terminals {
     ($builder:ident $(<$schema:ident>)?, $output:ty, $wrap:expr) => {
         impl<$($schema,)? P: Into<String>> $builder<$($schema,)? P> {
             /// Matches every item in the selected partition.
@@ -302,7 +296,7 @@ macro_rules! ordinary_partition_terminals {
                 $wrap(DynamoGenericQuery::new(
                     self.partition,
                     SortKeyCondition::Any,
-                    None,
+                    self.index,
                 ))
             }
 
@@ -311,7 +305,7 @@ macro_rules! ordinary_partition_terminals {
                 $wrap(DynamoGenericQuery::new(
                     self.partition,
                     SortKeyCondition::Equals(sort_key.into()),
-                    None,
+                    self.index,
                 ))
             }
 
@@ -324,7 +318,7 @@ macro_rules! ordinary_partition_terminals {
                     $wrap(DynamoGenericQuery::new(
                         self.partition,
                         SortKeyCondition::BeginsWith(prefix),
-                        None,
+                        self.index,
                     ))
                 }
             }
@@ -334,7 +328,7 @@ macro_rules! ordinary_partition_terminals {
                 $wrap(DynamoGenericQuery::new(
                     self.partition,
                     SortKeyCondition::GreaterThan(sort_key.into()),
-                    None,
+                    self.index,
                 ))
             }
 
@@ -343,7 +337,7 @@ macro_rules! ordinary_partition_terminals {
                 $wrap(DynamoGenericQuery::new(
                     self.partition,
                     SortKeyCondition::GreaterThanOrEqual(sort_key.into()),
-                    None,
+                    self.index,
                 ))
             }
 
@@ -352,7 +346,7 @@ macro_rules! ordinary_partition_terminals {
                 $wrap(DynamoGenericQuery::new(
                     self.partition,
                     SortKeyCondition::LessThan(sort_key.into()),
-                    None,
+                    self.index,
                 ))
             }
 
@@ -361,7 +355,7 @@ macro_rules! ordinary_partition_terminals {
                 $wrap(DynamoGenericQuery::new(
                     self.partition,
                     SortKeyCondition::LessThanOrEqual(sort_key.into()),
-                    None,
+                    self.index,
                 ))
             }
 
@@ -371,7 +365,7 @@ macro_rules! ordinary_partition_terminals {
                 lower: impl Into<String>,
                 upper: impl Into<String>,
             ) -> Result<$output, ServerError> {
-                DynamoGenericQuery::between_inclusive(self.partition, lower, upper, None)
+                DynamoGenericQuery::between_inclusive(self.partition, lower, upper, self.index)
                     .map($wrap)
             }
 
@@ -385,7 +379,7 @@ macro_rules! ordinary_partition_terminals {
                     self.partition,
                     sort_key,
                     delimiter,
-                    None,
+                    self.index,
                 )
                 .map($wrap)
             }
@@ -400,7 +394,7 @@ macro_rules! ordinary_partition_terminals {
                     self.partition,
                     sort_key,
                     delimiter,
-                    None,
+                    self.index,
                 )
                 .map($wrap)
             }
@@ -408,146 +402,15 @@ macro_rules! ordinary_partition_terminals {
     };
 }
 
-ordinary_partition_terminals!(DynamoQueryPartition<T>, DynamoQuery<T>, |inner| {
+partition_terminals!(DynamoQueryPartition<T>, DynamoQuery<T>, |inner| {
     DynamoQuery {
         inner,
         schema: PhantomData,
     }
 });
-ordinary_partition_terminals!(DynamoGenericQueryPartition, DynamoGenericQuery, |inner| {
+partition_terminals!(DynamoGenericQueryPartition, DynamoGenericQuery, |inner| {
     inner
 });
-
-macro_rules! index_partition_terminals {
-    ($builder:ident $(<$schema:ident>)?, $output:ty, $wrap:expr) => {
-        impl<$($schema,)? P: Into<String>> $builder<$($schema,)? P> {
-            /// Matches every item in the selected index partition.
-            pub fn all(self) -> $output {
-                $wrap(DynamoGenericQuery::new(
-                    self.partition,
-                    SortKeyCondition::Any,
-                    Some(self.index),
-                ))
-            }
-
-            /// Matches items whose index sort key exactly equals `sort_key`.
-            pub fn sk_equals(self, sort_key: impl Into<String>) -> $output {
-                $wrap(DynamoGenericQuery::new(
-                    self.partition,
-                    SortKeyCondition::Equals(sort_key.into()),
-                    Some(self.index),
-                ))
-            }
-
-            /// Matches items whose index sort key starts with `prefix`.
-            pub fn sk_begins_with(self, prefix: impl Into<String>) -> $output {
-                let prefix = prefix.into();
-                if prefix.is_empty() {
-                    self.all()
-                } else {
-                    $wrap(DynamoGenericQuery::new(
-                        self.partition,
-                        SortKeyCondition::BeginsWith(prefix),
-                        Some(self.index),
-                    ))
-                }
-            }
-
-            /// Matches items whose index sort key is greater than `sort_key`.
-            pub fn sk_greater_than(self, sort_key: impl Into<String>) -> $output {
-                $wrap(DynamoGenericQuery::new(
-                    self.partition,
-                    SortKeyCondition::GreaterThan(sort_key.into()),
-                    Some(self.index),
-                ))
-            }
-
-            /// Matches items whose index sort key is greater than or equal to `sort_key`.
-            pub fn sk_greater_than_or_equal(self, sort_key: impl Into<String>) -> $output {
-                $wrap(DynamoGenericQuery::new(
-                    self.partition,
-                    SortKeyCondition::GreaterThanOrEqual(sort_key.into()),
-                    Some(self.index),
-                ))
-            }
-
-            /// Matches items whose index sort key is less than `sort_key`.
-            pub fn sk_less_than(self, sort_key: impl Into<String>) -> $output {
-                $wrap(DynamoGenericQuery::new(
-                    self.partition,
-                    SortKeyCondition::LessThan(sort_key.into()),
-                    Some(self.index),
-                ))
-            }
-
-            /// Matches items whose index sort key is less than or equal to `sort_key`.
-            pub fn sk_less_than_or_equal(self, sort_key: impl Into<String>) -> $output {
-                $wrap(DynamoGenericQuery::new(
-                    self.partition,
-                    SortKeyCondition::LessThanOrEqual(sort_key.into()),
-                    Some(self.index),
-                ))
-            }
-
-            /// Matches items whose index sort key is within the inclusive range.
-            pub fn sk_between_inclusive(
-                self,
-                lower: impl Into<String>,
-                upper: impl Into<String>,
-            ) -> Result<$output, ServerError> {
-                DynamoGenericQuery::between_inclusive(
-                    self.partition,
-                    lower,
-                    upper,
-                    Some(self.index),
-                )
-                .map($wrap)
-            }
-
-            /// Matches the same delimited index-key family at or above `sort_key`.
-            pub fn sk_same_prefix_at_or_after(
-                self,
-                sort_key: impl Into<String>,
-                delimiter: char,
-            ) -> Result<$output, ServerError> {
-                DynamoGenericQuery::same_prefix_at_or_after(
-                    self.partition,
-                    sort_key,
-                    delimiter,
-                    Some(self.index),
-                )
-                .map($wrap)
-            }
-
-            /// Matches the same delimited index-key family at or below `sort_key`.
-            pub fn sk_same_prefix_at_or_before(
-                self,
-                sort_key: impl Into<String>,
-                delimiter: char,
-            ) -> Result<$output, ServerError> {
-                DynamoGenericQuery::same_prefix_at_or_before(
-                    self.partition,
-                    sort_key,
-                    delimiter,
-                    Some(self.index),
-                )
-                .map($wrap)
-            }
-        }
-    };
-}
-
-index_partition_terminals!(DynamoQueryIndexPartition<T>, DynamoQuery<T>, |inner| {
-    DynamoQuery {
-        inner,
-        schema: PhantomData,
-    }
-});
-index_partition_terminals!(
-    DynamoGenericQueryIndexPartition,
-    DynamoGenericQuery,
-    |inner| inner
-);
 
 impl<T: DynamoObject, P: Into<String>> DynamoQueryPartition<T, P> {
     /// Matches UUID-v7 sort keys within the inclusive millisecond range.
@@ -560,11 +423,17 @@ impl<T: DynamoObject, P: Into<String>> DynamoQueryPartition<T, P> {
         start_millis: i64,
         end_millis: i64,
     ) -> Result<DynamoQuery<T>, ServerError> {
-        DynamoGenericQuery::uuidv7_range::<T>(self.partition, sk_prefix, start_millis, end_millis)
-            .map(|inner| DynamoQuery {
-                inner,
-                schema: PhantomData,
-            })
+        DynamoGenericQuery::uuidv7_range::<T>(
+            self.partition,
+            sk_prefix,
+            start_millis,
+            end_millis,
+            self.index,
+        )
+        .map(|inner| DynamoQuery {
+            inner,
+            schema: PhantomData,
+        })
     }
 }
 
@@ -579,7 +448,13 @@ impl<P: Into<String>> DynamoGenericQueryPartition<P> {
         start_millis: i64,
         end_millis: i64,
     ) -> Result<DynamoGenericQuery, ServerError> {
-        DynamoGenericQuery::uuidv7_range::<T>(self.partition, sk_prefix, start_millis, end_millis)
+        DynamoGenericQuery::uuidv7_range::<T>(
+            self.partition,
+            sk_prefix,
+            start_millis,
+            end_millis,
+            self.index,
+        )
     }
 }
 
@@ -615,8 +490,7 @@ mod tests {
     fn builders_compile_expected_conditions() {
         let expression = DynamoGenericQuery::pk("P")
             .sk_begins_with("PREFIX#")
-            .into_expression()
-            .unwrap();
+            .into_expression();
         assert_eq!(
             expression.condition,
             "pk = :pk_val AND begins_with(sk, :sk_val)"
@@ -625,18 +499,30 @@ mod tests {
         let expression = DynamoGenericQuery::pk("P")
             .sk_between_inclusive("A", "Z")
             .unwrap()
-            .into_expression()
-            .unwrap();
+            .into_expression();
         assert_eq!(
             expression.condition,
             "pk = :pk_val AND sk BETWEEN :sk_val AND :sk_max"
         );
 
+        let expression = DynamoGenericQuery::index(IndexConfig {
+            name: "by_owner",
+            partition_field: "owner_pk",
+            sort_field: "owner_sk",
+        })
+        .pk("OWNER")
+        .sk_equals("EVENT#1")
+        .into_expression();
+        assert_eq!(expression.index_name.as_deref(), Some("by_owner"));
+        assert_eq!(
+            expression.condition,
+            "owner_pk = :pk_val AND owner_sk = :sk_val"
+        );
+
         let expression = DynamoGenericQuery::pk("P")
             .sk_same_prefix_at_or_after("EVENT#050", '#')
             .unwrap()
-            .into_expression()
-            .unwrap();
+            .into_expression();
         assert_eq!(
             expression.attribute_values[":sk_val"],
             AttributeValue::S("EVENT#050".into())
@@ -649,8 +535,7 @@ mod tests {
         let expression = DynamoGenericQuery::pk("P")
             .sk_same_prefix_at_or_before("EVENT#050", '#')
             .unwrap()
-            .into_expression()
-            .unwrap();
+            .into_expression();
         assert_eq!(
             expression.attribute_values[":sk_val"],
             AttributeValue::S("EVENT#".into())
@@ -667,7 +552,7 @@ mod tests {
             .sk_uuidv7_range("EVENT#", 1_000, 2_000)
             .unwrap();
         let query: DynamoGenericQuery = query.into();
-        assert!(query.into_expression().is_ok());
+        let _ = query.into_expression();
     }
 
     #[test]
@@ -684,6 +569,6 @@ mod tests {
     fn typed_queries_explicitly_convert_to_generic_queries() {
         let typed: DynamoQuery<Event> = DynamoQuery::pk("ROOT").all();
         let generic: DynamoGenericQuery = typed.into();
-        assert!(generic.into_expression().is_ok());
+        let _ = generic.into_expression();
     }
 }

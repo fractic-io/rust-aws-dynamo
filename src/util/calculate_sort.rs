@@ -24,7 +24,7 @@ impl Ord for OrderedItem<'_> {
     }
 }
 
-// Strip final UUID or timestamp from a DynamoDB ID.
+// Strips the terminal generated value from a DynamoDB ID.
 fn sk_strip_tail<T: DynamoObject>(
     id_logic: IdLogic<T::Data>,
     mut sk: String,

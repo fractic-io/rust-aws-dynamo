@@ -368,8 +368,8 @@ impl DynamoUtil {
             .token
             .map_or_else(|| self.create_token(parent_id, &data), Ok)?
             .id;
-        let sort: Option<f64> = options.custom_sort;
-        let ttl: Option<i64> = options.ttl.map(|ttl| ttl.compute_timestamp());
+        let sort = options.custom_sort;
+        let ttl = options.ttl.map(|ttl| ttl.compute_timestamp());
         if is_partitioned_id_logic::<T>() {
             let logical_id = ext_base_id(&PkSk { pk, sk });
             let num_existing_partitions = fetch_num_partitions(self, &logical_id).await?;
@@ -428,14 +428,15 @@ impl DynamoUtil {
         if data_and_options.is_empty() {
             return Ok(Vec::new());
         }
-        let create_batch_id =
-            |data: &T::Data, token: Option<&CreateToken<T>>| -> Result<PkSk, ServerError> {
-                if let Some(token) = token {
-                    return Ok(token.id.clone());
-                }
-                self.create_token::<T>(parent_id, data)
-                    .map(|token| token.id)
-            };
+        let create_batch_id = |data: &T::Data, token: Option<&CreateToken<T>>| {
+            token.map_or_else(
+                || {
+                    self.create_token::<T>(parent_id, data)
+                        .map(|token| token.id)
+                },
+                |token| Ok(token.id.clone()),
+            )
+        };
         if is_partitioned_id_logic::<T>() {
             let pending_writes = data_and_options
                 .into_iter()
@@ -482,8 +483,8 @@ impl DynamoUtil {
                 .iter()
                 .map(|(data, options)| {
                     let PkSk { pk, sk } = create_batch_id(data, options.token.as_ref())?;
-                    let sort: Option<f64> = options.custom_sort;
-                    let ttl: Option<i64> = options.ttl.as_ref().map(TtlConfig::compute_timestamp);
+                    let sort = options.custom_sort;
+                    let ttl = options.ttl.as_ref().map(TtlConfig::compute_timestamp);
                     let now = Timestamp::now();
                     Ok((
                         build_dynamo_map_for_new_obj::<T>(

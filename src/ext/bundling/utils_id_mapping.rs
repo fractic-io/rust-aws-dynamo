@@ -62,16 +62,13 @@ fn map_bundle_tree(
     let mut frontier = VecDeque::from([root]);
     while let Some(mapped_parent) = frontier.pop_front() {
         if let Some(child_items) = children.remove(&mapped_parent.id) {
-            let mapped_children = {
-                let parent_id = result
-                    .get(&mapped_parent.id)
-                    .ok_or_else(|| DynamoInvalidBundle::new("mapped bundle parent was missing"))?;
-                child_items
-                    .into_iter()
-                    .map(|item| map_child(item, parent_id).map(|id| (item, id)))
-                    .collect::<Result<Vec<_>, _>>()?
-            };
-            for (item, id) in mapped_children {
+            for item in child_items {
+                let id = map_child(
+                    item,
+                    result.get(&mapped_parent.id).ok_or_else(|| {
+                        DynamoInvalidBundle::new("mapped bundle parent was missing")
+                    })?,
+                )?;
                 if result.insert(item.id.clone(), id).is_some() {
                     return Err(DynamoInvalidBundle::new("bundle IDs were invalid"));
                 }
@@ -179,21 +176,13 @@ fn destination_object_sk(
     duplicate: bool,
     id_logic: BundleIdLogic,
 ) -> Result<String, ServerError> {
-    if !duplicate {
-        return Ok(RawIdPath::new(original_sk).logical_path().to_string());
-    }
-    match id_logic {
-        BundleIdLogic::UuidV4 => regenerate_uuid(original_sk, uuid::Uuid::new_v4()),
-        BundleIdLogic::UuidV7 => regenerate_uuid(original_sk, uuid::Uuid::now_v7()),
-        BundleIdLogic::Singleton
-        | BundleIdLogic::IndexedSingleton
-        | BundleIdLogic::BatchOptimized
-        | BundleIdLogic::SingletonExt
-        | BundleIdLogic::IndexedSingletonExt => {
-            Ok(RawIdPath::new(original_sk).logical_path().to_string())
-        }
-        BundleIdLogic::Phantom => Err(DynamoInvalidBundle::new(
+    match (duplicate, id_logic) {
+        (false, _) => Ok(RawIdPath::new(original_sk).logical_path().to_string()),
+        (true, BundleIdLogic::UuidV4) => regenerate_uuid(original_sk, uuid::Uuid::new_v4()),
+        (true, BundleIdLogic::UuidV7) => regenerate_uuid(original_sk, uuid::Uuid::now_v7()),
+        (true, BundleIdLogic::Phantom) => Err(DynamoInvalidBundle::new(
             "persisted bundle item used phantom ID logic",
         )),
+        _ => Ok(RawIdPath::new(original_sk).logical_path().to_string()),
     }
 }

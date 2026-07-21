@@ -180,13 +180,13 @@ impl DynamoGenericQuery {
         index: Option<IndexConfig>,
     ) -> Result<Self, ServerError> {
         let sort_key = sort_key.into();
-        let prefix = sort_key.rsplit_once(delimiter).ok_or_else(|| {
+        let (prefix, _) = sort_key.rsplit_once(delimiter).ok_or_else(|| {
             DynamoInvalidOperation::with_debug(
                 "sort-key filter did not contain its delimiter",
                 &sort_key,
             )
         })?;
-        let upper = format!("{}{delimiter}~", prefix.0);
+        let upper = format!("{prefix}{delimiter}~");
         Self::between_inclusive(partition, sort_key, upper, index)
     }
 
@@ -197,17 +197,13 @@ impl DynamoGenericQuery {
         index: Option<IndexConfig>,
     ) -> Result<Self, ServerError> {
         let sort_key = sort_key.into();
-        let lower = sort_key
-            .rsplit_once(delimiter)
-            .ok_or_else(|| {
-                DynamoInvalidOperation::with_debug(
-                    "sort-key filter did not contain its delimiter",
-                    &sort_key,
-                )
-            })?
-            .0;
-        let lower = format!("{lower}{delimiter}");
-        Self::between_inclusive(partition, lower, sort_key, index)
+        let (prefix, _) = sort_key.rsplit_once(delimiter).ok_or_else(|| {
+            DynamoInvalidOperation::with_debug(
+                "sort-key filter did not contain its delimiter",
+                &sort_key,
+            )
+        })?;
+        Self::between_inclusive(partition, format!("{prefix}{delimiter}"), sort_key, index)
     }
 
     pub(super) fn into_expression(self) -> QueryExpression {

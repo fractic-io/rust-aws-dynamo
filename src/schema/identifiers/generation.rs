@@ -153,7 +153,7 @@ fn uuid_v7_value_at(timestamp_millis: i64) -> Result<Base62Uuid, ServerError> {
 }
 
 fn uuid_v7_bound_value(timestamp_millis: i64, upper: bool) -> Result<Base62Uuid, ServerError> {
-    let timestamp_millis = validate_timestamp_millis(timestamp_millis)? as u128;
+    let timestamp_millis = u128::from(validate_timestamp_millis(timestamp_millis)?);
     let mut value = timestamp_millis << 80;
     value |= 0x7_u128 << 76;
     value |= 0b10_u128 << 62;
@@ -179,7 +179,7 @@ fn validate_timestamp_millis(timestamp_millis: i64) -> Result<u64, ServerError> 
             &timestamp_millis,
         ));
     }
-    Ok(timestamp_millis as u64)
+    Ok(timestamp_millis.cast_unsigned())
 }
 
 #[cfg(test)]

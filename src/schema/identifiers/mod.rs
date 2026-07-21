@@ -25,8 +25,8 @@ mod relations;
 mod tests;
 
 pub(crate) use generation::{
-    generate_id, generate_id_with_options, regenerate_timestamp, regenerate_uuid,
-    IdGenerationOptions,
+    generate_id, regenerate_timestamp, regenerate_uuid, timestamp_lower_bound,
+    timestamp_upper_bound,
 };
 pub(crate) use id_path::{ParsedIdPath, RawIdPath, TerminalSegmentKind};
 pub(crate) use placement::{

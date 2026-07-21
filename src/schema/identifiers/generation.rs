@@ -1,7 +1,7 @@
 use fractic_server_error::{CriticalError, ServerError};
 
 use crate::{
-    errors::DynamoInvalidParent,
+    errors::{DynamoInvalidOperation, DynamoInvalidParent},
     schema::{DynamoObject, IdLogic, PkSk},
 };
 
@@ -9,30 +9,15 @@ use super::{
     id_path::RawIdPath, placement::place_terminal_segment, relations::validate_parent_relation,
 };
 
-const ID_VALUE_WIDTH: usize = 16;
-const MAX_TIMESTAMP_ID: i64 = 9_999_999_999_999_999;
+const ID_VALUE_WIDTH: usize = 22;
+const MAX_UUID_V7_TIMESTAMP_MILLIS: i64 = (1_i64 << 48) - 1;
 const BASE62_ALPHABET: &[u8; 62] =
     b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-
-/// Controls deterministic ID generation used by batch operations and tests.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct IdGenerationOptions {
-    pub timestamp_millis: Option<i64>,
-}
 
 /// Generates a logical ID for a new object.
 pub(crate) fn generate_id<T: DynamoObject>(
     data: &T::Data,
     parent: &PkSk,
-) -> Result<PkSk, ServerError> {
-    generate_id_with_options::<T>(data, parent, IdGenerationOptions::default())
-}
-
-/// Generates a logical ID, optionally using a caller-supplied timestamp.
-pub(crate) fn generate_id_with_options<T: DynamoObject>(
-    data: &T::Data,
-    parent: &PkSk,
-    options: IdGenerationOptions,
 ) -> Result<PkSk, ServerError> {
     validate_parent_relation::<T>(parent)
         .map_err(|error| DynamoInvalidParent::new(&error.to_string()))?;
@@ -46,12 +31,7 @@ pub(crate) fn generate_id_with_options<T: DynamoObject>(
             )))
         }
         IdLogic::Uuid => format!("{}#{}", T::id_label(), new_uuid_value()),
-        IdLogic::Timestamp => {
-            let timestamp = options
-                .timestamp_millis
-                .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-            format!("{}#{}", T::id_label(), timestamp_value(timestamp)?)
-        }
+        IdLogic::Timestamp => format!("{}#{}", T::id_label(), new_timestamp_value(None)?),
         IdLogic::Singleton | IdLogic::SingletonExt => format!("@{}", T::id_label()),
         IdLogic::IndexedSingleton(key) | IdLogic::IndexedSingletonExt(key) => {
             format!("@{}[{}]", T::id_label(), key(data))
@@ -68,6 +48,22 @@ pub(crate) fn generate_id_with_options<T: DynamoObject>(
     Ok(place_terminal_segment::<T>(parent, &terminal_segment))
 }
 
+/// Constructs the first possible UUID-v7 ID at `timestamp_millis`.
+pub(crate) fn timestamp_lower_bound<T: DynamoObject>(
+    parent: &PkSk,
+    timestamp_millis: i64,
+) -> Result<PkSk, ServerError> {
+    timestamp_bound::<T>(parent, timestamp_millis, false)
+}
+
+/// Constructs the last possible UUID-v7 ID at `timestamp_millis`.
+pub(crate) fn timestamp_upper_bound<T: DynamoObject>(
+    parent: &PkSk,
+    timestamp_millis: i64,
+) -> Result<PkSk, ServerError> {
+    timestamp_bound::<T>(parent, timestamp_millis, true)
+}
+
 /// Regenerates the terminal segment value of a UUID ID.
 pub(crate) fn regenerate_uuid(sk: &str) -> Result<String, ServerError> {
     Ok(RawIdPath::new(sk)
@@ -76,10 +72,33 @@ pub(crate) fn regenerate_uuid(sk: &str) -> Result<String, ServerError> {
 }
 
 /// Regenerates the terminal segment value of a timestamp ID.
-pub(crate) fn regenerate_timestamp(sk: &str, timestamp_millis: i64) -> Result<String, ServerError> {
+pub(crate) fn regenerate_timestamp(sk: &str) -> Result<String, ServerError> {
     Ok(RawIdPath::new(sk)
         .parse()?
-        .with_terminal_segment_value(&timestamp_value(timestamp_millis)?))
+        .with_terminal_segment_value(&new_timestamp_value(None)?))
+}
+
+fn timestamp_bound<T: DynamoObject>(
+    parent: &PkSk,
+    timestamp_millis: i64,
+    upper: bool,
+) -> Result<PkSk, ServerError> {
+    if !matches!(T::id_logic(), IdLogic::Timestamp) {
+        return Err(DynamoInvalidOperation::new(&format!(
+            "timestamp bounds require IdLogic::Timestamp, but object type '{}' uses different ID logic",
+            T::id_label()
+        )));
+    }
+    validate_parent_relation::<T>(parent)
+        .map_err(|error| DynamoInvalidParent::new(&error.to_string()))?;
+    validate_configured_label(T::id_label())?;
+
+    let terminal_segment = format!(
+        "{}#{}",
+        T::id_label(),
+        timestamp_bound_value(timestamp_millis, upper)?
+    );
+    Ok(place_terminal_segment::<T>(parent, &terminal_segment))
 }
 
 fn validate_configured_label(label: &str) -> Result<(), ServerError> {
@@ -106,24 +125,64 @@ fn new_uuid_value() -> String {
     base62_id_value(uuid::Uuid::new_v4().as_u128())
 }
 
-fn timestamp_value(timestamp_millis: i64) -> Result<String, ServerError> {
-    if !(0..=MAX_TIMESTAMP_ID).contains(&timestamp_millis) {
+fn new_timestamp_value(timestamp_millis: Option<i64>) -> Result<String, ServerError> {
+    let uuid = match timestamp_millis {
+        Some(timestamp_millis) => {
+            let timestamp_millis = validate_timestamp_millis(timestamp_millis)?;
+            let timestamp = uuid::Timestamp::from_unix_time(
+                timestamp_millis / 1_000,
+                ((timestamp_millis % 1_000) * 1_000_000) as u32,
+                0,
+                0,
+            );
+            uuid::Uuid::new_v7(timestamp)
+        }
+        None => uuid::Uuid::now_v7(),
+    };
+    Ok(base62_id_value(uuid.as_u128()))
+}
+
+fn timestamp_bound_value(timestamp_millis: i64, upper: bool) -> Result<String, ServerError> {
+    let timestamp_millis = validate_timestamp_millis(timestamp_millis)? as u128;
+    let mut value = timestamp_millis << 80;
+    value |= 0x7_u128 << 76;
+    value |= 0b10_u128 << 62;
+    if upper {
+        value |= 0xfff_u128 << 64;
+        value |= (1_u128 << 62) - 1;
+    }
+    Ok(base62_id_value(value))
+}
+
+fn validate_timestamp_millis(timestamp_millis: i64) -> Result<u64, ServerError> {
+    if !(0..=MAX_UUID_V7_TIMESTAMP_MILLIS).contains(&timestamp_millis) {
         return Err(CriticalError::with_debug(
-            "timestamp ID must be a non-negative value that fits in 16 decimal digits",
+            "UUID-v7 timestamp must be a non-negative value that fits in 48 bits",
             &timestamp_millis,
         ));
     }
-    Ok(format!("{timestamp_millis:0ID_VALUE_WIDTH$}"))
+    Ok(timestamp_millis as u64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn decode_base62(value: &str) -> u128 {
+        value.bytes().fold(0_u128, |decoded, byte| {
+            let digit = BASE62_ALPHABET
+                .iter()
+                .position(|candidate| *candidate == byte)
+                .unwrap() as u128;
+            decoded * 62 + digit
+        })
+    }
+
     #[test]
-    fn generates_fixed_width_base62_values() {
-        let encoded = base62_id_value(1_234_567_890);
+    fn base62_encoding_is_fixed_width_and_lossless() {
+        let encoded = base62_id_value(u128::MAX);
         assert_eq!(encoded.len(), ID_VALUE_WIDTH);
+        assert_eq!(decode_base62(&encoded), u128::MAX);
         assert!(encoded
             .chars()
             .all(|character| BASE62_ALPHABET.contains(&(character as u8))));
@@ -136,9 +195,29 @@ mod tests {
     }
 
     #[test]
-    fn formats_and_bounds_timestamp_values() {
-        assert_eq!(timestamp_value(1_234).unwrap(), "0000000000001234");
-        assert!(timestamp_value(-1).is_err());
-        assert!(timestamp_value(MAX_TIMESTAMP_ID + 1).is_err());
+    fn generates_uuid_v4_and_v7_values() {
+        let uuid = uuid::Uuid::from_u128(decode_base62(&new_uuid_value()));
+        assert_eq!(uuid.get_version_num(), 4);
+
+        let timestamp =
+            uuid::Uuid::from_u128(decode_base62(&new_timestamp_value(Some(1_234)).unwrap()));
+        assert_eq!(timestamp.get_version_num(), 7);
+        assert_eq!(
+            timestamp.get_timestamp().unwrap().to_unix(),
+            (1, 234_000_000)
+        );
+    }
+
+    #[test]
+    fn timestamp_bounds_enclose_every_uuid_at_the_millisecond() {
+        let timestamp_millis = 1_234;
+        let lower = timestamp_bound_value(timestamp_millis, false).unwrap();
+        let value = new_timestamp_value(Some(timestamp_millis)).unwrap();
+        let upper = timestamp_bound_value(timestamp_millis, true).unwrap();
+
+        assert!(lower <= value);
+        assert!(value <= upper);
+        assert!(timestamp_bound_value(-1, false).is_err());
+        assert!(timestamp_bound_value(MAX_UUID_V7_TIMESTAMP_MILLIS + 1, true).is_err());
     }
 }

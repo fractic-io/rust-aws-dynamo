@@ -97,17 +97,11 @@ fn generates_each_terminal_segment_shape() {
     let uuid = generate_id::<RootUuid>(&RootUuidData {}, PkSk::root()).unwrap();
     assert_eq!(uuid.pk, ROOT_KEY);
     assert!(uuid.sk.starts_with("ROOTOBJ#"));
-    assert_eq!(uuid.sk.len(), "ROOTOBJ#".len() + 16);
+    assert_eq!(uuid.sk.len(), "ROOTOBJ#".len() + 22);
 
-    let timestamp = generate_id_with_options::<RootTimestamp>(
-        &RootTimestampData {},
-        PkSk::root(),
-        IdGenerationOptions {
-            timestamp_millis: Some(1_234),
-        },
-    )
-    .unwrap();
-    assert_eq!(timestamp.sk, "EVENT#0000000000001234");
+    let timestamp = generate_id::<RootTimestamp>(&RootTimestampData {}, PkSk::root()).unwrap();
+    assert!(timestamp.sk.starts_with("EVENT#"));
+    assert_eq!(timestamp.sk.len(), "EVENT#".len() + 22);
 
     let singleton = generate_id::<Singleton>(&SingletonData {}, PkSk::root()).unwrap();
     assert_eq!(singleton.sk, "@SETTINGS");
@@ -183,10 +177,21 @@ fn regenerates_only_non_singleton_segment_values() {
     assert_ne!(regenerated, "PARENT#old#CHILD#old");
 
     assert_eq!(
-        regenerate_timestamp("#CHILD#old", 42).unwrap(),
-        "#CHILD#0000000000000042"
+        regenerate_timestamp("#CHILD#old").unwrap().len(),
+        "#CHILD#".len() + 22
     );
     assert_eq!(regenerate_uuid("@SETTINGS[key]").unwrap(), "@SETTINGS[key]");
+}
+
+#[test]
+fn constructs_timestamp_query_bounds_using_object_placement() {
+    let lower = timestamp_lower_bound::<RootTimestamp>(PkSk::root(), 1_234).unwrap();
+    let upper = timestamp_upper_bound::<RootTimestamp>(PkSk::root(), 1_234).unwrap();
+
+    assert_eq!(lower.pk, ROOT_KEY);
+    assert!(lower.sk.starts_with("EVENT#"));
+    assert!(lower.sk < upper.sk);
+    assert!(timestamp_lower_bound::<RootUuid>(PkSk::root(), 1_234).is_err());
 }
 
 #[test]

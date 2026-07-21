@@ -14,32 +14,30 @@ pub mod timestamp;
 type IdKeyFn<T> = dyn for<'a> Fn(&'a T) -> Cow<'a, str>;
 
 pub enum IdLogic<T: DynamoObjectData> {
-    /// New IDs are generated based on UUID v4. This option should be used in
-    /// almost all cases.
+    /// New IDs are generated as UUID v4 values and losslessly encoded as 22
+    /// fixed-width base62 characters. This option should be used in almost all
+    /// cases.
     ///
-    /// <new-obj-id>: LABEL#<uuid>
+    /// Format: `LABEL#<base62-uuid-v4>`
     Uuid,
 
-    /// New IDs are generated based on epoch timestamp in milliseconds. Can be
-    /// used for efficient date-based ordering and filtering, since the date
-    /// range can be directly filtered in the query.
+    /// New IDs are generated as UUID v7 values and losslessly encoded as 22
+    /// fixed-width base62 characters. UUID v7 places a Unix epoch timestamp in
+    /// the high bits, so DynamoDB's lexicographical sort order provides
+    /// efficient date-based ordering and filtering while retaining strong
+    /// random uniqueness within each millisecond.
     ///
-    /// However, a couple important things to consider:
+    /// Important considerations:
     /// - Object creation date is leaked to users by object ID.
-    /// - IDs are "guessable", which could be a security concern.
-    /// - If multiple children for the same parent are written in the same
-    ///   millisecond, they will have the same ID, and the second write will
-    ///   overwrite the first. `DynamoUtil::batch_create_item` avoids this
-    ///   within a single batch call by assigning IDs from one millisecond seed
-    ///   plus each item's batch index, but concurrent writers can still collide.
     /// - Changing ID logic later can be very risky / complex, so should
     ///   consider all future use-cases from the beginning.
+    /// - UUID-v7 ordering within one process is monotonic, but callers should
+    ///   use the explicit ordered APIs when application-defined order matters.
     ///
-    /// An alternative strategy would be to use a UUID-based ID with ordered
-    /// insertion (flexible but inneficient) or a GSI based on a separate
-    /// timestamp field (efficient but requires extra storage).
+    /// [`PkSk::timestamp_lower_bound`] and [`PkSk::timestamp_upper_bound`]
+    /// construct keys suitable for UUID-v7 range queries.
     ///
-    /// <new-obj-id>: LABEL#<timestamp>
+    /// Format: `LABEL#<base62-uuid-v7>`
     Timestamp,
 
     /// Only one version of this object exists for a given parent, prefixed with
@@ -479,7 +477,7 @@ pub struct PkSk {
 }
 
 /// Custom struct to hold a minimal reference to a PkSk for efficient database
-/// storage, generally only storing the last 16 digits (UUID-part). The original
+/// storage, generally only storing the terminal ID value. The original
 /// PkSk can be reconstructed by manually providing the context Pk and Sk
 /// prefixes. This can be particularly useful for indexed singleton keys or GSIs.
 #[derive(Debug, PartialEq, Clone, Hash, Eq)]

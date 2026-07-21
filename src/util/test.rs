@@ -773,7 +773,7 @@ mod tests {
 
         assert_eq!(result.pk(), "ROOT".to_string());
         assert!(result.sk().starts_with("GROUP#123#TEST#"));
-        assert_eq!(result.sk().len(), 31);
+        assert_eq!(result.sk().len(), "GROUP#123#TEST#".len() + 22);
     }
 
     #[tokio::test]
@@ -827,7 +827,7 @@ mod tests {
 
         assert_eq!(result.pk(), "ROOT".to_string());
         assert!(result.sk().starts_with("GROUP#123#TEST#"));
-        assert_eq!(result.sk().len(), 31);
+        assert_eq!(result.sk().len(), "GROUP#123#TEST#".len() + 22);
     }
 
     #[tokio::test]
@@ -962,7 +962,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_create_item_timestamp_ids_are_offset_from_one_seed() {
+    async fn test_batch_create_item_timestamp_ids_are_unique_uuid_v7_values() {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_batch_put_item()
@@ -970,22 +970,22 @@ mod tests {
                 if items.len() != 3 {
                     return false;
                 }
-                let timestamps = items
+                let values = items
                     .iter()
                     .map(|item| {
                         let sk = item.get("sk")?.as_s().ok()?;
-                        let timestamp = sk.rsplit('#').next()?.parse::<i64>().ok()?;
-                        Some((sk.clone(), timestamp))
+                        let value = sk.rsplit('#').next()?;
+                        Some((sk.clone(), value.to_string()))
                     })
                     .collect::<Option<Vec<_>>>();
-                let Some(timestamps) = timestamps else {
+                let Some(values) = values else {
                     return false;
                 };
-                timestamps.iter().all(|(sk, _)| {
+                values.iter().all(|(sk, value)| {
                     sk.starts_with("GROUP#123#TIMETEST#")
-                        && sk.len() == "GROUP#123#TIMETEST#".len() + 16
-                }) && timestamps[1].1 == timestamps[0].1 + 1
-                    && timestamps[2].1 == timestamps[1].1 + 1
+                        && value.len() == 22
+                        && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                }) && values.windows(2).all(|pair| pair[0].1 < pair[1].1)
             })
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
@@ -1007,19 +1007,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 3);
-        let timestamps = result
+        let values = result
             .iter()
-            .map(|item| {
-                item.sk()
-                    .rsplit('#')
-                    .next()
-                    .unwrap()
-                    .parse::<i64>()
-                    .unwrap()
-            })
+            .map(|item| item.sk().rsplit('#').next().unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(timestamps[1], timestamps[0] + 1);
-        assert_eq!(timestamps[2], timestamps[1] + 1);
+        assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     #[tokio::test]

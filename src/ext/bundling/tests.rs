@@ -1258,7 +1258,7 @@ fn duplicate_mapping_reparents_inline_and_top_level_children() {
 }
 
 #[test]
-fn duplicate_mapping_preserves_batch_ids_and_increments_timestamp_millis() {
+fn duplicate_mapping_preserves_batch_ids_and_regenerates_ordered_timestamp_uuids() {
     let root = id(0, "ROOTOBJ", "ROOTOBJ#old");
     let first_timestamp = id(1, "EVENT", "EVENT#0000000000000001");
     let second_timestamp = id(2, "EVENT", "EVENT#0000000000000002");
@@ -1301,22 +1301,22 @@ fn duplicate_mapping_preserves_batch_ids_and_increments_timestamp_millis() {
     };
 
     let mapped = build_id_map(&bundle, None, true, BundleIdLogic::Uuid).unwrap();
-    let first_millis = mapped[&first_timestamp]
+    let first_value = mapped[&first_timestamp]
         .sk
         .rsplit_once('#')
         .unwrap()
         .1
-        .parse::<i64>()
-        .unwrap();
-    let second_millis = mapped[&second_timestamp]
+        .to_string();
+    let second_value = mapped[&second_timestamp]
         .sk
         .rsplit_once('#')
         .unwrap()
         .1
-        .parse::<i64>()
-        .unwrap();
+        .to_string();
 
-    assert_eq!(second_millis, first_millis + 1);
+    assert_eq!(first_value.len(), 22);
+    assert_eq!(second_value.len(), 22);
+    assert!(first_value < second_value);
     assert_eq!(mapped[&batch].sk, "BATCH#0");
     assert_eq!(mapped[&batch].pk, mapped[&root].sk);
 }

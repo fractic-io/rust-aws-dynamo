@@ -6,7 +6,7 @@ use crate::{
     schema::{identifiers::generate_id, DynamoObject, IdLogic, PkSk},
 };
 
-use super::{DynamoInsertPosition, DynamoQueryMatchType, DynamoUtil};
+use super::{DynamoInsertPosition, DynamoQuery, DynamoUtil};
 
 #[derive(Debug, PartialEq, Eq)]
 struct OrderedItem<'a> {
@@ -24,7 +24,7 @@ impl Ord for OrderedItem<'_> {
     }
 }
 
-// Strip final UUID or timestamp from a DynamoDB ID.
+// Strips the terminal generated value from a DynamoDB ID.
 fn sk_strip_tail<T: DynamoObject>(
     id_logic: IdLogic<T::Data>,
     mut sk: String,
@@ -46,11 +46,11 @@ fn sk_strip_tail<T: DynamoObject>(
             sk.truncate(index);
             Ok(sk)
         }
-        // For Uuid and Timestamp, take ID until last '#' character.
-        IdLogic::Uuid | IdLogic::Timestamp | IdLogic::BatchOptimized { .. } => {
+        // For UUID-v4 and UUID-v7, take ID until last '#' character.
+        IdLogic::UuidV4 | IdLogic::UuidV7 | IdLogic::BatchOptimized { .. } => {
             let index = sk.rfind('#').ok_or_else(|| {
                 DynamoInvalidId::with_debug(
-                    "can't strip Uuid/Timestamp since ID didn't contain '#'",
+                    "can't strip UUID-based ID since it didn't contain '#'",
                     &sk,
                 )
             })?;
@@ -73,14 +73,14 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
     let sort_value_default_gap = NotNan::new(1.0).unwrap();
 
     // Search for all IDs for existing items of this type by creating an example
-    // ID and stripping the ID UUID / timestamp off the end.
+    // ID and stripping the UUID off the end.
     let example = generate_id::<T>(data, parent_id)?;
     let search_id = PkSk {
         pk: example.pk,
         sk: sk_strip_tail::<T>(T::id_logic(), example.sk)?,
     };
     let query = util
-        .query::<T>(None, search_id, DynamoQueryMatchType::BeginsWith)
+        .query::<T>(DynamoQuery::pk(search_id.pk).sk_begins_with(search_id.sk))
         .await?;
     let mut existing_vals = query
         .iter()
@@ -170,7 +170,7 @@ mod tests {
         TestDynamoObject,
         TestDynamoObjectData,
         "TEST",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::TopLevelChildOfAny
     );
 
@@ -416,7 +416,7 @@ mod tests {
         // here.
         assert_eq!(
             sk_strip_tail::<TestDynamoObject>(
-                IdLogic::<TestDynamoObjectData>::Uuid,
+                IdLogic::<TestDynamoObjectData>::UuidV4,
                 "GROUP#123#TEST#123".to_string()
             )
             .unwrap(),
@@ -424,7 +424,7 @@ mod tests {
         );
         assert_eq!(
             sk_strip_tail::<TestDynamoObject>(
-                IdLogic::<TestDynamoObjectData>::Timestamp,
+                IdLogic::<TestDynamoObjectData>::UuidV7,
                 "GROUP#123#TEST2#0005416".to_string()
             )
             .unwrap(),

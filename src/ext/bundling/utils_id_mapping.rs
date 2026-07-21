@@ -1,13 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 
-use chrono::Utc;
-use fractic_server_error::{CriticalError, ServerError};
+use fractic_server_error::ServerError;
 
 use crate::errors::DynamoInvalidBundle;
 use crate::schema::{
-    identifiers::{
-        place_terminal_segment_with, regenerate_timestamp, regenerate_uuid, IdPlacement, RawIdPath,
-    },
+    identifiers::{place_terminal_segment_with, regenerate_uuid, IdPlacement, RawIdPath},
     PkSk,
 };
 
@@ -27,16 +24,9 @@ pub(crate) fn build_id_map(
         .iter()
         .find(|item| item.id == bundle.root)
         .ok_or_else(|| DynamoInvalidBundle::new("bundle root item was missing"))?;
-    let mut duplicate_ids = DuplicateIdGenerator::new();
-    let root_id = place_root(root, parent, duplicate, root_id_logic, &mut duplicate_ids)?;
+    let root_id = place_root(root, parent, duplicate, root_id_logic)?;
     map_bundle_tree(bundle, root, root_id, |item, parent_id| {
-        place_child(
-            item,
-            parent_id,
-            duplicate,
-            item.id_logic,
-            &mut duplicate_ids,
-        )
+        place_child(item, parent_id, duplicate, item.id_logic)
     })
 }
 
@@ -67,19 +57,19 @@ fn map_bundle_tree(
             children.entry(parent).or_default().push(item);
         }
     }
-    let mut result = HashMap::from([(root.id.clone(), root_id)]);
+    let mut result = HashMap::with_capacity(bundle.items.len());
+    result.insert(root.id.clone(), root_id);
     let mut frontier = VecDeque::from([root]);
     while let Some(mapped_parent) = frontier.pop_front() {
         if let Some(child_items) = children.remove(&mapped_parent.id) {
-            let parent_id = result
-                .get(&mapped_parent.id)
-                .cloned()
-                .ok_or_else(|| DynamoInvalidBundle::new("mapped bundle parent was missing"))?;
             for item in child_items {
-                if result
-                    .insert(item.id.clone(), map_child(item, &parent_id)?)
-                    .is_some()
-                {
+                let id = map_child(
+                    item,
+                    result.get(&mapped_parent.id).ok_or_else(|| {
+                        DynamoInvalidBundle::new("mapped bundle parent was missing")
+                    })?,
+                )?;
+                if result.insert(item.id.clone(), id).is_some() {
                     return Err(DynamoInvalidBundle::new("bundle IDs were invalid"));
                 }
                 frontier.push_back(item);
@@ -116,7 +106,6 @@ fn place_root(
     parent: Option<&PkSk>,
     duplicate: bool,
     id_logic: BundleIdLogic,
-    duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<PkSk, ServerError> {
     let (parent, original_sk, placement) = match item.nesting {
         BundleNesting::Root => {
@@ -144,7 +133,7 @@ fn place_root(
     };
     Ok(place_terminal_segment_with(
         parent,
-        &destination_object_sk(original_sk, duplicate, id_logic, duplicate_ids)?,
+        &destination_object_sk(original_sk, duplicate, id_logic)?,
         placement,
     ))
 }
@@ -154,7 +143,6 @@ fn place_child(
     parent: &PkSk,
     duplicate: bool,
     id_logic: BundleIdLogic,
-    duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<PkSk, ServerError> {
     let (original_sk, placement) = match item.nesting {
         BundleNesting::TopLevel => (item.id.original_sk.as_str(), IdPlacement::TopLevel),
@@ -175,7 +163,7 @@ fn place_child(
     };
     Ok(place_terminal_segment_with(
         parent,
-        &destination_object_sk(original_sk, duplicate, id_logic, duplicate_ids)?,
+        &destination_object_sk(original_sk, duplicate, id_logic)?,
         placement,
     ))
 }
@@ -183,57 +171,18 @@ fn place_child(
 // Helpers.
 // ----------------------------------------------------------------------------
 
-struct DuplicateIdGenerator {
-    timestamp_seed: i64,
-    timestamp_count: usize,
-}
-
-impl DuplicateIdGenerator {
-    fn new() -> Self {
-        Self {
-            timestamp_seed: Utc::now().timestamp_millis(),
-            timestamp_count: 0,
-        }
-    }
-
-    fn next_timestamp(&mut self) -> Result<i64, ServerError> {
-        let offset = i64::try_from(self.timestamp_count)
-            .map_err(|_| CriticalError::new("bundle timestamp item index overflowed i64"))?;
-        let timestamp = self
-            .timestamp_seed
-            .checked_add(offset)
-            .ok_or_else(|| CriticalError::new("bundle timestamp ID overflowed i64"))?;
-        self.timestamp_count = self
-            .timestamp_count
-            .checked_add(1)
-            .ok_or_else(|| CriticalError::new("bundle timestamp item count overflowed usize"))?;
-        Ok(timestamp)
-    }
-}
-
 fn destination_object_sk(
     original_sk: &str,
     duplicate: bool,
     id_logic: BundleIdLogic,
-    duplicate_ids: &mut DuplicateIdGenerator,
 ) -> Result<String, ServerError> {
-    if !duplicate {
-        return Ok(RawIdPath::new(original_sk).logical_path().to_string());
-    }
-    match id_logic {
-        BundleIdLogic::Uuid => regenerate_uuid(original_sk),
-        BundleIdLogic::Timestamp => {
-            regenerate_timestamp(original_sk, duplicate_ids.next_timestamp()?)
-        }
-        BundleIdLogic::Singleton
-        | BundleIdLogic::IndexedSingleton
-        | BundleIdLogic::BatchOptimized
-        | BundleIdLogic::SingletonExt
-        | BundleIdLogic::IndexedSingletonExt => {
-            Ok(RawIdPath::new(original_sk).logical_path().to_string())
-        }
-        BundleIdLogic::Phantom => Err(DynamoInvalidBundle::new(
+    match (duplicate, id_logic) {
+        (false, _) => Ok(RawIdPath::new(original_sk).logical_path().to_string()),
+        (true, BundleIdLogic::UuidV4) => regenerate_uuid(original_sk, uuid::Uuid::new_v4()),
+        (true, BundleIdLogic::UuidV7) => regenerate_uuid(original_sk, uuid::Uuid::now_v7()),
+        (true, BundleIdLogic::Phantom) => Err(DynamoInvalidBundle::new(
             "persisted bundle item used phantom ID logic",
         )),
+        _ => Ok(RawIdPath::new(original_sk).logical_path().to_string()),
     }
 }

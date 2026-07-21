@@ -32,8 +32,8 @@ pub struct BundleId {
 #[serde(rename_all = "snake_case")]
 pub enum BundleIdLogic {
     #[default]
-    Uuid,
-    Timestamp,
+    UuidV4,
+    UuidV7,
     Singleton,
     IndexedSingleton,
     BatchOptimized,
@@ -136,8 +136,8 @@ impl Default for ImportMode {
 impl BundleIdLogic {
     pub fn from_object<O: DynamoObject>() -> Self {
         match O::id_logic() {
-            IdLogic::Uuid => Self::Uuid,
-            IdLogic::Timestamp => Self::Timestamp,
+            IdLogic::UuidV4 => Self::UuidV4,
+            IdLogic::UuidV7 => Self::UuidV7,
             IdLogic::Singleton => Self::Singleton,
             IdLogic::IndexedSingleton(_) => Self::IndexedSingleton,
             IdLogic::BatchOptimized { .. } => Self::BatchOptimized,

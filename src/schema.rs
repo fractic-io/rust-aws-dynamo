@@ -14,33 +14,41 @@ pub mod timestamp;
 type IdKeyFn<T> = dyn for<'a> Fn(&'a T) -> Cow<'a, str>;
 
 pub enum IdLogic<T: DynamoObjectData> {
-    /// New IDs are generated based on UUID v4. This option should be used in
-    /// almost all cases.
+    /// New IDs are generated as UUID v4 values, encoded as 22 base62 characters
+    /// (lossless, 122 bits of entropy). This option should be used in almost
+    /// all cases.
     ///
-    /// <new-obj-id>: LABEL#<uuid>
-    Uuid,
+    /// Format: `LABEL#<base62-uuid-v4>`
+    UuidV4,
 
-    /// New IDs are generated based on epoch timestamp in milliseconds. Can be
-    /// used for efficient date-based ordering and filtering, since the date
-    /// range can be directly filtered in the query.
+    /// New IDs are generated as UUID v7 values, encoded as 22 base62 characters
+    /// (lossless, 74 bits of entropy / ms). UUID v7 places a Unix epoch
+    /// timestamp in the high bits, so DynamoDB's lexicographical sort order
+    /// provides efficient date-based ordering and filtering while retaining
+    /// strong random uniqueness within each millisecond.
     ///
-    /// However, a couple important things to consider:
+    /// This is a solid option for simple ordering and efficient filtering.
+    /// Since UUID-v7 is monotonic within-process, even batch-add operations
+    /// (that may generate many IDs within the same millisecond) result in
+    /// stable lexicographical ID ordering automatically.
+    ///
+    /// Note, however:
     /// - Object creation date is leaked to users by object ID.
-    /// - IDs are "guessable", which could be a security concern.
-    /// - If multiple children for the same parent are written in the same
-    ///   millisecond, they will have the same ID, and the second write will
-    ///   overwrite the first. `DynamoUtil::batch_create_item` avoids this
-    ///   within a single batch call by assigning IDs from one millisecond seed
-    ///   plus each item's batch index, but concurrent writers can still collide.
+    /// - Re-ordering is not possible.
     /// - Changing ID logic later can be very risky / complex, so should
     ///   consider all future use-cases from the beginning.
     ///
-    /// An alternative strategy would be to use a UUID-based ID with ordered
-    /// insertion (flexible but inneficient) or a GSI based on a separate
-    /// timestamp field (efficient but requires extra storage).
+    /// For complex ordering, re-ordering, and stronger order guarantees, use
+    /// UuidV4 with ordered insertion (flexible but inneficient) or a GSI based
+    /// on a separate timestamp field (efficient but requires extra storage).
     ///
-    /// <new-obj-id>: LABEL#<timestamp>
-    Timestamp,
+    /// Use [`PkSk::uuid_v7_lower_bound`] and [`PkSk::uuid_v7_upper_bound`] to
+    /// construct keys for UUID-v7 comparisons, or UUID-v7-specific
+    /// [`DynamoQuery::pk(...).sk_uuidv7_range(...)`] queries for efficient
+    /// filtering.
+    ///
+    /// Format: `LABEL#<base62-uuid-v7>`
+    UuidV7,
 
     /// Only one version of this object exists for a given parent, prefixed with
     /// a '@'. Subsequent writes always overwrite the existing object.
@@ -479,9 +487,9 @@ pub struct PkSk {
 }
 
 /// Custom struct to hold a minimal reference to a PkSk for efficient database
-/// storage, generally only storing the last 16 digits (UUID-part). The original
-/// PkSk can be reconstructed by manually providing the context Pk and Sk
-/// prefixes. This can be particularly useful for indexed singleton keys or GSIs.
+/// storage, generally only storing the terminal ID value. The original PkSk can
+/// be reconstructed by manually providing the context Pk and Sk prefixes. This
+/// can be particularly useful for indexed singleton keys or GSIs.
 #[derive(Debug, PartialEq, Clone, Hash, Eq)]
 pub struct ForeignRef<'a>(Cow<'a, str>);
 
@@ -559,7 +567,13 @@ mod tests {
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
     pub struct Test1Data {}
-    dynamo_object!(Test1, Test1Data, "TEST1", IdLogic::Uuid, NestingLogic::Root);
+    dynamo_object!(
+        Test1,
+        Test1Data,
+        "TEST1",
+        IdLogic::UuidV4,
+        NestingLogic::Root
+    );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
     pub struct Test2Data {}
@@ -567,7 +581,7 @@ mod tests {
         Test2,
         Test2Data,
         "TEST2",
-        IdLogic::Timestamp,
+        IdLogic::UuidV7,
         NestingLogic::InlineChildOfAny
     );
 
@@ -670,8 +684,8 @@ mod tests {
 
     #[test]
     fn test_id_logic_accessor() {
-        assert!(matches!(Test1::id_logic(), IdLogic::Uuid));
-        assert!(matches!(Test2::id_logic(), IdLogic::Timestamp));
+        assert!(matches!(Test1::id_logic(), IdLogic::UuidV4));
+        assert!(matches!(Test2::id_logic(), IdLogic::UuidV7));
         assert!(matches!(Test3::id_logic(), IdLogic::Singleton));
         assert!(matches!(Test4::id_logic(), IdLogic::IndexedSingleton(_)));
     }

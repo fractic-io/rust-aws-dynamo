@@ -14,17 +14,17 @@ dynamo_object!(
     RootUuid,
     RootUuidData,
     "ROOTOBJ",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::Root
 );
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct RootTimestampData {}
+pub struct RootUuidV7Data {}
 dynamo_object!(
-    RootTimestamp,
-    RootTimestampData,
+    RootUuidV7,
+    RootUuidV7Data,
     "EVENT",
-    IdLogic::Timestamp,
+    IdLogic::UuidV7,
     NestingLogic::Root
 );
 
@@ -34,7 +34,7 @@ dynamo_object!(
     TopLevelChild,
     TopLevelChildData,
     "TOP",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::TopLevelChildOfAny
 );
 
@@ -44,7 +44,7 @@ dynamo_object!(
     InlineChild,
     InlineChildData,
     "INLINE",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::InlineChildOfAny
 );
 
@@ -54,7 +54,7 @@ dynamo_object!(
     StrictChild,
     StrictChildData,
     "STRICT",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::TopLevelChildOf("PARENT")
 );
 
@@ -88,7 +88,7 @@ dynamo_object!(
     InvalidLabel,
     InvalidLabelData,
     "BAD#LABEL",
-    IdLogic::Uuid,
+    IdLogic::UuidV4,
     NestingLogic::Root
 );
 
@@ -97,17 +97,11 @@ fn generates_each_terminal_segment_shape() {
     let uuid = generate_id::<RootUuid>(&RootUuidData {}, PkSk::root()).unwrap();
     assert_eq!(uuid.pk, ROOT_KEY);
     assert!(uuid.sk.starts_with("ROOTOBJ#"));
-    assert_eq!(uuid.sk.len(), "ROOTOBJ#".len() + 16);
+    assert_eq!(uuid.sk.len(), "ROOTOBJ#".len() + 22);
 
-    let timestamp = generate_id_with_options::<RootTimestamp>(
-        &RootTimestampData {},
-        PkSk::root(),
-        IdGenerationOptions {
-            timestamp_millis: Some(1_234),
-        },
-    )
-    .unwrap();
-    assert_eq!(timestamp.sk, "EVENT#0000000000001234");
+    let uuid_v7 = generate_id::<RootUuidV7>(&RootUuidV7Data {}, PkSk::root()).unwrap();
+    assert!(uuid_v7.sk.starts_with("EVENT#"));
+    assert_eq!(uuid_v7.sk.len(), "EVENT#".len() + 22);
 
     let singleton = generate_id::<Singleton>(&SingletonData {}, PkSk::root()).unwrap();
     assert_eq!(singleton.sk, "@SETTINGS");
@@ -178,15 +172,31 @@ fn generation_enforces_parent_relationships() {
 
 #[test]
 fn regenerates_only_non_singleton_segment_values() {
-    let regenerated = regenerate_uuid("PARENT#old#CHILD#old").unwrap();
+    let regenerated = regenerate_uuid("PARENT#old#CHILD#old", uuid::Uuid::new_v4()).unwrap();
     assert!(regenerated.starts_with("PARENT#old#CHILD#"));
     assert_ne!(regenerated, "PARENT#old#CHILD#old");
 
     assert_eq!(
-        regenerate_timestamp("#CHILD#old", 42).unwrap(),
-        "#CHILD#0000000000000042"
+        regenerate_uuid("#CHILD#old", uuid::Uuid::now_v7())
+            .unwrap()
+            .len(),
+        "#CHILD#".len() + 22
     );
-    assert_eq!(regenerate_uuid("@SETTINGS[key]").unwrap(), "@SETTINGS[key]");
+    assert_eq!(
+        regenerate_uuid("@SETTINGS[key]", uuid::Uuid::new_v4()).unwrap(),
+        "@SETTINGS[key]"
+    );
+}
+
+#[test]
+fn constructs_uuid_v7_query_bounds_using_object_placement() {
+    let lower = uuid_v7_lower_bound::<RootUuidV7>(PkSk::root(), 1_234).unwrap();
+    let upper = uuid_v7_upper_bound::<RootUuidV7>(PkSk::root(), 1_234).unwrap();
+
+    assert_eq!(lower.pk, ROOT_KEY);
+    assert!(lower.sk.starts_with("EVENT#"));
+    assert!(lower.sk < upper.sk);
+    assert!(uuid_v7_lower_bound::<RootUuid>(PkSk::root(), 1_234).is_err());
 }
 
 #[test]

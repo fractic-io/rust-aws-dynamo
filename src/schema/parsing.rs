@@ -326,7 +326,7 @@ mod tests {
         TestDynamoObject,
         TestDynamoObjectData,
         "TEST",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::Root
     );
 
@@ -339,7 +339,7 @@ mod tests {
         TestRenamedObject,
         TestRenamedObjectData,
         "TESTRENAMED",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::Root,
         renamed = ["old_name" -> "name"]
     );

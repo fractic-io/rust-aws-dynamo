@@ -13,8 +13,8 @@ mod tests {
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
         util::{
-            backend::MockDynamoBackend, DynamoQueryMatchType, DynamoUtil, AUTO_FIELDS_CREATED_AT,
-            AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
+            backend::MockDynamoBackend, DynamoGenericQuery, DynamoQuery, DynamoUtil,
+            AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
         },
     };
 
@@ -46,20 +46,20 @@ mod tests {
         TestDynamoObject,
         TestDynamoObjectData,
         "TEST",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::InlineChildOfAny
     );
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
-    pub struct TestTimestampDynamoObjectData {
+    pub struct TestUuidV7DynamoObjectData {
         val_non_null: String,
         val_nullable: Option<String>,
     }
     dynamo_object!(
-        TestTimestampDynamoObject,
-        TestTimestampDynamoObjectData,
+        TestUuidV7DynamoObject,
+        TestUuidV7DynamoObjectData,
         "TIMETEST",
-        IdLogic::Timestamp,
+        IdLogic::UuidV7,
         NestingLogic::InlineChildOfAny
     );
 
@@ -71,7 +71,7 @@ mod tests {
         RenamedUpdateObject,
         RenamedUpdateObjectData,
         "RENAMEDUPDATE",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::InlineChildOfAny,
         renamed = ["old_name" -> "name"]
     );
@@ -88,7 +88,7 @@ mod tests {
         RenamedNestedUpdateObject,
         RenamedNestedUpdateObjectData,
         "RENAMEDNESTEDUPDATE",
-        IdLogic::Uuid,
+        IdLogic::UuidV4,
         NestingLogic::InlineChildOfAny,
         renamed = ["old_profile" -> "profile"]
     );
@@ -282,14 +282,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(
-                None,
-                PkSk {
-                    pk: "ROOT".to_string(),
-                    sk: "GROUP#123".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query::<TestDynamoObject>(DynamoQuery::pk("ROOT").sk_begins_with("GROUP#123"))
             .await
             .unwrap();
 
@@ -350,14 +343,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(
-                None,
-                PkSk {
-                    pk: "ROOT".to_string(),
-                    sk: "GROUP#123".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query::<TestDynamoObject>(DynamoQuery::pk("ROOT").sk_begins_with("GROUP#123"))
             .await
             .unwrap();
 
@@ -443,14 +429,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<TestDynamoObject>(
-                None,
-                PkSk {
-                    pk: "GROUP#456".to_string(),
-                    sk: "TEST#".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query::<TestDynamoObject>(DynamoQuery::pk("GROUP#456").sk_begins_with("TEST#"))
             .await
             .unwrap();
 
@@ -540,14 +519,7 @@ mod tests {
         let util = build_util(backend).await;
 
         let result = util
-            .query_generic(
-                None,
-                PkSk {
-                    pk: "ROOT".to_string(),
-                    sk: "GROUP#123#TEST".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query_generic(DynamoGenericQuery::pk("ROOT").sk_begins_with("GROUP#123#TEST"))
             .await
             .unwrap();
 
@@ -556,6 +528,31 @@ mod tests {
         // Lower sort value item first.
         assert_eq!(result[0], build_item_low_sort().1);
         assert_eq!(result[1], build_item_high_sort().1);
+    }
+
+    #[tokio::test]
+    async fn test_query_generic_accepts_uuid_v7_range() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .withf(|table, index, condition, values, projection| {
+                table == "my_table"
+                    && index.is_none()
+                    && condition == "pk = :pk_val AND sk BETWEEN :sk_val AND :sk_max"
+                    && projection.is_none()
+                    && matches!(values.get(":pk_val"), Some(AttributeValue::S(pk)) if pk == "ROOT")
+                    && matches!(values.get(":sk_val"), Some(AttributeValue::S(sk)) if sk.starts_with("PARENT#1#TIMETEST#"))
+                    && matches!(values.get(":sk_max"), Some(AttributeValue::S(sk)) if sk.starts_with("PARENT#1#TIMETEST#"))
+            })
+            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+
+        let util = build_util(backend).await;
+        let query = DynamoGenericQuery::pk("ROOT")
+            .sk_uuidv7_range::<TestUuidV7DynamoObject>("PARENT#1#TIMETEST#", 1_000, 2_000)
+            .unwrap();
+        let result = util.query_generic(query).await.unwrap();
+
+        assert!(result.is_empty());
     }
 
     #[tokio::test]
@@ -585,14 +582,7 @@ mod tests {
 
         let util = build_util(backend).await;
         let result = util
-            .query::<PartitionedSingleton>(
-                None,
-                PkSk {
-                    pk: "ROOT".to_string(),
-                    sk: "@PARTSINGLE".to_string(),
-                },
-                DynamoQueryMatchType::BeginsWith,
-            )
+            .query::<PartitionedSingleton>(DynamoQuery::pk("ROOT").sk_begins_with("@PARTSINGLE"))
             .await
             .unwrap();
 
@@ -773,7 +763,7 @@ mod tests {
 
         assert_eq!(result.pk(), "ROOT".to_string());
         assert!(result.sk().starts_with("GROUP#123#TEST#"));
-        assert_eq!(result.sk().len(), 31);
+        assert_eq!(result.sk().len(), "GROUP#123#TEST#".len() + 22);
     }
 
     #[tokio::test]
@@ -827,7 +817,7 @@ mod tests {
 
         assert_eq!(result.pk(), "ROOT".to_string());
         assert!(result.sk().starts_with("GROUP#123#TEST#"));
-        assert_eq!(result.sk().len(), 31);
+        assert_eq!(result.sk().len(), "GROUP#123#TEST#".len() + 22);
     }
 
     #[tokio::test]
@@ -962,7 +952,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_create_item_timestamp_ids_are_offset_from_one_seed() {
+    async fn test_batch_create_item_uuid_v7_ids_are_unique() {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_batch_put_item()
@@ -970,22 +960,22 @@ mod tests {
                 if items.len() != 3 {
                     return false;
                 }
-                let timestamps = items
+                let values = items
                     .iter()
                     .map(|item| {
                         let sk = item.get("sk")?.as_s().ok()?;
-                        let timestamp = sk.rsplit('#').next()?.parse::<i64>().ok()?;
-                        Some((sk.clone(), timestamp))
+                        let value = sk.rsplit('#').next()?;
+                        Some((sk.clone(), value.to_string()))
                     })
                     .collect::<Option<Vec<_>>>();
-                let Some(timestamps) = timestamps else {
+                let Some(values) = values else {
                     return false;
                 };
-                timestamps.iter().all(|(sk, _)| {
+                values.iter().all(|(sk, value)| {
                     sk.starts_with("GROUP#123#TIMETEST#")
-                        && sk.len() == "GROUP#123#TIMETEST#".len() + 16
-                }) && timestamps[1].1 == timestamps[0].1 + 1
-                    && timestamps[2].1 == timestamps[1].1 + 1
+                        && value.len() == 22
+                        && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                }) && values.windows(2).all(|pair| pair[0].1 < pair[1].1)
             })
             .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
 
@@ -995,31 +985,23 @@ mod tests {
             sk: "GROUP#123".to_string(),
         };
         let result = util
-            .batch_create_item::<TestTimestampDynamoObject>(
+            .batch_create_item::<TestUuidV7DynamoObject>(
                 &parent_id,
                 vec![
-                    TestTimestampDynamoObjectData::default(),
-                    TestTimestampDynamoObjectData::default(),
-                    TestTimestampDynamoObjectData::default(),
+                    TestUuidV7DynamoObjectData::default(),
+                    TestUuidV7DynamoObjectData::default(),
+                    TestUuidV7DynamoObjectData::default(),
                 ],
             )
             .await
             .unwrap();
 
         assert_eq!(result.len(), 3);
-        let timestamps = result
+        let values = result
             .iter()
-            .map(|item| {
-                item.sk()
-                    .rsplit('#')
-                    .next()
-                    .unwrap()
-                    .parse::<i64>()
-                    .unwrap()
-            })
+            .map(|item| item.sk().rsplit('#').next().unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(timestamps[1], timestamps[0] + 1);
-        assert_eq!(timestamps[2], timestamps[1] + 1);
+        assert!(values.windows(2).all(|pair| pair[0] < pair[1]));
     }
 
     #[tokio::test]

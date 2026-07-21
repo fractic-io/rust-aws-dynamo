@@ -23,7 +23,7 @@ use crate::{
         DynamoInvalidPhantomObjectUsage, DynamoNotFound, DynamoUnexpectedItemCount,
     },
     schema::{
-        identifiers::{generate_id_with_options, IdGenerationOptions, RawIdPath},
+        identifiers::{generate_id, RawIdPath},
         parsing::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
             build_dynamo_map_internal, parse_dynamo_map, IdKeys,
@@ -53,10 +53,13 @@ pub(crate) mod collapse_helpers;
 mod expand_helpers;
 mod id_relations;
 mod metadata_helpers;
+mod query;
 mod raw_batch_helpers;
 mod rename_safety_helpers;
 mod test;
 mod update_helpers;
+
+pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig};
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
 pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
@@ -83,32 +86,6 @@ use raw_batch_helpers::{
     MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES,
 };
 
-#[derive(Debug, PartialEq)]
-pub enum DynamoQueryMatchType {
-    /// Match items whose sort key starts with the provided value.
-    BeginsWith,
-    /// Match items whose sort key exactly equals the provided value.
-    Equals,
-    /// Match items whose sort key is greater than the provided value.
-    GreaterThan,
-    /// Match items whose sort key is greater than or equal to the provided value.
-    GreaterThanOrEquals,
-    /// Match items whose sort key is less than the provided value.
-    LessThan,
-    /// Match items whose sort key is less than or equal to the provided value.
-    LessThanOrEquals,
-    /// Match items with the same prefix up to `delim` and suffix greater than
-    /// or equal to the provided value.
-    SuffixGreaterThanOrEquals(char),
-    /// Match items with the same prefix up to `delim` and suffix less than or
-    /// equal to the provided value.
-    SuffixLessThanOrEquals(char),
-    /// Match items whose sort key falls between the provided value and this
-    /// inclusive upper bound. Use this to build custom DynamoDB `BETWEEN`
-    /// queries from a lower-bound `PkSk` plus an explicit upper-bound string.
-    UntilInclusive(String),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamoInsertPosition {
@@ -124,13 +101,6 @@ pub enum TtlConfig {
     OneYear,
     CustomDuration(Duration),
     CustomDate(DateTime<Utc>),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct IndexConfig {
-    pub name: &'static str,
-    pub partition_field: &'static str,
-    pub sort_field: &'static str,
 }
 
 #[derive(Debug)]
@@ -241,13 +211,12 @@ impl DynamoUtil {
         })
     }
 
+    /// Executes a typed key query and deserializes matching objects.
     pub async fn query<T: DynamoObject>(
         &self,
-        index: Option<IndexConfig>,
-        id: PkSk,
-        match_type: DynamoQueryMatchType,
+        query: DynamoQuery<T>,
     ) -> Result<Vec<T>, ServerError> {
-        self.query_generic(index, id, match_type)
+        self.query_generic(query.into())
             .await?
             .into_iter()
             .filter_map(|item| {
@@ -266,156 +235,64 @@ impl DynamoUtil {
         parent_id: &PkSk,
     ) -> Result<Vec<T>, ServerError> {
         validate_parent_for::<T>(parent_id)?;
-        self.query::<T>(
-            None,
-            child_query_prefix::<T>(parent_id),
-            DynamoQueryMatchType::BeginsWith,
-        )
-        .await
+        let prefix = child_query_prefix::<T>(parent_id);
+        self.query::<T>(DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk))
+            .await
     }
 
+    /// Executes a generic key query and returns raw Dynamo maps.
     pub async fn query_generic(
         &self,
-        index: Option<IndexConfig>,
-        id: PkSk,
-        match_type: DynamoQueryMatchType,
+        query: DynamoGenericQuery,
     ) -> Result<Vec<DynamoMap>, ServerError> {
-        let (index_name, partition_field, sort_field) = match index {
-            Some(index) => (
-                Some(index.name.to_owned()),
-                index.partition_field,
-                index.sort_field,
-            ),
-            None => (None, "pk", "sk"),
-        };
-        let condition = match match_type {
-            DynamoQueryMatchType::BeginsWith if id.sk.is_empty() => {
-                format!("{partition_field} = :pk_val")
-            }
-            DynamoQueryMatchType::BeginsWith => {
-                format!("{partition_field} = :pk_val AND begins_with({sort_field}, :sk_val)")
-            }
-            DynamoQueryMatchType::Equals => {
-                format!("{partition_field} = :pk_val AND {sort_field} = :sk_val")
-            }
-            DynamoQueryMatchType::GreaterThan => {
-                format!("{partition_field} = :pk_val AND {sort_field} > :sk_val")
-            }
-            DynamoQueryMatchType::GreaterThanOrEquals => {
-                format!("{partition_field} = :pk_val AND {sort_field} >= :sk_val")
-            }
-            DynamoQueryMatchType::LessThan => {
-                format!("{partition_field} = :pk_val AND {sort_field} < :sk_val")
-            }
-            DynamoQueryMatchType::LessThanOrEquals => {
-                format!("{partition_field} = :pk_val AND {sort_field} <= :sk_val")
-            }
-            DynamoQueryMatchType::SuffixGreaterThanOrEquals(_)
-            | DynamoQueryMatchType::UntilInclusive(_) => {
-                format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_val AND :sk_max")
-            }
-            DynamoQueryMatchType::SuffixLessThanOrEquals(_) => {
-                format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_min AND :sk_val")
-            }
-        };
-        let mut attribute_values = HashMap::new();
-        attribute_values.insert(":pk_val".to_string(), AttributeValue::S(id.pk));
-        match match_type {
-            DynamoQueryMatchType::SuffixGreaterThanOrEquals(delim) => {
-                // '~' is the last ASCII character, so we can use it as an upper
-                // bound to limit the query to a given prefix (similar to using
-                // begins_with). Since queries can only have one condition per
-                // key, this allows us to effectively do >= and begins_with at
-                // the same time, by using a BETWEEN condition.
-                attribute_values.insert(
-                    ":sk_max".to_string(),
-                    AttributeValue::S(format!(
-                        "{}~",
-                        id.sk
-                            .rsplit_once(delim)
-                            .ok_or_else(|| {
-                                DynamoInvalidOperation::with_debug(
-                                    "sort field filter did not contain the delimiter char, so \
-                                     could not extract the prefix for matching",
-                                    &id.sk,
-                                )
-                            })?
-                            .0
-                    )),
-                );
-            }
-            DynamoQueryMatchType::SuffixLessThanOrEquals(delim) => {
-                attribute_values.insert(
-                    ":sk_min".to_string(),
-                    AttributeValue::S(
-                        id.sk
-                            .rsplit_once(delim)
-                            .ok_or_else(|| {
-                                DynamoInvalidOperation::with_debug(
-                                    "sort field filter did not contain the delimiter char, so \
-                                     could not extract the prefix for matching",
-                                    &id.sk,
-                                )
-                            })?
-                            .0
-                            .to_string(),
-                    ),
-                );
-            }
-            DynamoQueryMatchType::UntilInclusive(sk_max) => {
-                attribute_values.insert(":sk_max".to_string(), AttributeValue::S(sk_max));
-            }
-            _ => {}
-        }
-        if !id.sk.is_empty() {
-            attribute_values.insert(":sk_val".to_string(), AttributeValue::S(id.sk));
-        }
+        let expression = query.into_expression();
         let response = self
             .backend
             .query(
                 self.table.clone(),
-                index_name,
-                condition,
-                attribute_values,
+                expression.index_name,
+                expression.condition,
+                expression.attribute_values,
                 None,
             )
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
 
-        let mut items = expand_batched_items(
+        let items = collapse_partitioned_items(expand_batched_items(
             response
                 .into_iter()
                 .flat_map(|page| page.items.unwrap_or_default().into_iter())
                 .collect(),
-        );
-        items = collapse_partitioned_items(items)?;
+        ))?;
 
         // Sort by sort key. Since 'sort_by' is stable, ID-based ordering is
         // preserved for items without a sort key.
-        let sort = |item: &DynamoMap| {
-            item.get(AUTO_FIELDS_SORT)
-                .and_then(|value| value.as_n().ok())
-                .and_then(|value| value.parse::<f64>().ok())
-        };
-        items.sort_by(|a, b| {
-            let a_sort = sort(a);
-            let b_sort = sort(b);
-            match (a_sort, b_sort) {
-                (Some(a), Some(b)) => a.partial_cmp(&b).unwrap(),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            }
+        let mut items = items
+            .into_iter()
+            .map(|item| {
+                let sort = item
+                    .get(AUTO_FIELDS_SORT)
+                    .and_then(|value| value.as_n().ok())
+                    .and_then(|value| value.parse::<f64>().ok());
+                (item, sort)
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|(_, a_sort), (_, b_sort)| match (a_sort, b_sort) {
+            (Some(a), Some(b)) => a.total_cmp(b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
         });
-        Ok(items)
+        Ok(items.into_iter().map(|(item, _)| item).collect())
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {
         reject_batch_optimized_ids::<T>()?;
         validate_object_id::<T>(&id)?;
         if is_partitioned_id_logic::<T>() {
+            let prefix = ext_base_id(&id);
             let items = self
-                .query::<T>(None, ext_base_id(&id), DynamoQueryMatchType::BeginsWith)
+                .query::<T>(DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk))
                 .await?;
             match items.len() {
                 0 => Ok(None),
@@ -461,16 +338,8 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
-        Self::create_token_opt(parent_id, data, IdGenerationOptions::default())
-    }
-
-    fn create_token_opt<T: DynamoObject>(
-        parent_id: &PkSk,
-        data: &T::Data,
-        options: IdGenerationOptions,
-    ) -> Result<CreateToken<T>, ServerError> {
         Ok(CreateToken {
-            id: generate_id_with_options::<T>(data, parent_id, options)?,
+            id: generate_id::<T>(data, parent_id)?,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -496,8 +365,8 @@ impl DynamoUtil {
             .token
             .map_or_else(|| self.create_token(parent_id, &data), Ok)?
             .id;
-        let sort: Option<f64> = options.custom_sort;
-        let ttl: Option<i64> = options.ttl.map(|ttl| ttl.compute_timestamp());
+        let sort = options.custom_sort;
+        let ttl = options.ttl.map(|ttl| ttl.compute_timestamp());
         if is_partitioned_id_logic::<T>() {
             let logical_id = ext_base_id(&PkSk { pk, sk });
             let num_existing_partitions = fetch_num_partitions(self, &logical_id).await?;
@@ -556,35 +425,20 @@ impl DynamoUtil {
         if data_and_options.is_empty() {
             return Ok(Vec::new());
         }
-        let timestamp_seed = if matches!(T::id_logic(), IdLogic::Timestamp) {
-            Some(Utc::now().timestamp_millis())
-        } else {
-            None
-        };
-        let create_batch_id = |data: &T::Data,
-                               token: Option<&CreateToken<T>>,
-                               idx: usize|
-         -> Result<PkSk, ServerError> {
-            if let Some(token) = token {
-                return Ok(token.id.clone());
-            }
-            let timestamp_millis = timestamp_seed
-                .map(|seed| {
-                    let idx = i64::try_from(idx)
-                        .map_err(|_| CriticalError::new("batch item index overflowed i64"))?;
-                    seed.checked_add(idx)
-                        .ok_or_else(|| CriticalError::new("batch timestamp ID overflowed i64"))
-                })
-                .transpose()?;
-            Self::create_token_opt::<T>(parent_id, data, IdGenerationOptions { timestamp_millis })
-                .map(|token| token.id)
+        let create_batch_id = |data: &T::Data, token: Option<&CreateToken<T>>| {
+            token.map_or_else(
+                || {
+                    self.create_token::<T>(parent_id, data)
+                        .map(|token| token.id)
+                },
+                |token| Ok(token.id.clone()),
+            )
         };
         if is_partitioned_id_logic::<T>() {
             let pending_writes = data_and_options
                 .into_iter()
-                .enumerate()
-                .map(|(idx, (data, options))| {
-                    let PkSk { pk, sk } = create_batch_id(&data, options.token.as_ref(), idx)?;
+                .map(|(data, options)| {
+                    let PkSk { pk, sk } = create_batch_id(&data, options.token.as_ref())?;
                     Ok((
                         ext_base_id(&PkSk { pk, sk }),
                         data,
@@ -624,11 +478,10 @@ impl DynamoUtil {
         } else {
             let (items, ids): (Vec<DynamoMap>, Vec<PkSk>) = data_and_options
                 .iter()
-                .enumerate()
-                .map(|(idx, (data, options))| {
-                    let PkSk { pk, sk } = create_batch_id(data, options.token.as_ref(), idx)?;
-                    let sort: Option<f64> = options.custom_sort;
-                    let ttl: Option<i64> = options.ttl.as_ref().map(TtlConfig::compute_timestamp);
+                .map(|(data, options)| {
+                    let PkSk { pk, sk } = create_batch_id(data, options.token.as_ref())?;
+                    let sort = options.custom_sort;
+                    let ttl = options.ttl.as_ref().map(TtlConfig::compute_timestamp);
                     let now = Timestamp::now();
                     Ok((
                         build_dynamo_map_for_new_obj::<T>(
@@ -665,7 +518,7 @@ impl DynamoUtil {
     }
 
     /// Use when complex ordering is required (for simple ordering, consider
-    /// using timestamp-based IDs).
+    /// using UUID-v7 IDs).
     ///
     /// Complex ordering works based on a 'sort' field, a floating point value
     /// such that a new item can always always be place in between any two
@@ -680,7 +533,7 @@ impl DynamoUtil {
     /// WARNING: This function requires checking all existing sort values to
     /// place the new item appropriately, which can be expensive. If inserting
     /// many ordered items, use batch_create_item_ordered (which only fetches
-    /// sort values once), or consider using timestamp-based IDs instead.
+    /// sort values once), or consider using UUID-v7 IDs instead.
     pub async fn create_item_ordered<T: DynamoObject>(
         &self,
         parent_id: &PkSk,

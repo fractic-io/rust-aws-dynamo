@@ -10,7 +10,7 @@ use serde::{
 use crate::{errors::DynamoInvalidId, util::DynamoMap};
 
 use super::{
-    identifiers::{generate_id, RawIdPath, ROOT_KEY},
+    identifiers::{generate_id, uuid_v7_lower_bound, uuid_v7_upper_bound, RawIdPath, ROOT_KEY},
     DynamoObject, ForeignRef, PkSk,
 };
 
@@ -33,10 +33,33 @@ impl PkSk {
         generate_id::<T>(data, parent_id)
     }
 
+    /// Constructs the first possible ID for a UUID-v7 object at the given Unix
+    /// epoch millisecond.
+    ///
+    /// This can be used as the lower key in a UUID-v7 timestamp range query.
+    pub fn uuid_v7_lower_bound<T: DynamoObject>(
+        parent_id: &PkSk,
+        timestamp_millis: i64,
+    ) -> Result<PkSk, ServerError> {
+        uuid_v7_lower_bound::<T>(parent_id, timestamp_millis)
+    }
+
+    /// Constructs the last possible ID for a UUID-v7 object at the given Unix
+    /// epoch millisecond.
+    ///
+    /// This can be used as the inclusive upper key in a UUID-v7 timestamp
+    /// range query.
+    pub fn uuid_v7_upper_bound<T: DynamoObject>(
+        parent_id: &PkSk,
+        timestamp_millis: i64,
+    ) -> Result<PkSk, ServerError> {
+        uuid_v7_upper_bound::<T>(parent_id, timestamp_millis)
+    }
+
     /// Parses the client-facing `pk|sk` representation.
     pub fn from_string(s: &str) -> Result<PkSk, ServerError> {
         let (pk, sk) = split_serialized_id(s)?;
-        Ok(PkSk {
+        Ok(Self {
             pk: pk.to_string(),
             sk: sk.to_string(),
         })
@@ -44,7 +67,7 @@ impl PkSk {
 
     pub fn from_map(map: &DynamoMap) -> Result<PkSk, ServerError> {
         let (pk, sk) = id_fields_from_map(map)?;
-        Ok(PkSk {
+        Ok(Self {
             pk: pk.to_string(),
             sk: sk.to_string(),
         })

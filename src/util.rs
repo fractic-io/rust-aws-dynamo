@@ -338,6 +338,8 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         Ok(CreateToken {
             id: generate_id::<T>(data, parent_id)?,
             _phantom: std::marker::PhantomData,

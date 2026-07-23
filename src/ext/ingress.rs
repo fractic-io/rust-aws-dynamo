@@ -8,7 +8,7 @@ use serde_json::Value as JsonValue;
 use crate::{
     errors::DynamoInvalidOperation,
     errors::DynamoNotFound,
-    schema::{DynamoObject, PkSk},
+    schema::{DynamoObject, IdLogic, PkSk},
     util::{CreateOptions, CreateToken, DynamoInsertPosition, DynamoUtil},
 };
 
@@ -161,8 +161,8 @@ where
 
     /// Returns the object data that will be supplied for creation.
     ///
-    /// The reserved ID is not recalculated after mutation. Callers must not
-    /// change fields used by the object's ID logic.
+    /// Changes to fields used by an indexed-singleton ID are rejected when the
+    /// plan is created, because the reserved ID must remain valid.
     pub fn data_mut(&mut self) -> &mut O::Data {
         &mut self.data
     }
@@ -175,6 +175,17 @@ where
             insert_position,
             token,
         } = self;
+        let id_depends_on_data = matches!(
+            O::id_logic(),
+            IdLogic::IndexedSingleton(_) | IdLogic::IndexedSingletonExt(_)
+        );
+        if id_depends_on_data
+            && dynamo_util.create_token::<O>(&parent_id, &data)?.id() != token.id()
+        {
+            return Err(DynamoInvalidOperation::new(
+                "creation data changed after its ID was reserved",
+            ));
+        }
         let options = CreateOptions {
             token: Some(token),
             ..Default::default()
@@ -227,7 +238,7 @@ where
 
     /// Returns the explicit parent ID, or the caller-provided parent for create
     /// arguments that do not contain one.
-    fn parent_id<'a>(&'a self, parent_id: &'a PkSk) -> &'a PkSk;
+    fn parent_id<'a>(&'a self, parent_id: Option<&'a PkSk>) -> &'a PkSk;
 }
 
 trait PrepareCreateArgs<O>: CreateArgs<O>
@@ -249,8 +260,8 @@ impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {
         &self.data
     }
 
-    fn parent_id<'a>(&'a self, parent_id: &'a PkSk) -> &'a PkSk {
-        parent_id
+    fn parent_id<'a>(&'a self, parent_id: Option<&'a PkSk>) -> &'a PkSk {
+        parent_id.unwrap_or(PkSk::root())
     }
 }
 
@@ -273,8 +284,8 @@ impl<O: DynamoObject> CreateArgs<O> for OrderedCreate<O> {
         &self.data
     }
 
-    fn parent_id<'a>(&'a self, parent_id: &'a PkSk) -> &'a PkSk {
-        parent_id
+    fn parent_id<'a>(&'a self, parent_id: Option<&'a PkSk>) -> &'a PkSk {
+        parent_id.unwrap_or(PkSk::root())
     }
 }
 
@@ -303,7 +314,7 @@ impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {
         &self.data
     }
 
-    fn parent_id<'a>(&'a self, _parent_id: &'a PkSk) -> &'a PkSk {
+    fn parent_id<'a>(&'a self, _parent_id: Option<&'a PkSk>) -> &'a PkSk {
         &self.parent_id
     }
 }
@@ -328,7 +339,7 @@ impl<O: DynamoObject> CreateArgs<O> for OrderedCreateWithParent<O> {
         &self.data
     }
 
-    fn parent_id<'a>(&'a self, _parent_id: &'a PkSk) -> &'a PkSk {
+    fn parent_id<'a>(&'a self, _parent_id: Option<&'a PkSk>) -> &'a PkSk {
         &self.parent_id
     }
 }
@@ -425,7 +436,7 @@ where
 async fn prepare_pass_fetch_or_create<O, C>(
     ingress: PassFetchOrCreate<O, C>,
     dynamo_util: &DynamoUtil,
-    parent_id: &PkSk,
+    parent_id: Option<&PkSk>,
 ) -> Result<PreparedIngress<O>, ServerError>
 where
     O: DynamoObject,
@@ -455,7 +466,7 @@ where
 async fn resolve_pass_fetch_or_create<O, C>(
     ingress: PassFetchOrCreate<O, C>,
     dynamo_util: &DynamoUtil,
-    parent_id: &PkSk,
+    parent_id: Option<&PkSk>,
 ) -> Result<O, ServerError>
 where
     O: DynamoObject,
@@ -475,7 +486,7 @@ where
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
-        parent_id: &PkSk,
+        parent_id: Option<&PkSk>,
     ) -> Result<O, ServerError> {
         resolve_pass_fetch_or_create(self, dynamo_util, parent_id).await
     }
@@ -484,7 +495,7 @@ where
     pub async fn prepare(
         self,
         dynamo_util: &DynamoUtil,
-        parent_id: &PkSk,
+        parent_id: Option<&PkSk>,
     ) -> Result<PreparedIngress<O>, ServerError> {
         prepare_pass_fetch_or_create(self, dynamo_util, parent_id).await
     }
@@ -498,7 +509,7 @@ where
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
-        parent_id: &PkSk,
+        parent_id: Option<&PkSk>,
     ) -> Result<O, ServerError> {
         resolve_pass_fetch_or_create(self, dynamo_util, parent_id).await
     }
@@ -507,7 +518,7 @@ where
     pub async fn prepare(
         self,
         dynamo_util: &DynamoUtil,
-        parent_id: &PkSk,
+        parent_id: Option<&PkSk>,
     ) -> Result<PreparedIngress<O>, ServerError> {
         prepare_pass_fetch_or_create(self, dynamo_util, parent_id).await
     }
@@ -519,7 +530,7 @@ where
 {
     /// Resolves a passed, fetched, or newly created object.
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
-        resolve_pass_fetch_or_create(self, dynamo_util, PkSk::root()).await
+        resolve_pass_fetch_or_create(self, dynamo_util, None).await
     }
 
     /// Resolves passed/fetched input or prepares a uniquely owned creation.
@@ -527,7 +538,7 @@ where
         self,
         dynamo_util: &DynamoUtil,
     ) -> Result<PreparedIngress<O>, ServerError> {
-        prepare_pass_fetch_or_create(self, dynamo_util, PkSk::root()).await
+        prepare_pass_fetch_or_create(self, dynamo_util, None).await
     }
 }
 
@@ -537,7 +548,7 @@ where
 {
     /// Resolves a passed, fetched, or newly created object.
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
-        resolve_pass_fetch_or_create(self, dynamo_util, PkSk::root()).await
+        resolve_pass_fetch_or_create(self, dynamo_util, None).await
     }
 
     /// Resolves passed/fetched input or prepares a uniquely owned creation.
@@ -545,7 +556,7 @@ where
         self,
         dynamo_util: &DynamoUtil,
     ) -> Result<PreparedIngress<O>, ServerError> {
-        prepare_pass_fetch_or_create(self, dynamo_util, PkSk::root()).await
+        prepare_pass_fetch_or_create(self, dynamo_util, None).await
     }
 }
 
@@ -907,7 +918,7 @@ where
 mod tests {
     #![allow(clippy::result_large_err)]
 
-    use std::sync::Arc;
+    use std::{borrow::Cow, sync::Arc};
 
     use aws_sdk_dynamodb::operation::put_item::PutItemOutput;
     use serde::{Deserialize, Serialize};
@@ -930,6 +941,21 @@ mod tests {
         TestObjectData,
         "INGRESS_TEST",
         IdLogic::UuidV4,
+        NestingLogic::Root
+    );
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct IndexedTestObjectData {
+        key: String,
+    }
+
+    dynamo_object!(
+        IndexedTestObject,
+        IndexedTestObjectData,
+        "INGRESS_INDEXED_TEST",
+        IdLogic::IndexedSingleton(Box::new(|data: &IndexedTestObjectData| {
+            Cow::Borrowed(&data.key)
+        })),
         NestingLogic::Root
     );
 
@@ -963,13 +989,11 @@ mod tests {
             data: TestObjectData::default(),
         });
         let cloned = ingress.clone();
-        let PreparedIngress::Create(mut first) =
-            ingress.prepare(&dynamo_util, PkSk::root()).await.unwrap()
+        let PreparedIngress::Create(mut first) = ingress.prepare(&dynamo_util, None).await.unwrap()
         else {
             panic!("expected create plan");
         };
-        let PreparedIngress::Create(second) =
-            cloned.prepare(&dynamo_util, PkSk::root()).await.unwrap()
+        let PreparedIngress::Create(second) = cloned.prepare(&dynamo_util, None).await.unwrap()
         else {
             panic!("expected create plan");
         };
@@ -992,7 +1016,7 @@ mod tests {
             TestObjectData::default(),
         ));
 
-        let object = ingress.resolve(&dynamo_util, PkSk::root()).await.unwrap();
+        let object = ingress.resolve(&dynamo_util, None).await.unwrap();
 
         assert_eq!(object.id(), &id);
     }
@@ -1010,8 +1034,26 @@ mod tests {
             },
         });
 
-        let object = ingress.resolve(&dynamo_util, PkSk::root()).await.unwrap();
+        let object = ingress.resolve(&dynamo_util, None).await.unwrap();
 
         assert_eq!(object.data.value, "created");
+    }
+
+    #[tokio::test]
+    async fn create_plan_rejects_data_that_changes_its_reserved_id() {
+        let dynamo_util = build_util().await;
+        let ingress = PassFetchOrCreateUnordered::<IndexedTestObject>::from(UnorderedCreate {
+            data: IndexedTestObjectData {
+                key: "before".into(),
+            },
+        });
+        let PreparedIngress::Create(mut plan) = ingress.prepare(&dynamo_util, None).await.unwrap()
+        else {
+            panic!("expected create plan");
+        };
+
+        plan.data_mut().key = "after".into();
+
+        assert!(plan.create(&dynamo_util).await.is_err());
     }
 }

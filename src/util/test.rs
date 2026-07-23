@@ -6,8 +6,8 @@ mod tests {
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL, COLLAPSE_DATA_RESERVED_KEY,
-        COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
+        CreateOptions, DynamoInsertPosition, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL,
+        COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
@@ -764,6 +764,46 @@ mod tests {
         assert_eq!(result.pk(), "ROOT".to_string());
         assert!(result.sk().starts_with("GROUP#123#TEST#"));
         assert_eq!(result.sk().len(), "GROUP#123#TEST#".len() + 22);
+    }
+
+    #[tokio::test]
+    async fn test_create_item_ordered_opt_uses_creation_token() {
+        let mut backend = MockDynamoBackend::new();
+        backend.expect_query().returning(|_, _, _, _, _| {
+            Ok(vec![QueryOutput::builder().set_items(Some(vec![])).build()])
+        });
+        backend
+            .expect_put_item()
+            .withf(|_, item| {
+                item.get(AUTO_FIELDS_SORT)
+                    .is_some_and(|sort| sort.as_n().is_ok_and(|sort| sort == "2.0"))
+            })
+            .returning(|_, _| Ok(PutItemOutput::builder().build()));
+        let util = build_util(backend).await;
+        let parent_id = PkSk {
+            pk: "ROOT".to_string(),
+            sk: "GROUP#123".to_string(),
+        };
+        let data = TestDynamoObjectData::default();
+        let token = util
+            .create_token::<TestDynamoObject>(&parent_id, &data)
+            .unwrap();
+        let expected_id = token.id().clone();
+
+        let result = util
+            .create_item_ordered_opt::<TestDynamoObject>(
+                &parent_id,
+                data,
+                DynamoInsertPosition::Last,
+                CreateOptions {
+                    token: Some(token),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.id, expected_id);
     }
 
     #[tokio::test]

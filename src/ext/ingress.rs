@@ -8,8 +8,8 @@ use serde_json::Value as JsonValue;
 use crate::{
     errors::DynamoInvalidOperation,
     errors::DynamoNotFound,
-    schema::{DynamoObject, PkSk},
-    util::{DynamoInsertPosition, DynamoUtil},
+    schema::{DynamoObject, IdLogic, PkSk},
+    util::{CreateOptions, CreateToken, DynamoInsertPosition, DynamoUtil},
 };
 
 /// Allows callers to either pass an already-fetched object `O`, or a `PkSk` id
@@ -69,15 +69,23 @@ impl<O> PassOrFetch<O>
 where
     O: DynamoObject,
 {
+    /// Returns the ID of the passed object or the ID to fetch.
+    pub fn id(&self) -> &PkSk {
+        match self {
+            PassOrFetch::Pass(obj) => obj.id(),
+            PassOrFetch::Fetch(id) => id,
+        }
+    }
+
     /// Resolves into a concrete `O` by either passing through the provided
     /// object or fetching it via `DynamoUtil`.
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
         match self {
             PassOrFetch::Pass(obj) => Ok(obj),
-            PassOrFetch::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
-                Some(obj) => Ok(obj),
-                None => Err(DynamoNotFound::new()),
-            },
+            PassOrFetch::Fetch(id) => dynamo_util
+                .get_item::<O>(id)
+                .await?
+                .ok_or_else(DynamoNotFound::new),
         }
     }
 }
@@ -87,8 +95,22 @@ where
 /// - Pass: provide a full `O`.
 /// - Fetch: provide a `PkSk` id (`"pk|sk"`).
 /// - Create: provide arguments `C` (see `CreateArgs` types).
+///
+/// Cloning duplicates the unresolved request intent. Each cloned create
+/// request produces an independent creation plan when prepared; whether their
+/// IDs differ depends on the object's ID logic. Preparation consumes the
+/// ingress value and produces a non-cloneable [`CreatePlan`].
 #[derive(Debug, Clone)]
-pub enum PassFetchOrCreate<O, C>
+pub struct PassFetchOrCreate<O, C>
+where
+    O: DynamoObject,
+    C: CreateArgs<O>,
+{
+    inner: PassFetchOrCreateInner<O, C>,
+}
+
+#[derive(Debug, Clone)]
+enum PassFetchOrCreateInner<O, C>
 where
     O: DynamoObject,
     C: CreateArgs<O>,
@@ -104,13 +126,94 @@ pub type PassFetchOrCreateUnorderedWithParent<O> =
     PassFetchOrCreate<O, UnorderedCreateWithParent<O>>;
 pub type PassFetchOrCreateOrderedWithParent<O> = PassFetchOrCreate<O, OrderedCreateWithParent<O>>;
 
+/// A resolved existing object or a uniquely owned creation plan.
+#[derive(Debug)]
+pub enum PreparedIngress<O>
+where
+    O: DynamoObject,
+{
+    /// An object that was passed directly or fetched by ID.
+    Existing(O),
+    /// A new object with a reserved ID that has not yet been written.
+    Create(CreatePlan<O>),
+}
+
+/// A uniquely owned object creation with a reserved ID.
+#[derive(Debug)]
+pub struct CreatePlan<O>
+where
+    O: DynamoObject,
+{
+    data: O::Data,
+    parent_id: PkSk,
+    insert_position: Option<DynamoInsertPosition>,
+    token: CreateToken<O>,
+}
+
+impl<O> CreatePlan<O>
+where
+    O: DynamoObject,
+{
+    /// Returns the ID reserved for this creation.
+    pub fn id(&self) -> &PkSk {
+        self.token.id()
+    }
+
+    /// Access / mutate the object data that will be comitted.
+    ///
+    /// For indexed-singleton IDs, changes to ID-affecting fields are not
+    /// allowed (and will be detected / rejected on plan execution).
+    pub fn data_mut(&mut self) -> &mut O::Data {
+        &mut self.data
+    }
+
+    /// Executes the creation plan using its reserved ID.
+    pub async fn create(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
+        let Self {
+            data,
+            parent_id,
+            insert_position,
+            token,
+        } = self;
+        let id_depends_on_data = matches!(
+            O::id_logic(),
+            IdLogic::IndexedSingleton(_) | IdLogic::IndexedSingletonExt(_)
+        );
+        if id_depends_on_data
+            && dynamo_util.create_token::<O>(&parent_id, &data)?.id() != token.id()
+        {
+            return Err(DynamoInvalidOperation::new(
+                "creation data changed after its ID was reserved",
+            ));
+        }
+        let options = CreateOptions {
+            token: Some(token),
+            ..Default::default()
+        };
+        match insert_position {
+            Some(insert_position) => {
+                dynamo_util
+                    .create_item_ordered_opt::<O>(&parent_id, data, insert_position, options)
+                    .await
+            }
+            None => {
+                dynamo_util
+                    .create_item_opt::<O>(&parent_id, data, options)
+                    .await
+            }
+        }
+    }
+}
+
 impl<O, C> From<O> for PassFetchOrCreate<O, C>
 where
     O: DynamoObject,
     C: CreateArgs<O>,
 {
     fn from(value: O) -> Self {
-        Self::Pass(value)
+        Self {
+            inner: PassFetchOrCreateInner::Pass(value),
+        }
     }
 }
 
@@ -120,7 +223,9 @@ where
     C: CreateArgs<O>,
 {
     fn from(value: PkSk) -> Self {
-        Self::Fetch(value)
+        Self {
+            inner: PassFetchOrCreateInner::Fetch(value),
+        }
     }
 }
 
@@ -128,6 +233,19 @@ pub trait CreateArgs<O>: DeserializeOwned
 where
     O: DynamoObject,
 {
+    /// Returns the object data supplied for creation.
+    fn data(&self) -> &O::Data;
+
+    /// Returns the explicit parent ID, or the caller-provided parent for create
+    /// arguments that do not contain one.
+    fn parent_id<'a>(&'a self, parent_id: Option<&'a PkSk>) -> &'a PkSk;
+}
+
+trait PrepareCreateArgs<O>: CreateArgs<O>
+where
+    O: DynamoObject,
+{
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>);
 }
 
 /// Unordered create.
@@ -137,7 +255,21 @@ pub struct UnorderedCreate<O: DynamoObject> {
     pub data: O::Data,
 }
 
-impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {}
+impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {
+    fn data(&self) -> &O::Data {
+        &self.data
+    }
+
+    fn parent_id<'a>(&'a self, parent_id: Option<&'a PkSk>) -> &'a PkSk {
+        parent_id.unwrap_or(PkSk::root())
+    }
+}
+
+impl<O: DynamoObject> PrepareCreateArgs<O> for UnorderedCreate<O> {
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>) {
+        (self.data, None)
+    }
+}
 
 /// Ordered create (with optional `after` argument).
 #[derive(Debug, Clone, Deserialize)]
@@ -147,7 +279,27 @@ pub struct OrderedCreate<O: DynamoObject> {
     pub after: Option<PkSk>,
 }
 
-impl<O: DynamoObject> CreateArgs<O> for OrderedCreate<O> {}
+impl<O: DynamoObject> CreateArgs<O> for OrderedCreate<O> {
+    fn data(&self) -> &O::Data {
+        &self.data
+    }
+
+    fn parent_id<'a>(&'a self, parent_id: Option<&'a PkSk>) -> &'a PkSk {
+        parent_id.unwrap_or(PkSk::root())
+    }
+}
+
+impl<O: DynamoObject> PrepareCreateArgs<O> for OrderedCreate<O> {
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>) {
+        (
+            self.data,
+            Some(
+                self.after
+                    .map_or(DynamoInsertPosition::Last, DynamoInsertPosition::After),
+            ),
+        )
+    }
+}
 
 /// Unordered create with parent passed in by caller.
 #[derive(Debug, Clone, Deserialize)]
@@ -157,7 +309,21 @@ pub struct UnorderedCreateWithParent<O: DynamoObject> {
     pub data: O::Data,
 }
 
-impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {}
+impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {
+    fn data(&self) -> &O::Data {
+        &self.data
+    }
+
+    fn parent_id<'a>(&'a self, _parent_id: Option<&'a PkSk>) -> &'a PkSk {
+        &self.parent_id
+    }
+}
+
+impl<O: DynamoObject> PrepareCreateArgs<O> for UnorderedCreateWithParent<O> {
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>) {
+        (self.data, None)
+    }
+}
 
 /// Ordered create with parent passed in by caller.
 #[derive(Debug, Clone, Deserialize)]
@@ -168,14 +334,36 @@ pub struct OrderedCreateWithParent<O: DynamoObject> {
     pub after: Option<PkSk>,
 }
 
-impl<O: DynamoObject> CreateArgs<O> for OrderedCreateWithParent<O> {}
+impl<O: DynamoObject> CreateArgs<O> for OrderedCreateWithParent<O> {
+    fn data(&self) -> &O::Data {
+        &self.data
+    }
+
+    fn parent_id<'a>(&'a self, _parent_id: Option<&'a PkSk>) -> &'a PkSk {
+        &self.parent_id
+    }
+}
+
+impl<O: DynamoObject> PrepareCreateArgs<O> for OrderedCreateWithParent<O> {
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>) {
+        (
+            self.data,
+            Some(
+                self.after
+                    .map_or(DynamoInsertPosition::Last, DynamoInsertPosition::After),
+            ),
+        )
+    }
+}
 
 impl<O> From<UnorderedCreate<O>> for PassFetchOrCreate<O, UnorderedCreate<O>>
 where
     O: DynamoObject,
 {
     fn from(value: UnorderedCreate<O>) -> Self {
-        Self::Create(value)
+        Self {
+            inner: PassFetchOrCreateInner::Create(value),
+        }
     }
 }
 
@@ -184,7 +372,9 @@ where
     O: DynamoObject,
 {
     fn from(value: OrderedCreate<O>) -> Self {
-        Self::Create(value)
+        Self {
+            inner: PassFetchOrCreateInner::Create(value),
+        }
     }
 }
 
@@ -193,7 +383,9 @@ where
     O: DynamoObject,
 {
     fn from(value: UnorderedCreateWithParent<O>) -> Self {
-        Self::Create(value)
+        Self {
+            inner: PassFetchOrCreateInner::Create(value),
+        }
     }
 }
 
@@ -202,7 +394,9 @@ where
     O: DynamoObject,
 {
     fn from(value: OrderedCreateWithParent<O>) -> Self {
-        Self::Create(value)
+        Self {
+            inner: PassFetchOrCreateInner::Create(value),
+        }
     }
 }
 
@@ -219,17 +413,68 @@ where
 
         // 1) Try as PkSk.
         if let Some(Ok(id)) = v.as_str().map(PkSk::from_string) {
-            return Ok(PassFetchOrCreate::<O, C>::Fetch(id));
+            return Ok(Self {
+                inner: PassFetchOrCreateInner::Fetch(id),
+            });
         }
 
         // 2) Try as full object O.
         if let Ok(object) = serde_json::from_value::<O>(v.clone()) {
-            return Ok(PassFetchOrCreate::<O, C>::Pass(object));
+            return Ok(Self {
+                inner: PassFetchOrCreateInner::Pass(object),
+            });
         }
 
         // 3) Otherwise, try as create arguments C.
         let create_args = serde_json::from_value::<C>(v).map_err(de::Error::custom)?;
-        Ok(PassFetchOrCreate::<O, C>::Create(create_args))
+        Ok(Self {
+            inner: PassFetchOrCreateInner::Create(create_args),
+        })
+    }
+}
+
+async fn prepare_pass_fetch_or_create<O, C>(
+    ingress: PassFetchOrCreate<O, C>,
+    dynamo_util: &DynamoUtil,
+    parent_id: Option<&PkSk>,
+) -> Result<PreparedIngress<O>, ServerError>
+where
+    O: DynamoObject,
+    C: PrepareCreateArgs<O>,
+{
+    match ingress.inner {
+        PassFetchOrCreateInner::Pass(obj) => Ok(PreparedIngress::Existing(obj)),
+        PassFetchOrCreateInner::Fetch(id) => dynamo_util
+            .get_item::<O>(id)
+            .await?
+            .map(PreparedIngress::Existing)
+            .ok_or_else(DynamoNotFound::new),
+        PassFetchOrCreateInner::Create(args) => {
+            let parent_id = args.parent_id(parent_id).clone();
+            let token = dynamo_util.create_token::<O>(&parent_id, args.data())?;
+            let (data, insert_position) = args.into_prepared_parts();
+            Ok(PreparedIngress::Create(CreatePlan {
+                data,
+                parent_id,
+                insert_position,
+                token,
+            }))
+        }
+    }
+}
+
+async fn resolve_pass_fetch_or_create<O, C>(
+    ingress: PassFetchOrCreate<O, C>,
+    dynamo_util: &DynamoUtil,
+    parent_id: Option<&PkSk>,
+) -> Result<O, ServerError>
+where
+    O: DynamoObject,
+    C: PrepareCreateArgs<O>,
+{
+    match prepare_pass_fetch_or_create(ingress, dynamo_util, parent_id).await? {
+        PreparedIngress::Existing(obj) => Ok(obj),
+        PreparedIngress::Create(plan) => plan.create(dynamo_util).await,
     }
 }
 
@@ -237,22 +482,22 @@ impl<O> PassFetchOrCreate<O, UnorderedCreate<O>>
 where
     O: DynamoObject,
 {
+    /// Resolves a passed, fetched, or newly created object.
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
-        parent_id: Option<PkSk>,
+        parent_id: Option<&PkSk>,
     ) -> Result<O, ServerError> {
-        match self {
-            PassFetchOrCreate::Pass(obj) => Ok(obj),
-            PassFetchOrCreate::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
-                Some(obj) => Ok(obj),
-                None => Err(DynamoNotFound::new()),
-            },
-            PassFetchOrCreate::Create(UnorderedCreate { data }) => {
-                let parent_id = parent_id.as_ref().unwrap_or(PkSk::root());
-                dynamo_util.create_item::<O>(parent_id, data).await
-            }
-        }
+        resolve_pass_fetch_or_create(self, dynamo_util, parent_id).await
+    }
+
+    /// Resolves passed/fetched input or prepares a uniquely owned creation.
+    pub async fn prepare(
+        self,
+        dynamo_util: &DynamoUtil,
+        parent_id: Option<&PkSk>,
+    ) -> Result<PreparedIngress<O>, ServerError> {
+        prepare_pass_fetch_or_create(self, dynamo_util, parent_id).await
     }
 }
 
@@ -260,28 +505,22 @@ impl<O> PassFetchOrCreate<O, OrderedCreate<O>>
 where
     O: DynamoObject,
 {
+    /// Resolves a passed, fetched, or newly created object.
     pub async fn resolve(
         self,
         dynamo_util: &DynamoUtil,
-        parent_id: Option<PkSk>,
+        parent_id: Option<&PkSk>,
     ) -> Result<O, ServerError> {
-        match self {
-            PassFetchOrCreate::Pass(obj) => Ok(obj),
-            PassFetchOrCreate::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
-                Some(obj) => Ok(obj),
-                None => Err(DynamoNotFound::new()),
-            },
-            PassFetchOrCreate::Create(OrderedCreate { data, after }) => {
-                let parent_id = parent_id.as_ref().unwrap_or(PkSk::root());
-                let insert_position = match after {
-                    Some(a) => DynamoInsertPosition::After(a),
-                    None => DynamoInsertPosition::Last,
-                };
-                dynamo_util
-                    .create_item_ordered::<O>(parent_id, data, insert_position)
-                    .await
-            }
-        }
+        resolve_pass_fetch_or_create(self, dynamo_util, parent_id).await
+    }
+
+    /// Resolves passed/fetched input or prepares a uniquely owned creation.
+    pub async fn prepare(
+        self,
+        dynamo_util: &DynamoUtil,
+        parent_id: Option<&PkSk>,
+    ) -> Result<PreparedIngress<O>, ServerError> {
+        prepare_pass_fetch_or_create(self, dynamo_util, parent_id).await
     }
 }
 
@@ -289,17 +528,17 @@ impl<O> PassFetchOrCreate<O, UnorderedCreateWithParent<O>>
 where
     O: DynamoObject,
 {
+    /// Resolves a passed, fetched, or newly created object.
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
-        match self {
-            PassFetchOrCreate::Pass(obj) => Ok(obj),
-            PassFetchOrCreate::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
-                Some(obj) => Ok(obj),
-                None => Err(DynamoNotFound::new()),
-            },
-            PassFetchOrCreate::Create(UnorderedCreateWithParent { parent_id, data }) => {
-                dynamo_util.create_item::<O>(&parent_id, data).await
-            }
-        }
+        resolve_pass_fetch_or_create(self, dynamo_util, None).await
+    }
+
+    /// Resolves passed/fetched input or prepares a uniquely owned creation.
+    pub async fn prepare(
+        self,
+        dynamo_util: &DynamoUtil,
+    ) -> Result<PreparedIngress<O>, ServerError> {
+        prepare_pass_fetch_or_create(self, dynamo_util, None).await
     }
 }
 
@@ -307,27 +546,17 @@ impl<O> PassFetchOrCreate<O, OrderedCreateWithParent<O>>
 where
     O: DynamoObject,
 {
+    /// Resolves a passed, fetched, or newly created object.
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
-        match self {
-            PassFetchOrCreate::Pass(obj) => Ok(obj),
-            PassFetchOrCreate::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
-                Some(obj) => Ok(obj),
-                None => Err(DynamoNotFound::new()),
-            },
-            PassFetchOrCreate::Create(OrderedCreateWithParent {
-                parent_id,
-                data,
-                after,
-            }) => {
-                let insert_position = match after {
-                    Some(a) => DynamoInsertPosition::After(a),
-                    None => DynamoInsertPosition::Last,
-                };
-                dynamo_util
-                    .create_item_ordered::<O>(&parent_id, data, insert_position)
-                    .await
-            }
-        }
+        resolve_pass_fetch_or_create(self, dynamo_util, None).await
+    }
+
+    /// Resolves passed/fetched input or prepares a uniquely owned creation.
+    pub async fn prepare(
+        self,
+        dynamo_util: &DynamoUtil,
+    ) -> Result<PreparedIngress<O>, ServerError> {
+        prepare_pass_fetch_or_create(self, dynamo_util, None).await
     }
 }
 
@@ -682,5 +911,149 @@ where
                 cached.as_ref().ok_or_else(DynamoNotFound::new)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::result_large_err)]
+
+    use std::{borrow::Cow, sync::Arc};
+
+    use aws_sdk_dynamodb::operation::put_item::PutItemOutput;
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+    use crate::{
+        context::test_ctx::TestCtx,
+        dynamo_object,
+        schema::{IdLogic, NestingLogic},
+        util::backend::MockDynamoBackend,
+    };
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct TestObjectData {
+        value: String,
+    }
+
+    dynamo_object!(
+        TestObject,
+        TestObjectData,
+        "INGRESS_TEST",
+        IdLogic::UuidV4,
+        NestingLogic::Root
+    );
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct IndexedTestObjectData {
+        key: String,
+    }
+
+    dynamo_object!(
+        IndexedTestObject,
+        IndexedTestObjectData,
+        "INGRESS_INDEXED_TEST",
+        IdLogic::IndexedSingleton(Box::new(|data: &IndexedTestObjectData| {
+            Cow::Borrowed(&data.key)
+        })),
+        NestingLogic::Root
+    );
+
+    async fn build_util_with_backend(backend: MockDynamoBackend) -> DynamoUtil {
+        let ctx = TestCtx::init_test("mock-region".to_string());
+        ctx.override_dynamo_backend(Arc::new(backend)).await;
+        DynamoUtil::new(&*ctx, "ingress_test").await.unwrap()
+    }
+
+    async fn build_util() -> DynamoUtil {
+        build_util_with_backend(MockDynamoBackend::new()).await
+    }
+
+    #[test]
+    fn pass_or_fetch_exposes_id() {
+        let id = PkSk {
+            pk: "ROOT".into(),
+            sk: "INGRESS_TEST#object".into(),
+        };
+        let passed = PassOrFetch::from(TestObject::new(id.clone(), TestObjectData::default()));
+        let fetched = PassOrFetch::<TestObject>::from(id.clone());
+
+        assert_eq!(passed.id(), &id);
+        assert_eq!(fetched.id(), &id);
+    }
+
+    #[tokio::test]
+    async fn cloned_ingress_prepares_independent_create_plans() {
+        let dynamo_util = build_util().await;
+        let ingress = PassFetchOrCreateUnordered::<TestObject>::from(UnorderedCreate {
+            data: TestObjectData::default(),
+        });
+        let cloned = ingress.clone();
+        let PreparedIngress::Create(mut first) = ingress.prepare(&dynamo_util, None).await.unwrap()
+        else {
+            panic!("expected create plan");
+        };
+        let PreparedIngress::Create(second) = cloned.prepare(&dynamo_util, None).await.unwrap()
+        else {
+            panic!("expected create plan");
+        };
+
+        assert_ne!(first.id(), second.id());
+        let first_id = first.id().clone();
+        first.data_mut().value = "updated after reserving ID".into();
+        assert_eq!(first.id(), &first_id);
+    }
+
+    #[tokio::test]
+    async fn simple_resolve_passes_through_existing_object() {
+        let dynamo_util = build_util().await;
+        let id = PkSk {
+            pk: "ROOT".into(),
+            sk: "INGRESS_TEST#object".into(),
+        };
+        let ingress = PassFetchOrCreateUnordered::<TestObject>::from(TestObject::new(
+            id.clone(),
+            TestObjectData::default(),
+        ));
+
+        let object = ingress.resolve(&dynamo_util, None).await.unwrap();
+
+        assert_eq!(object.id(), &id);
+    }
+
+    #[tokio::test]
+    async fn simple_resolve_creates_with_a_prepared_token() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_put_item()
+            .returning(|_, _| Ok(PutItemOutput::builder().build()));
+        let dynamo_util = build_util_with_backend(backend).await;
+        let ingress = PassFetchOrCreateUnordered::<TestObject>::from(UnorderedCreate {
+            data: TestObjectData {
+                value: "created".into(),
+            },
+        });
+
+        let object = ingress.resolve(&dynamo_util, None).await.unwrap();
+
+        assert_eq!(object.data.value, "created");
+    }
+
+    #[tokio::test]
+    async fn create_plan_rejects_data_that_changes_its_reserved_id() {
+        let dynamo_util = build_util().await;
+        let ingress = PassFetchOrCreateUnordered::<IndexedTestObject>::from(UnorderedCreate {
+            data: IndexedTestObjectData {
+                key: "before".into(),
+            },
+        });
+        let PreparedIngress::Create(mut plan) = ingress.prepare(&dynamo_util, None).await.unwrap()
+        else {
+            panic!("expected create plan");
+        };
+
+        plan.data_mut().key = "after".into();
+
+        assert!(plan.create(&dynamo_util).await.is_err());
     }
 }

@@ -338,6 +338,8 @@ impl DynamoUtil {
         parent_id: &PkSk,
         data: &T::Data,
     ) -> Result<CreateToken<T>, ServerError> {
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
         Ok(CreateToken {
             id: generate_id::<T>(data, parent_id)?,
             _phantom: std::marker::PhantomData,
@@ -540,6 +542,18 @@ impl DynamoUtil {
         data: T::Data,
         insert_position: DynamoInsertPosition,
     ) -> Result<T, ServerError> {
+        self.create_item_ordered_opt(parent_id, data, insert_position, CreateOptions::default())
+            .await
+    }
+
+    /// Creates an ordered item using caller-provided creation options.
+    pub async fn create_item_ordered_opt<T: DynamoObject>(
+        &self,
+        parent_id: &PkSk,
+        data: T::Data,
+        insert_position: DynamoInsertPosition,
+        mut options: CreateOptions<T>,
+    ) -> Result<T, ServerError> {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
         let sort_val = calculate_sort_values::<T>(self, parent_id, &data, insert_position, 1)
@@ -548,15 +562,8 @@ impl DynamoUtil {
             .ok_or(DynamoInvalidOperation::new(
                 "failed to generate new ordered ID",
             ))?;
-        self.create_item_opt::<T>(
-            parent_id,
-            data,
-            CreateOptions {
-                custom_sort: Some(sort_val),
-                ..Default::default()
-            },
-        )
-        .await
+        options.custom_sort = Some(sort_val);
+        self.create_item_opt::<T>(parent_id, data, options).await
     }
 
     pub async fn batch_create_item_ordered<T: DynamoObject>(

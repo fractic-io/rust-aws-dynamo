@@ -159,15 +159,15 @@ where
         self.token.id()
     }
 
-    /// Returns the object data that will be supplied for creation.
+    /// Access / mutate the object data that will be comitted.
     ///
-    /// Changes to fields used by an indexed-singleton ID are rejected when the
-    /// plan is created, because the reserved ID must remain valid.
+    /// For indexed-singleton IDs, changes to ID-affecting fields are not
+    /// allowed (and will be detected / rejected on plan execution).
     pub fn data_mut(&mut self) -> &mut O::Data {
         &mut self.data
     }
 
-    /// Creates the planned object using its reserved ID.
+    /// Executes the creation plan using its reserved ID.
     pub async fn create(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
         let Self {
             data,

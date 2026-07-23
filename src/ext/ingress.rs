@@ -82,10 +82,10 @@ where
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
         match self {
             PassOrFetch::Pass(obj) => Ok(obj),
-            PassOrFetch::Fetch(id) => match dynamo_util.get_item::<O>(id).await? {
-                Some(obj) => Ok(obj),
-                None => Err(DynamoNotFound::new()),
-            },
+            PassOrFetch::Fetch(id) => dynamo_util
+                .get_item::<O>(id)
+                .await?
+                .ok_or_else(DynamoNotFound::new),
         }
     }
 }
@@ -146,14 +146,8 @@ where
 {
     data: O::Data,
     parent_id: PkSk,
-    mode: CreateMode,
+    insert_position: Option<DynamoInsertPosition>,
     token: CreateToken<O>,
-}
-
-#[derive(Debug)]
-enum CreateMode {
-    Unordered,
-    Ordered(DynamoInsertPosition),
 }
 
 impl<O> CreatePlan<O>
@@ -175,24 +169,25 @@ where
 
     /// Creates the planned object using its reserved ID.
     pub async fn create(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
+        let Self {
+            data,
+            parent_id,
+            insert_position,
+            token,
+        } = self;
         let options = CreateOptions {
-            token: Some(self.token),
+            token: Some(token),
             ..Default::default()
         };
-        match self.mode {
-            CreateMode::Ordered(insert_position) => {
+        match insert_position {
+            Some(insert_position) => {
                 dynamo_util
-                    .create_item_ordered_opt::<O>(
-                        &self.parent_id,
-                        self.data,
-                        insert_position,
-                        options,
-                    )
+                    .create_item_ordered_opt::<O>(&parent_id, data, insert_position, options)
                     .await
             }
-            CreateMode::Unordered => {
+            None => {
                 dynamo_util
-                    .create_item_opt::<O>(&self.parent_id, self.data, options)
+                    .create_item_opt::<O>(&parent_id, data, options)
                     .await
             }
         }
@@ -239,7 +234,7 @@ trait PrepareCreateArgs<O>: CreateArgs<O>
 where
     O: DynamoObject,
 {
-    fn into_prepared_parts(self) -> (O::Data, CreateMode);
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>);
 }
 
 /// Unordered create.
@@ -260,8 +255,8 @@ impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {
 }
 
 impl<O: DynamoObject> PrepareCreateArgs<O> for UnorderedCreate<O> {
-    fn into_prepared_parts(self) -> (O::Data, CreateMode) {
-        (self.data, CreateMode::Unordered)
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>) {
+        (self.data, None)
     }
 }
 
@@ -284,10 +279,10 @@ impl<O: DynamoObject> CreateArgs<O> for OrderedCreate<O> {
 }
 
 impl<O: DynamoObject> PrepareCreateArgs<O> for OrderedCreate<O> {
-    fn into_prepared_parts(self) -> (O::Data, CreateMode) {
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>) {
         (
             self.data,
-            CreateMode::Ordered(
+            Some(
                 self.after
                     .map_or(DynamoInsertPosition::Last, DynamoInsertPosition::After),
             ),
@@ -314,8 +309,8 @@ impl<O: DynamoObject> CreateArgs<O> for UnorderedCreateWithParent<O> {
 }
 
 impl<O: DynamoObject> PrepareCreateArgs<O> for UnorderedCreateWithParent<O> {
-    fn into_prepared_parts(self) -> (O::Data, CreateMode) {
-        (self.data, CreateMode::Unordered)
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>) {
+        (self.data, None)
     }
 }
 
@@ -339,10 +334,10 @@ impl<O: DynamoObject> CreateArgs<O> for OrderedCreateWithParent<O> {
 }
 
 impl<O: DynamoObject> PrepareCreateArgs<O> for OrderedCreateWithParent<O> {
-    fn into_prepared_parts(self) -> (O::Data, CreateMode) {
+    fn into_prepared_parts(self) -> (O::Data, Option<DynamoInsertPosition>) {
         (
             self.data,
-            CreateMode::Ordered(
+            Some(
                 self.after
                     .map_or(DynamoInsertPosition::Last, DynamoInsertPosition::After),
             ),
@@ -407,21 +402,21 @@ where
 
         // 1) Try as PkSk.
         if let Some(Ok(id)) = v.as_str().map(PkSk::from_string) {
-            return Ok(PassFetchOrCreate {
+            return Ok(Self {
                 inner: PassFetchOrCreateInner::Fetch(id),
             });
         }
 
         // 2) Try as full object O.
         if let Ok(object) = serde_json::from_value::<O>(v.clone()) {
-            return Ok(PassFetchOrCreate {
+            return Ok(Self {
                 inner: PassFetchOrCreateInner::Pass(object),
             });
         }
 
         // 3) Otherwise, try as create arguments C.
         let create_args = serde_json::from_value::<C>(v).map_err(de::Error::custom)?;
-        Ok(PassFetchOrCreate {
+        Ok(Self {
             inner: PassFetchOrCreateInner::Create(create_args),
         })
     }
@@ -438,21 +433,19 @@ where
 {
     match ingress.inner {
         PassFetchOrCreateInner::Pass(obj) => Ok(PreparedIngress::Existing(obj)),
-        PassFetchOrCreateInner::Fetch(id) => {
-            let obj = dynamo_util
-                .get_item::<O>(id)
-                .await?
-                .ok_or_else(DynamoNotFound::new)?;
-            Ok(PreparedIngress::Existing(obj))
-        }
+        PassFetchOrCreateInner::Fetch(id) => dynamo_util
+            .get_item::<O>(id)
+            .await?
+            .map(PreparedIngress::Existing)
+            .ok_or_else(DynamoNotFound::new),
         PassFetchOrCreateInner::Create(args) => {
             let parent_id = args.parent_id(parent_id).clone();
             let token = dynamo_util.create_token::<O>(&parent_id, args.data())?;
-            let (data, mode) = args.into_prepared_parts();
+            let (data, insert_position) = args.into_prepared_parts();
             Ok(PreparedIngress::Create(CreatePlan {
                 data,
                 parent_id,
-                mode,
+                insert_position,
                 token,
             }))
         }

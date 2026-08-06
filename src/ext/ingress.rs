@@ -603,6 +603,15 @@ impl<'a, O> RefOrFetch<'a, O>
 where
     O: DynamoObject,
 {
+    /// Returns the ID of the referenced, owned, or lazily fetched object.
+    pub fn id(&self) -> &PkSk {
+        match self {
+            RefOrFetch::Ref(object) => object.id(),
+            RefOrFetch::Owned(object) => object.id(),
+            RefOrFetch::Fetch { id, .. } => id,
+        }
+    }
+
     pub async fn resolve<'s>(&'s mut self, dynamo_util: &DynamoUtil) -> Result<&'s O, ServerError> {
         match self {
             RefOrFetch::Ref(reference) => Ok(*reference),
@@ -979,6 +988,22 @@ mod tests {
         let fetched = PassOrFetch::<TestObject>::from(id.clone());
 
         assert_eq!(passed.id(), &id);
+        assert_eq!(fetched.id(), &id);
+    }
+
+    #[test]
+    fn ref_or_fetch_exposes_id() {
+        let id = PkSk {
+            pk: "ROOT".into(),
+            sk: "INGRESS_TEST#object".into(),
+        };
+        let object = TestObject::new(id.clone(), TestObjectData::default());
+        let referenced = RefOrFetch::from(&object);
+        let owned = RefOrFetch::Owned(object.clone());
+        let fetched = RefOrFetch::<TestObject>::from(id.clone());
+
+        assert_eq!(referenced.id(), &id);
+        assert_eq!(owned.id(), &id);
         assert_eq!(fetched.id(), &id);
     }
 

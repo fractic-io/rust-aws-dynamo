@@ -668,7 +668,7 @@ impl DynamoUtil {
         add_legacy_field_removals::<T>(&update.set, &mut update.remove);
         update.add_unchanged_condition::<T>(object.updated_at(), object.data())?;
 
-        self.update_attribute_map::<T>(object, update).await
+        self.execute_update_plan::<T>(object.id(), update).await
     }
 
     /// Updates an object in an all-or-nothing transaction. If the object has
@@ -784,17 +784,17 @@ impl DynamoUtil {
 
         update.set = map;
         update.remove = null_keys;
-        self.update_attribute_map::<T>(object, update).await
+        self.execute_update_plan::<T>(object.id(), update).await
     }
 
-    async fn update_attribute_map<T: DynamoObject>(
+    async fn execute_update_plan<T: DynamoObject>(
         &self,
-        object: &T,
+        id: &PkSk,
         update: AttributeUpdatePlan,
     ) -> Result<(), ServerError> {
         let key = collection! {
-            "pk".to_string() => AttributeValue::S(object.pk().to_string()),
-            "sk".to_string() => AttributeValue::S(object.sk().to_string()),
+            "pk".to_string() => AttributeValue::S(id.pk.clone()),
+            "sk".to_string() => AttributeValue::S(id.sk.clone()),
         };
         let expression = update.into_expression::<T>();
 

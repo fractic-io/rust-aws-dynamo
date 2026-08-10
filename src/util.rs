@@ -15,6 +15,7 @@ pub(crate) use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
 use fractic_core::{collection, req_not_none};
 use fractic_server_error::{CriticalError, ServerError};
+use raw_batch_helpers::{unprocessed_delete_keys, unprocessed_put_items, wait_before_batch_retry};
 
 use crate::{
     errors::{
@@ -47,6 +48,9 @@ use crate::{
     DynamoCtxView,
 };
 
+// Modules.
+// ----------------------------------------------------------------------------
+
 pub mod backend;
 mod calculate_sort;
 pub(crate) mod collapse_helpers;
@@ -59,7 +63,8 @@ mod rename_safety_helpers;
 mod test;
 mod update_helpers;
 
-pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig};
+// Constants.
+// ----------------------------------------------------------------------------
 
 pub type DynamoMap = HashMap<String, AttributeValue>;
 pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
@@ -81,10 +86,12 @@ pub const EXPAND_DATA_RESERVED_KEY: &str = "..";
 pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
 pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
 
-use raw_batch_helpers::{
-    unprocessed_delete_keys, unprocessed_put_items, wait_before_batch_retry,
-    MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES,
-};
+use raw_batch_helpers::{MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES};
+
+// Definitions.
+// ----------------------------------------------------------------------------
+
+pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -103,15 +110,6 @@ pub enum TtlConfig {
     CustomDate(DateTime<Utc>),
 }
 
-/// Summary of physical rows removed by a partition delete.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BatchDeletePartitionResult {
-    /// Number of physical rows found in the partition.
-    pub physical_item_count: usize,
-    /// Distinct object labels recognized in the deleted row keys.
-    pub object_labels: HashSet<String>,
-}
-
 #[derive(Debug)]
 pub struct CreateToken<T: DynamoObject> {
     // NOTE: It's important that this struct does not implement Clone, provides
@@ -120,26 +118,6 @@ pub struct CreateToken<T: DynamoObject> {
     // building `CreateOptions`.
     id: PkSk,
     _phantom: std::marker::PhantomData<T>,
-}
-
-impl<T: DynamoObject> CreateToken<T> {
-    pub fn id(&self) -> &PkSk {
-        &self.id
-    }
-}
-
-fn reject_phantom_objects<T: DynamoObject>() -> Result<(), ServerError> {
-    if matches!(T::id_logic(), IdLogic::Phantom) {
-        return Err(DynamoInvalidPhantomObjectUsage::new());
-    }
-    Ok(())
-}
-
-fn reject_batch_optimized_ids<T: DynamoObject>() -> Result<(), ServerError> {
-    if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
-        return Err(DynamoInvalidBatchOptimizedIdUsage::new());
-    }
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -152,16 +130,6 @@ pub struct CreateOptions<T: DynamoObject> {
     /// name 'ttl'.
     pub ttl: Option<TtlConfig>,
     pub token: Option<CreateToken<T>>,
-}
-
-impl<T: DynamoObject> Default for CreateOptions<T> {
-    fn default() -> Self {
-        Self {
-            custom_sort: None,
-            ttl: None,
-            token: None,
-        }
-    }
 }
 
 /// Comparison operators for numeric conditions.
@@ -189,6 +157,18 @@ pub enum UpdateCondition<T: DynamoObject> {
     FieldIsSome(String),
 }
 
+/// Summary of physical rows removed by a partition delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchDeletePartitionResult {
+    /// Number of physical rows found in the partition.
+    pub physical_item_count: usize,
+    /// Distinct object labels recognized in the deleted row keys.
+    pub object_labels: HashSet<String>,
+}
+
+// Impls.
+// ----------------------------------------------------------------------------
+
 impl TtlConfig {
     fn compute_timestamp(&self) -> i64 {
         match self {
@@ -201,11 +181,31 @@ impl TtlConfig {
     }
 }
 
+impl<T: DynamoObject> CreateToken<T> {
+    pub fn id(&self) -> &PkSk {
+        &self.id
+    }
+}
+
+impl<T: DynamoObject> Default for CreateOptions<T> {
+    fn default() -> Self {
+        Self {
+            custom_sort: None,
+            ttl: None,
+            token: None,
+        }
+    }
+}
+
+// Public interface.
+// ----------------------------------------------------------------------------
+
 #[derive(Clone)]
 pub struct DynamoUtil {
     pub backend: Arc<dyn DynamoBackend>,
     pub table: String,
 }
+
 impl DynamoUtil {
     const ITEM_EXISTS_CONDITION: &'static str = "attribute_exists(pk)";
     const ITEM_DOES_NOT_EXIST_CONDITION: &'static str = "attribute_not_exists(pk)";
@@ -1128,14 +1128,12 @@ impl DynamoUtil {
         Ok(())
     }
 
-    /// Deletes every physical item in the given DynamoDB partition.
-    ///
-    /// This bypasses logical item expansion and collapse so batch-optimized
-    /// rows and all rows backing partitioned items are deleted directly.
+    /// Performs no checks and directly deletes an entire DynamoDB partition.
     pub async fn raw_batch_delete_partition(
         &self,
         partition_key: String,
     ) -> Result<BatchDeletePartitionResult, ServerError> {
+        // Query directly to bypass logical item expansion and collapse.
         let response = self
             .backend
             .query(
@@ -1208,4 +1206,21 @@ impl DynamoUtil {
         }
         Ok(())
     }
+}
+
+// Helpers.
+// ----------------------------------------------------------------------------
+
+fn reject_phantom_objects<T: DynamoObject>() -> Result<(), ServerError> {
+    if matches!(T::id_logic(), IdLogic::Phantom) {
+        return Err(DynamoInvalidPhantomObjectUsage::new());
+    }
+    Ok(())
+}
+
+fn reject_batch_optimized_ids<T: DynamoObject>() -> Result<(), ServerError> {
+    if matches!(T::id_logic(), IdLogic::BatchOptimized { .. }) {
+        return Err(DynamoInvalidBatchOptimizedIdUsage::new());
+    }
+    Ok(())
 }

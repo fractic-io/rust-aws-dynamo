@@ -10,7 +10,8 @@ use crate::{
     errors::{DynamoCalloutError, DynamoInvalidBundle, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        identifiers::RawIdPath, parsing::dynamo_map_to_serde_value, pk_sk::id_fields_from_map, PkSk,
+        attribute_value::dynamo_map_to_serde_value, identifiers::RawIdPath,
+        pk_sk::id_fields_from_map, DynamoObject, PkSk,
     },
     util::{
         collapse_helpers::{collapse_partitioned_items, ext_base_id},
@@ -20,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    entities_policy::{configured_bundle_policy, DynamoBundleObjectPolicy},
+    entities_policy::{configured_bundle_policy, BundleItemParent, DynamoBundleObjectPolicy},
     utils_reference_manifest::derive_reference_manifest,
     BundleId, BundleIdLogic, BundleNesting, DynamoBundle, DynamoBundleItem, DynamoBundlePolicy,
     DynamoBundleStorage,
@@ -49,7 +50,7 @@ struct ExportOptions<'a> {
 // Private interface.
 // ----------------------------------------------------------------------------
 
-pub(crate) async fn export_from_config(
+pub(crate) async fn export_from_config<O: DynamoObject>(
     util: &DynamoUtil,
     algorithms: &dyn DynamoCrudAlgorithms,
     root: PkSk,
@@ -57,7 +58,7 @@ pub(crate) async fn export_from_config(
     root_id_logic: BundleIdLogic,
 ) -> Result<DynamoBundle, ServerError> {
     let policy = configured_bundle_policy(algorithms);
-    export_bundle(
+    export_bundle::<O>(
         util,
         &policy,
         &root,
@@ -72,7 +73,7 @@ pub(crate) async fn export_from_config(
 }
 
 /// Exports a destination snapshot using the incoming bundle's omission policy.
-pub(crate) async fn export_with_omissions(
+pub(crate) async fn export_with_omissions<O: DynamoObject>(
     util: &DynamoUtil,
     policy: &DynamoBundlePolicy,
     root: &PkSk,
@@ -80,7 +81,7 @@ pub(crate) async fn export_with_omissions(
     root_id_logic: BundleIdLogic,
     omissions: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<DynamoBundle, ServerError> {
-    export_bundle(
+    export_bundle::<O>(
         util,
         policy,
         root,
@@ -94,7 +95,7 @@ pub(crate) async fn export_with_omissions(
     .await
 }
 
-async fn export_bundle(
+async fn export_bundle<O: DynamoObject>(
     util: &DynamoUtil,
     policy: &DynamoBundlePolicy,
     root: &PkSk,
@@ -116,7 +117,19 @@ async fn export_bundle(
         let label = RawIdPath::new(&item.id.sk).object_label()?.to_string();
         let (storage, mut data) = normalize_rows(item.rows)?;
         let object = policy.require(&label)?;
-        object.normalize_data(&mut data);
+        if item.id == root_id {
+            object.canonicalize_data_for::<O>(&mut data)?;
+        } else {
+            let parent = item
+                .parent
+                .as_ref()
+                .ok_or_else(|| DynamoInvalidBundle::new("non-root export item had no parent"))?;
+            object.canonicalize_data(
+                item.nesting,
+                BundleItemParent::External(parent),
+                &mut data,
+            )?;
+        }
         let id_logic = if item.id == root_id {
             options.root_id_logic
         } else {
@@ -304,11 +317,10 @@ fn append_partition_groups(
 }
 
 fn normalize_rows(rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Value), ServerError> {
-    let partitioned = rows.iter().any(|row| {
+    if rows.iter().any(|row| {
         row.contains_key(COLLAPSE_PLACEHOLDER_RESERVED_KEY)
             || row.contains_key(COLLAPSE_DATA_RESERVED_KEY)
-    });
-    if partitioned {
+    }) {
         let collapsed = collapse_partitioned_items(rows)?;
         let [map] = collapsed.as_slice() else {
             return Err(DynamoInvalidBundle::new(

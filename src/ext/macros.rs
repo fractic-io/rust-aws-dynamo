@@ -65,7 +65,7 @@ macro_rules! query_generic {
         $dynamo_util:expr, $query:expr;
         ( $(($idx:tt, $ty:ty))* )
     ) => {{
-        use $crate::schema::{parsing::parse_dynamo_map, PkSk};
+        use $crate::schema::{item_deserialization::parse_dynamo_map, PkSk};
 
         // Initialize output tuple.
         let mut __out = ( $( Vec::<$ty>::new() ),* );

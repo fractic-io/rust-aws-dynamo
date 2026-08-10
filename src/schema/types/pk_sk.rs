@@ -7,11 +7,12 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use crate::{errors::DynamoInvalidId, util::DynamoMap};
-
-use super::{
-    identifiers::{generate_id, uuid_v7_lower_bound, uuid_v7_upper_bound, RawIdPath, ROOT_KEY},
-    DynamoObject, ForeignRef, PkSk,
+use crate::{
+    errors::DynamoInvalidId,
+    schema::{
+        identifiers::{generate_id, uuid_v7_lower_bound, uuid_v7_upper_bound, RawIdPath, ROOT_KEY},
+        DynamoMap, DynamoObject, ForeignRef, PkSk,
+    },
 };
 
 static ROOT: LazyLock<PkSk> = LazyLock::new(|| PkSk {

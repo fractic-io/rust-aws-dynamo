@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::{identifiers::RawIdPath, ForeignRef, PkSk};
+use crate::schema::{identifiers::RawIdPath, ForeignRef, PkSk};
 
 impl<'a> ForeignRef<'a> {
     /// Returns the raw internal reference string.

@@ -1,118 +1,22 @@
-use std::collections::HashMap;
-
-use aws_sdk_dynamodb::types::AttributeValue;
 use fractic_server_error::{CriticalError, ServerError};
-use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{
     errors::DynamoItemParsingError,
-    schema::{DynamoFieldRename, DynamoObject},
-    util::DynamoMap,
+    schema::{
+        materialization::validate_materialized_attribute_names, DynamoFieldRename, DynamoMap,
+        DynamoObject,
+    },
 };
 
-// Converting between DynamoMap and DynamoObject.
+pub(crate) use super::attribute_value::dynamo_map_to_serde_value;
+
+// Public interface.
 // ----------------------------------------------------------------------------
 
-pub enum IdKeys {
-    CopyFromObject,
-    Override(String, String),
-    None,
-}
-
-pub fn build_dynamo_map_for_new_obj<T: DynamoObject>(
-    data: &T::Data,
-    pk: String,
-    sk: String,
-    overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
-) -> Result<DynamoMap, ServerError> {
-    // For new objects, skipped null keys are not important.
-    let (dynamo_map, _skipped_null_keys) =
-        build_dynamo_map_internal(data, Some(pk), Some(sk), overrides)?;
-    Ok(dynamo_map)
-}
-
-// IMPORTANT:
-//   In addition to the resulting dynamo map, this function also returns a list
-//   of keys that were skipped because they were null. If updating an existing
-//   item in the database, these keys should be included in the update query as
-//   REMOVE operations, to avoid existing non-null values being left untouched.
-pub fn build_dynamo_map_for_existing_obj<T: DynamoObject>(
-    object: &T,
-    id_keys: IdKeys,
-    overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
-) -> Result<(DynamoMap, Vec<String>), ServerError> {
-    let (pk, sk) = match id_keys {
-        IdKeys::Override(pk, sk) => (Some(pk), Some(sk)),
-        IdKeys::CopyFromObject => (Some(object.id().pk.clone()), Some(object.id().sk.clone())),
-        IdKeys::None => (None, None),
-    };
-    build_dynamo_map_internal(object, pk, sk, overrides)
-}
-
-pub(crate) fn build_dynamo_map_internal<T: Serialize>(
-    object: &T,
-    pk: Option<String>,
-    sk: Option<String>,
-    overrides: Option<Vec<(&str, Box<dyn erased_serde::Serialize>)>>,
-) -> Result<(DynamoMap, Vec<String>), ServerError> {
-    // Keep track of skipped null values, as they may be important to the caller.
-    let mut skipped_null_keys: Vec<String> = Vec::new();
-
-    // DynamoObject -> Serde value.
-    let json_value = serde_json::to_value(object)
-        .map_err(|e| DynamoItemParsingError::with_debug("failed to serialize object", &e))?;
-
-    // Serde value -> DynamoMap.
-    let mut attribute_values: HashMap<String, AttributeValue> = HashMap::new();
-    match json_value {
-        serde_json::Value::Object(map) => {
-            for (key, value) in map {
-                if key == "id" {
-                    // ID key is handled explicitly to avoid accidental issues,
-                    // and properly set pk/sk separately.
-                    continue;
-                }
-                if let Some(v) = serde_value_to_attribute_value(value)? {
-                    attribute_values.insert(key, v);
-                } else {
-                    skipped_null_keys.push(key);
-                }
-            }
-        }
-        unsupported => {
-            return Err(DynamoItemParsingError::new(&format!(
-                "can't build DynamoMap from type '{unsupported:?}'"
-            )))
-        }
-    }
-
-    // Set ID keys.
-    if let Some(pk) = pk {
-        attribute_values.insert("pk".to_string(), AttributeValue::S(pk));
-    }
-    if let Some(sk) = sk {
-        attribute_values.insert("sk".to_string(), AttributeValue::S(sk));
-    }
-
-    // Set overrides.
-    if let Some(overrides) = overrides {
-        for (key, value) in overrides {
-            let json_value = serde_json::to_value(&value).map_err(|e| {
-                DynamoItemParsingError::with_debug("failed to serialize override object", &e)
-            })?;
-            if let Some(v) = serde_value_to_attribute_value(json_value)? {
-                attribute_values.insert(key.into(), v);
-            } else {
-                skipped_null_keys.push(key.into());
-            }
-        }
-    }
-
-    Ok((attribute_values, skipped_null_keys))
-}
-
 pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerError> {
+    validate_materialized_attribute_names(T::materialized_attribute_names(), T::renamed_fields())?;
+
     // DynamoMap -> Serde value.
     let Value::Object(mut serde_map) = dynamo_map_to_serde_value(map)? else {
         unreachable!("DynamoMap conversion always returns an object")
@@ -138,13 +42,16 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerErr
     );
 
     normalize_renamed_fields(&mut serde_map, T::renamed_fields());
+    for name in T::materialized_attribute_names() {
+        serde_map.remove(*name);
+    }
 
     // Serde value -> DynamoObject.
     serde_json::from_value(serde_json::Value::Object(serde_map))
         .map_err(|e| DynamoItemParsingError::with_debug("failed to convert from Serde value", &e))
 }
 
-// Alternative conversion helpers.
+// Crate-internal.
 // ----------------------------------------------------------------------------
 
 pub(crate) fn deserialize_dynamo_map_partitions<I, S>(
@@ -158,14 +65,10 @@ where
     for partition in partitions {
         json.push_str(partition.as_ref());
     }
-
     let value: serde_json::Value = serde_json::from_str(&json)
         .map_err(|e| DynamoItemParsingError::with_debug("failed to parse partition json", &e))?;
-    serde_value_into_dynamo_map(value)
+    super::attribute_value::serde_value_into_dynamo_map(value)
 }
-
-// Generic Serde/Dynamo conversion.
-// ----------------------------------------------------------------------------
 
 /// Converts an object-shaped Serde value into a Dynamo map.
 ///
@@ -173,106 +76,7 @@ where
 /// persistence. Explicit nulls inside arrays are retained.
 #[cfg(test)]
 pub(crate) fn serde_value_to_dynamo_map(value: &Value) -> Result<DynamoMap, ServerError> {
-    serde_value_into_dynamo_map(value.clone())
-}
-
-fn serde_value_into_dynamo_map(value: Value) -> Result<DynamoMap, ServerError> {
-    let Value::Object(map) = value else {
-        return Err(DynamoItemParsingError::new(&format!(
-            "can't build DynamoMap from type '{value:?}'"
-        )));
-    };
-    map.into_iter()
-        .map(|(key, value)| {
-            serde_value_to_attribute_value(value).map(|value| value.map(|value| (key, value)))
-        })
-        .filter_map(Result::transpose)
-        .collect()
-}
-
-/// Converts a Dynamo map into an object-shaped Serde value.
-///
-/// Dynamo null map fields are omitted and null list entries are retained. Set
-/// and binary values are rejected because they have no unambiguous JSON form.
-pub(crate) fn dynamo_map_to_serde_value(map: &DynamoMap) -> Result<Value, ServerError> {
-    Ok(Value::Object(
-        map.iter()
-            .map(|(key, value)| {
-                attribute_value_to_serde_value(value)
-                    .map(|value| value.map(|value| (key.clone(), value)))
-            })
-            .filter_map(Result::transpose)
-            .collect::<Result<Map<_, _>, ServerError>>()?,
-    ))
-}
-
-fn serde_value_to_attribute_value(
-    value: serde_json::Value,
-) -> Result<Option<AttributeValue>, ServerError> {
-    match value {
-        serde_json::Value::Null => Ok(None),
-        serde_json::Value::String(s) => Ok(Some(AttributeValue::S(s))),
-        serde_json::Value::Number(n) => Ok(Some(AttributeValue::N(n.to_string()))),
-        serde_json::Value::Bool(b) => Ok(Some(AttributeValue::Bool(b))),
-        serde_json::Value::Object(map) => Ok(Some(AttributeValue::M(
-            map.into_iter()
-                .map(|(key, value)| {
-                    serde_value_to_attribute_value(value)
-                        .map(|value| value.map(|value| (key, value)))
-                })
-                .filter_map(Result::transpose)
-                .collect::<Result<HashMap<String, AttributeValue>, ServerError>>()?,
-        ))),
-        serde_json::Value::Array(array) => {
-            Ok(Some(AttributeValue::L(
-                array
-                    .into_iter()
-                    .map(|value| {
-                        serde_value_to_attribute_value(value)
-                            // Arrays retain explicit nulls.
-                            .map(|value| value.unwrap_or(AttributeValue::Null(true)))
-                    })
-                    .collect::<Result<Vec<_>, ServerError>>()?,
-            )))
-        }
-    }
-}
-
-pub(crate) fn attribute_value_to_serde_value(
-    value: &AttributeValue,
-) -> Result<Option<serde_json::Value>, ServerError> {
-    match value {
-        AttributeValue::Null(_) => Ok(None),
-        AttributeValue::S(s) => Ok(Some(serde_json::Value::String(s.clone()))),
-        AttributeValue::N(n) => {
-            Ok(Some(serde_json::Value::Number(n.parse().map_err(|e| {
-                DynamoItemParsingError::with_debug("failed to parse number", &e)
-            })?)))
-        }
-        AttributeValue::Bool(b) => Ok(Some(serde_json::Value::Bool(*b))),
-        AttributeValue::M(map) => Ok(Some(serde_json::Value::Object(
-            map.iter()
-                .map(|(key, value)| {
-                    attribute_value_to_serde_value(value)
-                        .map(|value| value.map(|value| (key.clone(), value)))
-                })
-                .filter_map(Result::transpose)
-                .collect::<Result<serde_json::Map<String, serde_json::Value>, ServerError>>()?,
-        ))),
-        AttributeValue::L(array) => Ok(Some(serde_json::Value::Array(
-            array
-                .iter()
-                .map(|value| {
-                    attribute_value_to_serde_value(value)
-                        // Arrays retain explicit nulls.
-                        .map(|value| value.unwrap_or(Value::Null))
-                })
-                .collect::<Result<Vec<_>, ServerError>>()?,
-        ))),
-        unsupported => Err(DynamoItemParsingError::new(&format!(
-            "unsupported AttributeValue type '{unsupported:?}'"
-        ))),
-    }
+    super::attribute_value::serde_value_into_dynamo_map(value.clone())
 }
 
 // Helpers.
@@ -300,6 +104,9 @@ mod tests {
     use super::*;
     use crate::{
         dynamo_object,
+        schema::item_serialization::{
+            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, IdKeys,
+        },
         schema::{AutoFields, IdLogic, NestingLogic, PkSk, Timestamp},
         util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT},
     };
@@ -343,6 +150,226 @@ mod tests {
         NestingLogic::Root,
         renamed = ["old_name" -> "name"]
     );
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
+    pub struct TestMaterializedObjectData {
+        email: String,
+        active: bool,
+    }
+
+    dynamo_object!(
+        TestMaterializedObject,
+        TestMaterializedObjectData,
+        "TESTMATERIALIZED",
+        IdLogic::UuidV4,
+        NestingLogic::Root,
+        materialized = |id, data| {
+            "email_normalized" => data.email.trim().to_lowercase(),
+            "active_lookup" => data.active.then(|| format!("{}|{}", id.pk, id.sk)),
+        },
+        renamed = ["old_email_normalized" => "email_normalized"],
+    );
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
+    pub struct TestMaterializedCollisionData {
+        email: Option<String>,
+    }
+
+    dynamo_object!(
+        TestMaterializedCollision,
+        TestMaterializedCollisionData,
+        "TESTMATERIALIZEDCOLLISION",
+        IdLogic::UuidV4,
+        NestingLogic::Root,
+        materialized = |data| {
+            "email" => data.email.clone(),
+        },
+    );
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
+    pub struct TestInvalidMaterializedData {
+        value: String,
+    }
+
+    dynamo_object!(
+        TestDuplicateMaterialized,
+        TestInvalidMaterializedData,
+        "TESTDUPLICATEMATERIALIZED",
+        IdLogic::UuidV4,
+        NestingLogic::Root,
+        materialized = |data| {
+            "lookup" => data.value.clone(),
+            "lookup" => data.value.clone(),
+        },
+    );
+
+    dynamo_object!(
+        TestReservedMaterialized,
+        TestInvalidMaterializedData,
+        "TESTRESERVEDMATERIALIZED",
+        IdLogic::UuidV4,
+        NestingLogic::Root,
+        materialized = |data| {
+            "pk" => data.value.clone(),
+        },
+    );
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
+    pub struct TestLegacyRenameMaterializedCollisionData {
+        email: Option<String>,
+    }
+
+    dynamo_object!(
+        TestLegacyRenameMaterializedCollision,
+        TestLegacyRenameMaterializedCollisionData,
+        "TESTLEGACYRENAMEMATERIALIZEDCOLLISION",
+        IdLogic::UuidV4,
+        NestingLogic::Root,
+        renamed = ["old_email" => "email"],
+        materialized = |data| {
+            "old_email" => data.email.as_ref().map(|email| email.to_lowercase()),
+        },
+    );
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
+    pub struct TestUnsupportedMaterializedData {
+        value: String,
+    }
+
+    dynamo_object!(
+        TestUnsupportedMaterialized,
+        TestUnsupportedMaterializedData,
+        "TESTUNSUPPORTEDMATERIALIZED",
+        IdLogic::SingletonExt,
+        NestingLogic::Root,
+        materialized = |data| {
+            "value_lookup" => data.value.clone(),
+        },
+    );
+
+    #[test]
+    fn test_build_dynamo_map_adds_materialized_attributes() {
+        let data = TestMaterializedObjectData {
+            email: "  User@Example.COM ".to_string(),
+            active: true,
+        };
+        let map = build_dynamo_map_for_new_obj::<TestMaterializedObject>(
+            &data,
+            "ROOT".to_string(),
+            "TESTMATERIALIZED#1".to_string(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            map.get("email_normalized").unwrap().as_s().unwrap(),
+            "user@example.com"
+        );
+        assert_eq!(
+            map.get("active_lookup").unwrap().as_s().unwrap(),
+            "ROOT|TESTMATERIALIZED#1"
+        );
+    }
+
+    #[test]
+    fn test_build_dynamo_map_removes_null_materialized_attributes_on_update() {
+        let object = TestMaterializedObject::new(
+            PkSk {
+                pk: "ROOT".to_string(),
+                sk: "TESTMATERIALIZED#1".to_string(),
+            },
+            TestMaterializedObjectData {
+                email: "User@Example.COM".to_string(),
+                active: false,
+            },
+        );
+
+        let (map, remove) = build_dynamo_map_for_existing_obj::<TestMaterializedObject>(
+            &object,
+            IdKeys::None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            map.get("email_normalized").unwrap().as_s().unwrap(),
+            "user@example.com"
+        );
+        assert!(!map.contains_key("active_lookup"));
+        assert!(remove.contains(&"active_lookup".to_string()));
+    }
+
+    #[test]
+    fn test_materialized_attribute_collisions_are_rejected_even_when_null() {
+        let result = build_dynamo_map_for_new_obj::<TestMaterializedCollision>(
+            &TestMaterializedCollisionData { email: None },
+            "ROOT".to_string(),
+            "TESTMATERIALIZEDCOLLISION#1".to_string(),
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_duplicate_materialized_attribute_names_are_rejected() {
+        let result = build_dynamo_map_for_new_obj::<TestDuplicateMaterialized>(
+            &TestInvalidMaterializedData {
+                value: "value".to_string(),
+            },
+            "ROOT".to_string(),
+            "TESTDUPLICATEMATERIALIZED#1".to_string(),
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reserved_materialized_attribute_names_are_rejected() {
+        let result = build_dynamo_map_for_new_obj::<TestReservedMaterialized>(
+            &TestInvalidMaterializedData {
+                value: "value".to_string(),
+            },
+            "ROOT".to_string(),
+            "TESTRESERVEDMATERIALIZED#1".to_string(),
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_materialized_attribute_names_cannot_be_legacy_rename_sources() {
+        let data = TestLegacyRenameMaterializedCollisionData { email: None };
+        let write = build_dynamo_map_for_new_obj::<TestLegacyRenameMaterializedCollision>(
+            &data,
+            "ROOT".to_string(),
+            "TESTLEGACYRENAMEMATERIALIZEDCOLLISION#1".to_string(),
+            None,
+        );
+        assert!(write.is_err());
+
+        let persisted = collection!(
+            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+            "sk".to_string() => AttributeValue::S(
+                "TESTLEGACYRENAMEMATERIALIZEDCOLLISION#1".to_string()
+            ),
+            "old_email".to_string() => AttributeValue::S("derived@example.com".to_string()),
+        );
+        let read = parse_dynamo_map::<TestLegacyRenameMaterializedCollision>(&persisted);
+        assert!(read.is_err());
+    }
+
+    #[test]
+    fn test_materialized_attributes_reject_partitioned_storage() {
+        let result = build_dynamo_map_for_new_obj::<TestUnsupportedMaterialized>(
+            &TestUnsupportedMaterializedData {
+                value: "value".to_string(),
+            },
+            "ROOT".to_string(),
+            "@TESTUNSUPPORTEDMATERIALIZED".to_string(),
+            None,
+        );
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_build_dynamo_map_for_new_obj() {
@@ -820,6 +847,43 @@ mod tests {
         let output: TestRenamedObject = parse_dynamo_map(&input).unwrap();
 
         assert_eq!(output.data.name, Some("new".to_string()));
+        assert!(output.auto_fields.unknown_fields.is_empty());
+    }
+
+    #[test]
+    fn test_parse_dynamo_map_strips_materialized_attributes() {
+        let input = collection!(
+            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+            "sk".to_string() => AttributeValue::S("TESTMATERIALIZED#1".to_string()),
+            "email".to_string() => AttributeValue::S("User@Example.COM".to_string()),
+            "active".to_string() => AttributeValue::Bool(true),
+            "email_normalized".to_string() => AttributeValue::S("stale-value".to_string()),
+            "active_lookup".to_string() => AttributeValue::S("stale-value".to_string()),
+            "unrecognized".to_string() => AttributeValue::S("preserved".to_string()),
+        );
+
+        let output: TestMaterializedObject = parse_dynamo_map(&input).unwrap();
+
+        assert_eq!(output.data.email, "User@Example.COM");
+        assert!(output.data.active);
+        assert_eq!(
+            output.unknown_field_keys(),
+            vec![&"unrecognized".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_dynamo_map_applies_rename_before_stripping_materialized_attribute() {
+        let input = collection!(
+            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+            "sk".to_string() => AttributeValue::S("TESTMATERIALIZED#1".to_string()),
+            "email".to_string() => AttributeValue::S("User@Example.COM".to_string()),
+            "active".to_string() => AttributeValue::Bool(true),
+            "old_email_normalized".to_string() => AttributeValue::S("legacy".to_string()),
+        );
+
+        let output: TestMaterializedObject = parse_dynamo_map(&input).unwrap();
+
         assert!(output.auto_fields.unknown_fields.is_empty());
     }
 

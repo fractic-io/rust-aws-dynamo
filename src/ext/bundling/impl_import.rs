@@ -9,8 +9,8 @@ use crate::{
     errors::{DynamoInvalidBundle, DynamoInvalidOperation},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        identifiers::validate_parent_relation, parsing::build_dynamo_map_internal, DynamoObject,
-        PkSk, Timestamp,
+        identifiers::validate_parent_relation, item_serialization::build_dynamo_map_internal,
+        DynamoObject, PkSk, Timestamp,
     },
     util::{
         calculate_sort_values,
@@ -23,7 +23,7 @@ use crate::{
 };
 
 use super::{
-    entities_policy::{configured_bundle_policy, validate_import_policy},
+    entities_policy::{bundle_item_parent, configured_bundle_policy, validate_import_policy},
     impl_export::{collect_bundle_items, export_with_omissions},
     utils_bundle_validation::validate_bundle,
     utils_id_mapping::{build_id_map, build_source_id_map},
@@ -94,7 +94,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     }
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let policy = configured_bundle_policy(algorithms);
-    policy.normalize_bundle_data(&mut bundle)?;
+    policy.canonicalize_bundle_data(&mut bundle, parent)?;
     let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic, parent)?;
     let original_ids = build_source_id_map(&bundle)?
         .into_iter()
@@ -156,7 +156,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
 
     let old = if existing.has_conflicts && replacing {
         Some(
-            export_with_omissions(
+            export_with_omissions::<O>(
                 util,
                 &policy,
                 &root_id,
@@ -206,7 +206,13 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     } else {
         existing.ext_partition_counts
     };
-    let write_plan = build_write_plan(&bundle, &id_map, &existing_partition_counts)?;
+    let write_plan = build_write_plan(
+        &bundle,
+        &id_map,
+        &existing_partition_counts,
+        &policy,
+        parent,
+    )?;
     util.raw_batch_delete_ids(write_plan.maintenance_deletes)
         .await?;
     util.raw_batch_put_item(write_plan.puts).await?;
@@ -286,12 +292,12 @@ pub(super) fn reconcile_replace_out_of_table_references(
             .get(&reference.source)
             .cloned()
             .ok_or_else(|| DynamoInvalidBundle::new("reference source had no destination ID"))?;
-        let entry = incoming.entry((source_id, clear_path.clone())).or_insert(
-            IncomingOutOfTableAssociation {
+        let entry = incoming
+            .entry((source_id, clear_path.clone()))
+            .or_insert_with(|| IncomingOutOfTableAssociation {
                 reference_count: 0,
                 all_targets_valid: true,
-            },
-        );
+            });
         entry.reference_count += 1;
         entry.all_targets_valid &=
             valid_out_of_table_refs.is_some_and(|refs| refs.contains(lookup_id));
@@ -503,28 +509,38 @@ fn build_write_plan(
     bundle: &DynamoBundle,
     ids: &HashMap<BundleId, PkSk>,
     existing_partition_counts: &HashMap<PkSk, usize>,
+    policy: &DynamoBundlePolicy,
+    destination_parent: Option<&PkSk>,
 ) -> Result<ImportWritePlan, ServerError> {
     let mut puts = Vec::new();
     let mut maintenance_deletes = Vec::new();
     let imported_at = Timestamp::now();
+    let items = bundle
+        .items
+        .iter()
+        .map(|item| (&item.id, item))
+        .collect::<HashMap<_, _>>();
     for item in &bundle.items {
         let id = ids
             .get(&item.id)
             .ok_or_else(|| DynamoInvalidBundle::new("bundle item had no destination ID"))?;
+        let parent = bundle_item_parent(&bundle.root, &items, item, destination_parent)?;
+        let materialized = policy
+            .require(&item.id.label)?
+            .materialized_write_plan(item, parent, id)?;
         match item.storage {
             DynamoBundleStorage::Standard => {
-                puts.push(
-                    build_dynamo_map_internal(
-                        &item.data,
-                        Some(id.pk.clone()),
-                        Some(id.sk.clone()),
-                        Some(vec![
-                            (AUTO_FIELDS_CREATED_AT, Box::new(imported_at.clone())),
-                            (AUTO_FIELDS_UPDATED_AT, Box::new(imported_at.clone())),
-                        ]),
-                    )?
-                    .0,
-                );
+                let (mut map, _) = build_dynamo_map_internal(
+                    &item.data,
+                    Some(id.pk.clone()),
+                    Some(id.sk.clone()),
+                    Some(vec![
+                        (AUTO_FIELDS_CREATED_AT, Box::new(imported_at.clone())),
+                        (AUTO_FIELDS_UPDATED_AT, Box::new(imported_at.clone())),
+                    ]),
+                )?;
+                materialized.apply_to_put(&mut map);
+                puts.push(map);
                 if let Some(count) = existing_partition_counts.get(id) {
                     maintenance_deletes.extend(ext_partition_ids_for_count(id, *count));
                 }

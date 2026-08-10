@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 
 use aws_sdk_dynamodb::{
     operation::{
@@ -25,10 +22,12 @@ use crate::{
     },
     schema::{
         identifiers::{generate_id, RawIdPath},
-        parsing::{
-            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
-            build_dynamo_map_internal, parse_dynamo_map, IdKeys,
+        item_deserialization::parse_dynamo_map,
+        item_serialization::{
+            build_canonical_data_map, build_dynamo_map_for_existing_obj,
+            build_dynamo_map_for_new_obj, build_materialized_write_plan, IdKeys,
         },
+        materialization::validate_materialized_storage,
         pk_sk::id_fields_from_map,
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
@@ -39,11 +38,8 @@ use crate::{
         },
         expand_helpers::{build_expandable_batch_maps, expand_batched_items},
         id_relations::{child_query_prefix, validate_object_id, validate_parent_for},
-        rename_safety_helpers::{
-            add_legacy_field_removals, rename_aware_comparison_condition,
-            rename_aware_presence_condition,
-        },
-        update_helpers::CmpOp,
+        rename_cleanup::add_legacy_field_removals,
+        update_plan::{AttributeUpdatePlan, CmpOp},
     },
     DynamoCtxView,
 };
@@ -59,32 +55,17 @@ mod id_relations;
 mod metadata_helpers;
 mod query;
 mod raw_batch_helpers;
-mod rename_safety_helpers;
+mod rename_cleanup;
 mod test;
-mod update_helpers;
+mod update_plan;
 
 // Constants.
 // ----------------------------------------------------------------------------
 
-pub type DynamoMap = HashMap<String, AttributeValue>;
-pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
-pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
-pub const AUTO_FIELDS_SORT: &str = "sort";
-pub const AUTO_FIELDS_TTL: &str = "ttl";
-
-/// In case of batch items, the '..' key is used to store the batch items array,
-/// which should be expanded before returning to the caller.
-///
-/// WARNING: Also hardcoded in `expand_helpers.rs`.
-pub const EXPAND_DATA_RESERVED_KEY: &str = "..";
-
-/// In case of partition items, the '##' key is used to store the object
-/// partition string, which should be collapsed with other partitions before
-/// returning to the caller.
-///
-/// WARNING: Also hardcoded in `collapse_helpers.rs`.
-pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
-pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
+pub use crate::schema::{
+    DynamoMap, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT,
+    COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
+};
 
 use raw_batch_helpers::{MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES};
 
@@ -141,6 +122,14 @@ pub enum NumericOp {
     LessThanOrEquals,
 }
 
+/// An immutable persistence snapshot captured by
+/// [`UpdateCondition::unchanged_since`].
+#[derive(Debug, Clone)]
+pub struct DynamoObjectSnapshot<T: DynamoObject> {
+    updated_at: Option<Timestamp>,
+    fallback_data: T::Data,
+}
+
 /// Conditions that can be applied during update operations.
 #[derive(Debug, Clone)]
 pub enum UpdateCondition<T: DynamoObject> {
@@ -155,6 +144,8 @@ pub enum UpdateCondition<T: DynamoObject> {
     /// Checks that the field exists and is not null. Supports nested fields
     /// (ex. "details.address.city").
     FieldIsSome(String),
+    /// Checks that an object has not changed since the captured snapshot.
+    UnchangedSince(DynamoObjectSnapshot<T>),
 }
 
 /// Summary of physical rows removed by a partition delete.
@@ -178,6 +169,29 @@ impl TtlConfig {
             TtlConfig::CustomDuration(duration) => (Utc::now() + *duration).timestamp(),
             TtlConfig::CustomDate(date) => date.timestamp(),
         }
+    }
+}
+
+impl<T: DynamoObject> UpdateCondition<T> {
+    /// Captures the object's current persistence state for optimistic
+    /// concurrency control.
+    ///
+    /// Call this before mutating `object`, then pass the returned condition to
+    /// [`DynamoUtil::update_item_with_conditions`]:
+    ///
+    /// ```ignore
+    /// let unchanged = UpdateCondition::unchanged_since(&object);
+    /// object.data.name = "new name".to_string();
+    /// util.update_item_with_conditions(&object, vec![unchanged]).await?;
+    /// ```
+    ///
+    /// The condition compares `updated_at` when the snapshot contains it,
+    /// otherwise it falls back to comparing all captured canonical data.
+    pub fn unchanged_since(object: &T) -> Self {
+        Self::UnchangedSince(DynamoObjectSnapshot {
+            updated_at: object.updated_at().cloned(),
+            fallback_data: object.data().clone(),
+        })
     }
 }
 
@@ -372,6 +386,7 @@ impl DynamoUtil {
     ) -> Result<T, ServerError> {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
+        validate_materialized_storage::<T>()?;
         let PkSk { pk, sk } = options
             .token
             .map_or_else(|| self.create_token(parent_id, &data), Ok)?
@@ -433,6 +448,7 @@ impl DynamoUtil {
     ) -> Result<Vec<T>, ServerError> {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
+        validate_materialized_storage::<T>()?;
         if data_and_options.is_empty() {
             return Ok(Vec::new());
         }
@@ -624,12 +640,35 @@ impl DynamoUtil {
         }
         self.update_item_internal(
             object,
-            HashMap::default(),
-            vec![Self::ITEM_EXISTS_CONDITION.to_string()],
-            HashMap::new(),
-            HashMap::new(),
+            AttributeUpdatePlan::with_condition(Self::ITEM_EXISTS_CONDITION),
         )
         .await
+    }
+
+    /// Recomputes and atomically refreshes only an object's materialized
+    /// attributes, without changing its canonical data or automatic timestamps.
+    ///
+    /// The update is conditioned on the canonical data still matching
+    /// `object`, preventing a backfill based on a stale read from overwriting
+    /// materialized values produced by a concurrent domain update.
+    pub async fn refresh_materialized_attributes<T: DynamoObject>(
+        &self,
+        object: &T,
+    ) -> Result<(), ServerError> {
+        reject_phantom_objects::<T>()?;
+        validate_object_id::<T>(object.id())?;
+        if T::materialized_attribute_names().is_empty() {
+            return Ok(());
+        }
+
+        let materialized = build_materialized_write_plan::<T>(object.id(), object.data())?;
+        let mut update = AttributeUpdatePlan::with_condition(Self::ITEM_EXISTS_CONDITION);
+        update.set = materialized.set;
+        update.remove = materialized.remove;
+        add_legacy_field_removals::<T>(&update.set, &mut update.remove);
+        update.add_unchanged_condition::<T>(object.updated_at(), object.data())?;
+
+        self.execute_update_plan::<T>(object.id(), update).await
     }
 
     /// Updates an object in an all-or-nothing transaction. If the object has
@@ -640,7 +679,8 @@ impl DynamoUtil {
     /// the same ID wasn't created in the meantime.
     ///
     /// This is very efficient, as it uses fetch + conditional update, rather
-    /// than some kind of blocking or locking call.
+    /// than some kind of blocking or locking call. It uses the same
+    /// optimistic-concurrency semantics as [`UpdateCondition::unchanged_since`].
     pub async fn update_item_transaction<T: DynamoObject>(
         &self,
         id: PkSk,
@@ -652,28 +692,17 @@ impl DynamoUtil {
             return Err(DynamoInvalidExtIdUsage::new());
         }
         let object_before = self.get_item::<T>(id.clone()).await?;
-        let (map_before, existance_condition) = match object_before {
-            Some(ref o) => (
-                build_dynamo_map_for_existing_obj::<T>(o, IdKeys::None, None)?.0,
-                Self::ITEM_EXISTS_CONDITION.to_string(),
-            ),
-            None => (
-                HashMap::default(),
-                Self::ITEM_DOES_NOT_EXIST_CONDITION.to_string(),
-            ),
+        let update = match object_before.as_ref() {
+            Some(object) => {
+                let mut update = AttributeUpdatePlan::with_condition(Self::ITEM_EXISTS_CONDITION);
+                update.add_unchanged_condition::<T>(object.updated_at(), object.data())?;
+                update
+            }
+            None => AttributeUpdatePlan::with_condition(Self::ITEM_DOES_NOT_EXIST_CONDITION),
         };
         let object_after = T::new(id, op(object_before.map(DynamoObject::into_data))?);
-        self.update_item_internal::<T>(
-            &object_after,
-            map_before
-                .into_iter()
-                .map(|(k, v)| (k, (v, CmpOp::Eq)))
-                .collect(),
-            vec![existance_condition],
-            HashMap::new(),
-            HashMap::new(),
-        )
-        .await?;
+        self.update_item_internal::<T>(&object_after, update)
+            .await?;
         Ok(object_after)
     }
 
@@ -693,35 +722,23 @@ impl DynamoUtil {
             return Err(DynamoInvalidExtIdUsage::new());
         }
 
-        // Attribute comparison conditions.
-        let mut cmp_attribute_conditions: HashMap<String, (AttributeValue, CmpOp)> = HashMap::new();
+        let mut update = AttributeUpdatePlan::with_condition(Self::ITEM_EXISTS_CONDITION);
 
-        // Custom condition expressions (which may reference expression
-        // attribute names/values).
-        let mut custom_conditions: Vec<String> = vec![Self::ITEM_EXISTS_CONDITION.to_string()];
-        let mut expression_attribute_names: HashMap<String, String> = HashMap::new();
-        let mut expression_attribute_values: HashMap<String, AttributeValue> = HashMap::new();
-
-        for (idx, cond) in conditions.into_iter().enumerate() {
-            match cond {
+        for condition in conditions {
+            match condition {
                 UpdateCondition::PartialEq(data) => {
                     // Convert partial data into a map; nulls are skipped by serializer.
-                    let (data_map, _skipped_nulls) =
-                        build_dynamo_map_internal(&data, None, None, None)?;
-                    cmp_attribute_conditions.extend(
-                        data_map
-                            .into_iter()
-                            .filter(|(k, _)| (k != "pk") && (k != "sk"))
-                            .map(|(k, v)| (k, (v, CmpOp::Eq))),
-                    );
+                    let (data_map, _skipped_nulls) = build_canonical_data_map::<T>(&data)?;
+                    update
+                        .comparisons
+                        .extend(data_map.into_iter().map(|(k, v)| (k, (v, CmpOp::Eq))));
                 }
                 UpdateCondition::NumericCompare {
                     partial: data,
                     map_op: op,
                 } => {
                     // Convert partial data into a map, and check values are numeric.
-                    let (data_map, _skipped_nulls) =
-                        build_dynamo_map_internal(&data, None, None, None)?;
+                    let (data_map, _skipped_nulls) = build_canonical_data_map::<T>(&data)?;
                     if let Some((bad_k, _)) = data_map
                         .iter()
                         .find(|(_, v)| !matches!(v, AttributeValue::N(_)))
@@ -730,69 +747,34 @@ impl DynamoUtil {
                             "non-numeric value provided for numeric comparison on '{bad_k}'"
                         )));
                     }
-                    cmp_attribute_conditions.extend(
-                        data_map
-                            .into_iter()
-                            .filter(|(k, _)| (k != "pk") && (k != "sk"))
-                            .map(|(k, v)| (k, (v, op.into()))),
-                    );
+                    update
+                        .comparisons
+                        .extend(data_map.into_iter().map(|(k, v)| (k, (v, op.into()))));
                 }
                 UpdateCondition::FieldIsNone(field) => {
-                    let null_type_placeholder = format!(":u{}n", idx + 1);
-                    expression_attribute_values.insert(
-                        null_type_placeholder.clone(),
-                        AttributeValue::S("NULL".to_string()),
-                    );
-                    let condition = rename_aware_presence_condition::<T>(
-                        &field,
-                        idx,
-                        false,
-                        &null_type_placeholder,
-                        &mut expression_attribute_names,
-                    );
-                    custom_conditions.push(condition);
+                    update.add_presence_condition::<T>(&field, false);
                 }
                 UpdateCondition::FieldIsSome(field) => {
-                    let null_type_placeholder = format!(":u{}n", idx + 1);
-                    expression_attribute_values.insert(
-                        null_type_placeholder.clone(),
-                        AttributeValue::S("NULL".to_string()),
-                    );
-                    let condition = rename_aware_presence_condition::<T>(
-                        &field,
-                        idx,
-                        true,
-                        &null_type_placeholder,
-                        &mut expression_attribute_names,
-                    );
-                    custom_conditions.push(condition);
+                    update.add_presence_condition::<T>(&field, true);
+                }
+                UpdateCondition::UnchangedSince(snapshot) => {
+                    update.add_unchanged_condition::<T>(
+                        snapshot.updated_at.as_ref(),
+                        &snapshot.fallback_data,
+                    )?;
                 }
             }
         }
 
-        self.update_item_internal::<T>(
-            object,
-            cmp_attribute_conditions,
-            custom_conditions,
-            expression_attribute_names,
-            expression_attribute_values,
-        )
-        .await
+        self.update_item_internal::<T>(object, update).await
     }
 
     async fn update_item_internal<T: DynamoObject>(
         &self,
         object: &T,
-        attribute_conditions: HashMap<String, (AttributeValue, CmpOp)>,
-        custom_conditions: Vec<String>,
-        mut expression_attribute_names: HashMap<String, String>,
-        mut expression_attribute_values: HashMap<String, AttributeValue>,
+        mut update: AttributeUpdatePlan,
     ) -> Result<(), ServerError> {
         validate_object_id::<T>(object.id())?;
-        let key = collection! {
-            "pk".to_string() => AttributeValue::S(object.pk().to_string()),
-            "sk".to_string() => AttributeValue::S(object.sk().to_string()),
-        };
         let (map, mut null_keys) = build_dynamo_map_for_existing_obj::<T>(
             object,
             IdKeys::None,
@@ -800,72 +782,30 @@ impl DynamoUtil {
         )?;
         add_legacy_field_removals::<T>(&map, &mut null_keys);
 
-        // Build update expression.
-        let set_expression = if map.is_empty() {
-            String::new()
-        } else {
-            "SET ".to_string()
-                + &map
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, (key, value))| {
-                        let key_placeholder = format!("#k{}", idx + 1);
-                        let value_placeholder = format!(":v{}", idx + 1);
-                        expression_attribute_names.insert(key_placeholder.clone(), key);
-                        expression_attribute_values.insert(value_placeholder.clone(), value);
-                        format!("{key_placeholder} = {value_placeholder}")
-                    })
-                    .collect::<Vec<String>>()
-                    .join(", ")
-        };
-        let remove_expression = if null_keys.is_empty() {
-            String::new()
-        } else {
-            "REMOVE ".to_string()
-                + &null_keys
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, key)| {
-                        let key_placeholder = format!("#rmk{}", idx + 1);
-                        expression_attribute_names.insert(key_placeholder.clone(), key);
-                        key_placeholder
-                    })
-                    .collect::<Vec<String>>()
-                    .join(", ")
-        };
-        let update_expression = format!("{set_expression} {remove_expression}");
+        update.set = map;
+        update.remove = null_keys;
+        self.execute_update_plan::<T>(object.id(), update).await
+    }
 
-        // Build custom conditions & attribute equality conditions.
-        let condition_expression = custom_conditions
-            .into_iter()
-            .chain(
-                // Append comparison conditions, using keyed placeholders to avoid
-                // ambiguity.
-                attribute_conditions
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, (key, (value, op)))| {
-                        rename_aware_comparison_condition::<T>(
-                            idx,
-                            key,
-                            value,
-                            op,
-                            &mut expression_attribute_names,
-                            &mut expression_attribute_values,
-                        )
-                    }),
-            )
-            .collect::<Vec<String>>()
-            .join(" AND ");
+    async fn execute_update_plan<T: DynamoObject>(
+        &self,
+        id: &PkSk,
+        update: AttributeUpdatePlan,
+    ) -> Result<(), ServerError> {
+        let key = collection! {
+            "pk".to_string() => AttributeValue::S(id.pk.clone()),
+            "sk".to_string() => AttributeValue::S(id.sk.clone()),
+        };
+        let expression = update.into_expression::<T>();
 
         self.backend
             .update_item(
                 self.table.clone(),
                 key,
-                update_expression,
-                expression_attribute_values,
-                expression_attribute_names,
-                Some(condition_expression),
+                expression.update,
+                expression.values,
+                expression.names,
+                Some(expression.condition),
             )
             .await
             .map_err(|e| match e.into_service_error() {
@@ -958,6 +898,7 @@ impl DynamoUtil {
         data: Vec<T::Data>,
     ) -> Result<(), ServerError> {
         reject_phantom_objects::<T>()?;
+        validate_materialized_storage::<T>()?;
         // Validations.
         validate_parent_for::<T>(parent_id)?;
         let batch_size = match T::id_logic() {

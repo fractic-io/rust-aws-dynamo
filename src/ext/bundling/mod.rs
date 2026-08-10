@@ -43,7 +43,7 @@ impl<'a> Bundler<'a> {
     }
 
     pub async fn export<O: DynamoObject>(&self, item: O) -> Result<DynamoBundle, ServerError> {
-        impl_export::export_from_config(
+        impl_export::export_from_config::<O>(
             self.dynamo_util,
             self.crud_algorithms,
             item.id().clone(),

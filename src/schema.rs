@@ -13,7 +13,8 @@ pub mod types;
 
 pub use types::{coordinate, foreign_ref, pk_sk, timestamp};
 
-/// Compatibility paths for item serialization and deserialization.
+/// Temporary: Maintain legacy import paths. Remove once we do breaking
+/// re-organization of entire crate.
 #[doc(hidden)]
 pub mod parsing {
     pub use super::item_deserialization::parse_dynamo_map;

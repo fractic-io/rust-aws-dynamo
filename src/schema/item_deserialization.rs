@@ -3,7 +3,10 @@ use serde_json::{Map, Value};
 
 use crate::{
     errors::DynamoItemParsingError,
-    schema::{DynamoFieldRename, DynamoMap, DynamoObject},
+    schema::{
+        materialization::validate_materialized_attribute_names, DynamoFieldRename, DynamoMap,
+        DynamoObject,
+    },
 };
 
 pub(crate) use super::attribute_value::dynamo_map_to_serde_value;
@@ -12,6 +15,8 @@ pub(crate) use super::attribute_value::dynamo_map_to_serde_value;
 // ----------------------------------------------------------------------------
 
 pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerError> {
+    validate_materialized_attribute_names(T::materialized_attribute_names(), T::renamed_fields())?;
+
     // DynamoMap -> Serde value.
     let Value::Object(mut serde_map) = dynamo_map_to_serde_value(map)? else {
         unreachable!("DynamoMap conversion always returns an object")
@@ -211,6 +216,23 @@ mod tests {
     );
 
     #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
+    pub struct TestLegacyRenameMaterializedCollisionData {
+        email: Option<String>,
+    }
+
+    dynamo_object!(
+        TestLegacyRenameMaterializedCollision,
+        TestLegacyRenameMaterializedCollisionData,
+        "TESTLEGACYRENAMEMATERIALIZEDCOLLISION",
+        IdLogic::UuidV4,
+        NestingLogic::Root,
+        renamed = ["old_email" => "email"],
+        materialized = |data| {
+            "old_email" => data.email.as_ref().map(|email| email.to_lowercase()),
+        },
+    );
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
     pub struct TestUnsupportedMaterializedData {
         value: String,
     }
@@ -313,6 +335,28 @@ mod tests {
             None,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_materialized_attribute_names_cannot_be_legacy_rename_sources() {
+        let data = TestLegacyRenameMaterializedCollisionData { email: None };
+        let write = build_dynamo_map_for_new_obj::<TestLegacyRenameMaterializedCollision>(
+            &data,
+            "ROOT".to_string(),
+            "TESTLEGACYRENAMEMATERIALIZEDCOLLISION#1".to_string(),
+            None,
+        );
+        assert!(write.is_err());
+
+        let persisted = collection!(
+            "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+            "sk".to_string() => AttributeValue::S(
+                "TESTLEGACYRENAMEMATERIALIZEDCOLLISION#1".to_string()
+            ),
+            "old_email".to_string() => AttributeValue::S("derived@example.com".to_string()),
+        );
+        let read = parse_dynamo_map::<TestLegacyRenameMaterializedCollision>(&persisted);
+        assert!(read.is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use serde::Serialize;
 use super::{
     attribute_names::is_reserved_attribute_name,
     attribute_value::{serialize_attribute_value, DynamoMap},
-    DynamoObject, IdLogic, PkSk,
+    DynamoFieldRename, DynamoObject, IdLogic, PkSk,
 };
 use crate::errors::DynamoInvalidOperation;
 
@@ -88,19 +88,10 @@ pub(crate) fn validate_materialized_storage<T: DynamoObject>() -> Result<(), Ser
     )))
 }
 
-pub(crate) fn build_materialized_write_plan_against<T: DynamoObject>(
-    id: &PkSk,
-    data: &T::Data,
-    serialized: &DynamoMap,
-    serialized_nulls: &[String],
-) -> Result<MaterializedWritePlan, ServerError> {
-    let names = T::materialized_attribute_names();
-    if names.is_empty() {
-        return Ok(MaterializedWritePlan::default());
-    }
-
-    validate_materialized_storage::<T>()?;
-
+pub(crate) fn validate_materialized_attribute_names(
+    names: &[&str],
+    renamed_fields: &[DynamoFieldRename],
+) -> Result<(), ServerError> {
     let mut declared = HashSet::with_capacity(names.len());
     for &name in names {
         if name.is_empty() {
@@ -118,6 +109,33 @@ pub(crate) fn build_materialized_write_plan_against<T: DynamoObject>(
                 "materialized attribute '{name}' is declared more than once"
             )));
         }
+        if renamed_fields
+            .iter()
+            .any(|renamed| !renamed.is_noop() && renamed.from == name)
+        {
+            return Err(DynamoInvalidOperation::new(&format!(
+                "materialized attribute '{name}' collides with a legacy renamed field"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn build_materialized_write_plan_against<T: DynamoObject>(
+    id: &PkSk,
+    data: &T::Data,
+    serialized: &DynamoMap,
+    serialized_nulls: &[String],
+) -> Result<MaterializedWritePlan, ServerError> {
+    let names = T::materialized_attribute_names();
+    if names.is_empty() {
+        return Ok(MaterializedWritePlan::default());
+    }
+
+    validate_materialized_storage::<T>()?;
+    validate_materialized_attribute_names(names, T::renamed_fields())?;
+
+    for &name in names {
         if serialized.contains_key(name)
             || serialized_nulls
                 .iter()
@@ -131,6 +149,7 @@ pub(crate) fn build_materialized_write_plan_against<T: DynamoObject>(
 
     let materialized = T::materialized_attributes(id, data)?;
     let mut plan = MaterializedWritePlan::default();
+    let declared = names.iter().copied().collect::<HashSet<_>>();
     let mut produced = HashSet::with_capacity(materialized.entries.len());
     for (name, value) in materialized.entries {
         if !declared.contains(name) {

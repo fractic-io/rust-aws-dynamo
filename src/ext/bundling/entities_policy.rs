@@ -11,7 +11,10 @@ use crate::{
     ext::crud::DynamoCrudAlgorithms,
     schema::{
         item_serialization::build_materialized_write_plan,
-        materialization::{validate_materialized_storage, MaterializedWritePlan},
+        materialization::{
+            validate_materialized_attribute_names, validate_materialized_storage,
+            MaterializedWritePlan,
+        },
         DynamoFieldRename, DynamoObject, IdLogic, NestingLogic, PkSk,
     },
     util::{AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, EXPAND_DATA_RESERVED_KEY},
@@ -413,6 +416,7 @@ impl DynamoBundleObjectPolicy {
             let schema = self.resolve_registered_schema(nesting, parent)?;
             (schema.renamed_fields, schema.materialized_attribute_names)
         };
+        validate_materialized_attribute_names(materialized_attribute_names, renamed_fields)?;
         normalize_data(
             data,
             self.id_logic,
@@ -441,6 +445,10 @@ impl DynamoBundleObjectPolicy {
                 self.label
             )));
         };
+        validate_materialized_attribute_names(
+            schema.materialized_attribute_names,
+            schema.renamed_fields,
+        )?;
         normalize_data(
             data,
             self.id_logic,

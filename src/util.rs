@@ -1059,14 +1059,15 @@ impl DynamoUtil {
         Ok(items)
     }
 
-    /// Directly deletes the given IDs from the database, ignoring duplicate IDs.
+    /// Performs no checks and directly deletes the given IDs from the database
+    /// (ignores duplicates).
     pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), ServerError> {
         if keys.is_empty() {
             return Ok(());
         }
 
-        // Track borrowed keys so deduplication neither clones their strings nor
-        // changes the order in which callers supplied the first occurrence.
+        // Deduplicate IDs: Track borrowed keys so deduplication neither clones
+        // nor changes the order in which callers supplied the first occurrence.
         let keep = {
             let mut seen = HashSet::with_capacity(keys.len());
             keys.iter().map(|key| seen.insert(key)).collect::<Vec<_>>()

@@ -6,7 +6,7 @@ use fractic_server_error::{CriticalError, ServerError};
 use crate::{
     errors::DynamoInvalidOperation,
     schema::{
-        attribute_value::serialize_attribute_value, persistence::build_canonical_data_map,
+        attribute_value::serialize_attribute_value, item_serialization::build_canonical_data_map,
         DynamoMap, DynamoObject, Timestamp, AUTO_FIELDS_UPDATED_AT,
     },
     util::NumericOp,

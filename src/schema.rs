@@ -5,15 +5,22 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub mod add_ons;
 mod attribute_names;
 pub(crate) mod attribute_value;
-pub mod coordinate;
-pub mod display;
-pub mod foreign_ref;
 pub(crate) mod identifiers;
+pub mod item_deserialization;
+pub mod item_serialization;
 pub(crate) mod materialization;
-pub mod parsing;
-pub(crate) mod persistence;
-pub mod pk_sk;
-pub mod timestamp;
+pub mod types;
+
+pub use types::{coordinate, foreign_ref, pk_sk, timestamp};
+
+/// Compatibility paths for item serialization and deserialization.
+#[doc(hidden)]
+pub mod parsing {
+    pub use super::item_deserialization::parse_dynamo_map;
+    pub use super::item_serialization::{
+        build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, IdKeys,
+    };
+}
 
 pub use attribute_names::{
     AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT,

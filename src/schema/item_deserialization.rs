@@ -7,9 +7,6 @@ use crate::{
 };
 
 pub(crate) use super::attribute_value::dynamo_map_to_serde_value;
-pub use super::persistence::{
-    build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, IdKeys,
-};
 
 pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerError> {
     // DynamoMap -> Serde value.
@@ -100,6 +97,9 @@ mod tests {
     use super::*;
     use crate::{
         dynamo_object,
+        schema::item_serialization::{
+            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj, IdKeys,
+        },
         schema::{AutoFields, IdLogic, NestingLogic, PkSk, Timestamp},
         util::{AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT},
     };

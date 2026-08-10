@@ -1,7 +1,7 @@
 use fractic_server_error::{CriticalError, ServerError};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::Timestamp;
+use crate::schema::Timestamp;
 
 // ---------- Convenience ----------
 

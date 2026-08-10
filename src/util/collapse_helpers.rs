@@ -7,8 +7,8 @@ use serde::Serialize;
 use crate::{
     errors::{DynamoCalloutError, DynamoInvalidOperation, DynamoInvalidPartitioning},
     schema::{
-        identifiers::RawIdPath, parsing::deserialize_dynamo_map_partitions,
-        persistence::build_dynamo_map_internal, DynamoObject, IdLogic, PkSk, Timestamp,
+        identifiers::RawIdPath, item_deserialization::deserialize_dynamo_map_partitions,
+        item_serialization::build_dynamo_map_internal, DynamoObject, IdLogic, PkSk, Timestamp,
     },
     util::{
         metadata_helpers::WithMetadataFrom as _, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,

@@ -9,7 +9,7 @@ use crate::{
     errors::{DynamoInvalidBundle, DynamoInvalidOperation},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        identifiers::validate_parent_relation, persistence::build_dynamo_map_internal,
+        identifiers::validate_parent_relation, item_serialization::build_dynamo_map_internal,
         DynamoObject, PkSk, Timestamp,
     },
     util::{

@@ -22,12 +22,12 @@ use crate::{
     },
     schema::{
         identifiers::{generate_id, RawIdPath},
-        materialization::validate_materialized_storage,
-        parsing::parse_dynamo_map,
-        persistence::{
+        item_deserialization::parse_dynamo_map,
+        item_serialization::{
             build_canonical_data_map, build_dynamo_map_for_existing_obj,
             build_dynamo_map_for_new_obj, build_materialized_write_plan, IdKeys,
         },
+        materialization::validate_materialized_storage,
         pk_sk::id_fields_from_map,
         DynamoObject, IdLogic, PkSk, Timestamp,
     },
@@ -38,8 +38,8 @@ use crate::{
         },
         expand_helpers::{build_expandable_batch_maps, expand_batched_items},
         id_relations::{child_query_prefix, validate_object_id, validate_parent_for},
-        rename_safety_helpers::add_legacy_field_removals,
-        update_helpers::{AttributeUpdatePlan, CmpOp},
+        rename_cleanup::add_legacy_field_removals,
+        update_plan::{AttributeUpdatePlan, CmpOp},
     },
     DynamoCtxView,
 };
@@ -55,9 +55,9 @@ mod id_relations;
 mod metadata_helpers;
 mod query;
 mod raw_batch_helpers;
-mod rename_safety_helpers;
+mod rename_cleanup;
 mod test;
-mod update_helpers;
+mod update_plan;
 
 // Constants.
 // ----------------------------------------------------------------------------

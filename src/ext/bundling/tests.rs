@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use crate::{
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        parsing::{dynamo_map_to_serde_value, serde_value_to_dynamo_map},
+        item_deserialization::{dynamo_map_to_serde_value, serde_value_to_dynamo_map},
         DynamoObject, IdLogic, NestingLogic, PkSk,
     },
     util::{

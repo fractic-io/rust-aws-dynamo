@@ -31,7 +31,7 @@ mod tests {
     use mockall::predicate::*;
     use serde::{Deserialize, Serialize};
     use std::borrow::Cow;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -2588,6 +2588,89 @@ mod tests {
             .raw_batch_delete_ids(vec![first.clone(), second, first])
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_raw_batch_delete_partition_deletes_physical_rows() {
+        let expected_keys = vec![
+            collection! {
+                "pk".to_string() => AttributeValue::S("PARENT#1".to_string()),
+                "sk".to_string() => AttributeValue::S("ORDINARY#1".to_string()),
+            },
+            collection! {
+                "pk".to_string() => AttributeValue::S("PARENT#1".to_string()),
+                "sk".to_string() => AttributeValue::S("BATCH#0".to_string()),
+            },
+            collection! {
+                "pk".to_string() => AttributeValue::S("PARENT#1".to_string()),
+                "sk".to_string() => AttributeValue::S("@EXT[item]".to_string()),
+            },
+            collection! {
+                "pk".to_string() => AttributeValue::S("PARENT#1".to_string()),
+                "sk".to_string() => AttributeValue::S("@EXT[item]+0".to_string()),
+            },
+        ];
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("PARENT#1".to_string()),
+                }),
+                eq(Some("pk, sk".to_string())),
+            )
+            .returning({
+                let expected_keys = expected_keys.clone();
+                move |_, _, _, _, _| {
+                    Ok(vec![
+                        QueryOutput::builder()
+                            .set_items(Some(expected_keys[..2].to_vec()))
+                            .build(),
+                        QueryOutput::builder()
+                            .set_items(Some(expected_keys[2..].to_vec()))
+                            .build(),
+                    ])
+                }
+            });
+        backend
+            .expect_batch_delete_item()
+            .with(eq("my_table".to_string()), eq(expected_keys))
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        let deleted = build_util(backend)
+            .await
+            .raw_batch_delete_partition("PARENT#1".to_string())
+            .await
+            .unwrap();
+        assert_eq!(deleted.row_count, 4);
+        assert_eq!(
+            deleted.object_labels,
+            HashSet::from([
+                "ORDINARY".to_string(),
+                "BATCH".to_string(),
+                "EXT".to_string()
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_raw_batch_delete_partition_accepts_empty_partition() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().set_items(None).build()]));
+        backend.expect_batch_delete_item().times(0);
+
+        let deleted = build_util(backend)
+            .await
+            .raw_batch_delete_partition("PARENT#1".to_string())
+            .await
+            .unwrap();
+        assert_eq!(deleted.row_count, 0);
+        assert!(deleted.object_labels.is_empty());
     }
 
     #[tokio::test]

@@ -27,7 +27,8 @@ use crate::{
         identifiers::{generate_id, RawIdPath},
         parsing::{
             build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
-            build_dynamo_map_internal, parse_dynamo_map, IdKeys,
+            build_dynamo_map_internal, build_materialized_attribute_updates, parse_dynamo_map,
+            validate_materialized_storage, IdKeys,
         },
         pk_sk::id_fields_from_map,
         DynamoObject, IdLogic, PkSk, Timestamp,
@@ -372,6 +373,7 @@ impl DynamoUtil {
     ) -> Result<T, ServerError> {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
+        validate_materialized_storage::<T>()?;
         let PkSk { pk, sk } = options
             .token
             .map_or_else(|| self.create_token(parent_id, &data), Ok)?
@@ -433,6 +435,7 @@ impl DynamoUtil {
     ) -> Result<Vec<T>, ServerError> {
         reject_phantom_objects::<T>()?;
         reject_batch_optimized_ids::<T>()?;
+        validate_materialized_storage::<T>()?;
         if data_and_options.is_empty() {
             return Ok(Vec::new());
         }
@@ -632,6 +635,62 @@ impl DynamoUtil {
         .await
     }
 
+    /// Recomputes and atomically refreshes only an object's materialized
+    /// attributes, without changing its canonical data or automatic timestamps.
+    ///
+    /// The update is conditioned on the canonical data still matching
+    /// `object`, preventing a backfill based on a stale read from overwriting
+    /// materialized values produced by a concurrent domain update.
+    pub async fn refresh_materialized_attributes<T: DynamoObject>(
+        &self,
+        object: &T,
+    ) -> Result<(), ServerError> {
+        reject_phantom_objects::<T>()?;
+        validate_object_id::<T>(object.id())?;
+        if T::materialized_attribute_names().is_empty() {
+            return Ok(());
+        }
+
+        let (set, mut remove) =
+            build_materialized_attribute_updates::<T>(object.id(), object.data())?;
+        add_legacy_field_removals::<T>(&set, &mut remove);
+
+        let (source_values, source_nulls) =
+            build_dynamo_map_internal(object.data(), None, None, None)?;
+        let attribute_conditions = source_values
+            .into_iter()
+            .map(|(key, value)| (key, (value, CmpOp::Eq)))
+            .collect();
+        let mut custom_conditions = vec![Self::ITEM_EXISTS_CONDITION.to_string()];
+        let mut expression_attribute_names = HashMap::new();
+        let mut expression_attribute_values = HashMap::new();
+        for (idx, field) in source_nulls.into_iter().enumerate() {
+            let null_type_placeholder = format!(":mr{}n", idx + 1);
+            expression_attribute_values.insert(
+                null_type_placeholder.clone(),
+                AttributeValue::S("NULL".to_string()),
+            );
+            custom_conditions.push(rename_aware_presence_condition::<T>(
+                &field,
+                idx,
+                false,
+                &null_type_placeholder,
+                &mut expression_attribute_names,
+            ));
+        }
+
+        self.update_attribute_map::<T>(
+            object,
+            set,
+            remove,
+            attribute_conditions,
+            custom_conditions,
+            expression_attribute_names,
+            expression_attribute_values,
+        )
+        .await
+    }
+
     /// Updates an object in an all-or-nothing transaction. If the object has
     /// changed since it was fetched, the update is aborted and returns an
     /// error. If 'op' returns an error, the transaction is also aborted. If the
@@ -652,7 +711,7 @@ impl DynamoUtil {
             return Err(DynamoInvalidExtIdUsage::new());
         }
         let object_before = self.get_item::<T>(id.clone()).await?;
-        let (map_before, existance_condition) = match object_before {
+        let (mut map_before, existance_condition) = match object_before {
             Some(ref o) => (
                 build_dynamo_map_for_existing_obj::<T>(o, IdKeys::None, None)?.0,
                 Self::ITEM_EXISTS_CONDITION.to_string(),
@@ -662,6 +721,8 @@ impl DynamoUtil {
                 Self::ITEM_DOES_NOT_EXIST_CONDITION.to_string(),
             ),
         };
+        let materialized_names = T::materialized_attribute_names();
+        map_before.retain(|key, _| !materialized_names.contains(&key.as_str()));
         let object_after = T::new(id, op(object_before.map(DynamoObject::into_data))?);
         self.update_item_internal::<T>(
             &object_after,
@@ -785,20 +846,44 @@ impl DynamoUtil {
         object: &T,
         attribute_conditions: HashMap<String, (AttributeValue, CmpOp)>,
         custom_conditions: Vec<String>,
-        mut expression_attribute_names: HashMap<String, String>,
-        mut expression_attribute_values: HashMap<String, AttributeValue>,
+        expression_attribute_names: HashMap<String, String>,
+        expression_attribute_values: HashMap<String, AttributeValue>,
     ) -> Result<(), ServerError> {
         validate_object_id::<T>(object.id())?;
-        let key = collection! {
-            "pk".to_string() => AttributeValue::S(object.pk().to_string()),
-            "sk".to_string() => AttributeValue::S(object.sk().to_string()),
-        };
         let (map, mut null_keys) = build_dynamo_map_for_existing_obj::<T>(
             object,
             IdKeys::None,
             Some(vec![(AUTO_FIELDS_UPDATED_AT, Box::new(Timestamp::now()))]),
         )?;
         add_legacy_field_removals::<T>(&map, &mut null_keys);
+
+        self.update_attribute_map::<T>(
+            object,
+            map,
+            null_keys,
+            attribute_conditions,
+            custom_conditions,
+            expression_attribute_names,
+            expression_attribute_values,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn update_attribute_map<T: DynamoObject>(
+        &self,
+        object: &T,
+        map: DynamoMap,
+        null_keys: Vec<String>,
+        attribute_conditions: HashMap<String, (AttributeValue, CmpOp)>,
+        custom_conditions: Vec<String>,
+        mut expression_attribute_names: HashMap<String, String>,
+        mut expression_attribute_values: HashMap<String, AttributeValue>,
+    ) -> Result<(), ServerError> {
+        let key = collection! {
+            "pk".to_string() => AttributeValue::S(object.pk().to_string()),
+            "sk".to_string() => AttributeValue::S(object.sk().to_string()),
+        };
 
         // Build update expression.
         let set_expression = if map.is_empty() {
@@ -958,6 +1043,7 @@ impl DynamoUtil {
         data: Vec<T::Data>,
     ) -> Result<(), ServerError> {
         reject_phantom_objects::<T>()?;
+        validate_materialized_storage::<T>()?;
         // Validations.
         validate_parent_for::<T>(parent_id)?;
         let batch_size = match T::id_logic() {

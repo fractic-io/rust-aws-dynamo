@@ -201,6 +201,17 @@ pub trait DynamoObject:
     fn renamed_fields() -> &'static [DynamoFieldRename] {
         &[]
     }
+    /// Names of top-level attributes derived from this object's canonical data
+    /// and persisted alongside it.
+    fn materialized_attribute_names() -> &'static [&'static str] {
+        &[]
+    }
+    /// Computes the persisted materialized attributes for this object.
+    ///
+    /// Implementations must be deterministic functions of `id` and `data`.
+    fn materialized_attributes(_id: &PkSk, _data: &Self::Data) -> MaterializedAttributesResult {
+        Ok(MaterializedAttributes::default())
+    }
 
     // Data:
     fn data(&self) -> &Self::Data;
@@ -261,59 +272,217 @@ impl DynamoFieldRename {
     }
 }
 
+/// A set of top-level attributes computed from a [`DynamoObject`]'s ID and
+/// canonical data and persisted with the object.
+///
+/// This type is normally constructed by `dynamo_object!`'s `materialized`
+/// option rather than directly.
+#[derive(Debug, Default)]
+pub struct MaterializedAttributes {
+    pub(crate) entries: Vec<(
+        &'static str,
+        Option<aws_sdk_dynamodb::types::AttributeValue>,
+    )>,
+}
+
+#[doc(hidden)]
+pub type MaterializedAttributesResult =
+    Result<MaterializedAttributes, fractic_server_error::ServerError>;
+
+impl MaterializedAttributes {
+    #[doc(hidden)]
+    pub fn insert<T: Serialize>(
+        &mut self,
+        name: &'static str,
+        value: T,
+    ) -> Result<(), fractic_server_error::ServerError> {
+        let value = serde_json::to_value(value).map_err(|error| {
+            crate::errors::DynamoItemParsingError::with_debug(
+                "failed to serialize materialized attribute",
+                &error,
+            )
+        })?;
+        self.entries
+            .push((name, parsing::serde_value_to_attribute_value(value)?));
+        Ok(())
+    }
+}
+
+/// Defines a typed DynamoDB object and its persistence behavior.
+///
+/// The optional `materialized` section declares top-level attributes that are
+/// recomputed on every typed create or update. Each value may be any Serde
+/// serializable expression; an `Option::None` value removes the attribute.
+/// Materialization may depend on canonical data alone or on both the generated
+/// ID and canonical data:
+///
+/// ```ignore
+/// dynamo_object!(
+///     User,
+///     UserData,
+///     "USER",
+///     IdLogic::UuidV4,
+///     NestingLogic::Root,
+///     renamed = ["old_email" => "email"],
+///     materialized = |id, data| {
+///         "email_normalized" => data.email.trim().to_lowercase(),
+///         "lookup_key" => data.active.then(|| format!("{}|{}", id.pk, id.sk)),
+///     },
+/// );
+/// ```
+///
+/// Materialized attributes are supported only by ordinary, non-partitioned ID
+/// logic—not `BatchOptimized`, `SingletonExt`, or `IndexedSingletonExt`.
 #[macro_export]
 macro_rules! dynamo_object {
-    ($type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr) => {
-        $crate::dynamo_object!(
-            @impl $type,
-            $datatype,
-            $id_label,
-            $id_logic,
-            $nesting_logic,
-            []
-        );
-    };
-
     (
         $type:ident,
         $datatype:ident,
         $id_label:expr,
         $id_logic:expr,
-        $nesting_logic:expr,
+        $nesting_logic:expr
+        $(, $($options:tt)*)?
+    ) => {
+        $crate::dynamo_object!(
+            @options
+            [$type, $datatype, $id_label, $id_logic, $nesting_logic]
+            [renamed: (unset)]
+            [materialized: (unset)]
+            $($($options)*)?
+        );
+    };
+
+    (
+        @options
+        [$type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr]
+        [renamed: $renamed_state:tt]
+        [materialized: $materialized_state:tt]
+    ) => {
+        $crate::dynamo_object!(
+            @impl
+            $type,
+            $datatype,
+            $id_label,
+            $id_logic,
+            $nesting_logic,
+            $renamed_state,
+            $materialized_state
+        );
+    };
+
+    (
+        @options
+        [$type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr]
+        [renamed: (unset)]
+        [materialized: $materialized_state:tt]
         renamed = [$($from:literal => $to:literal),* $(,)?]
+        $(, $($rest:tt)*)?
     ) => {
         $crate::dynamo_object!(
-            @impl $type,
-            $datatype,
-            $id_label,
-            $id_logic,
-            $nesting_logic,
-            [
-                $(
-                    $crate::schema::DynamoFieldRename {
-                        from: $from,
-                        to: $to,
-                    }
-                ),*
-            ]
+            @options
+            [$type, $datatype, $id_label, $id_logic, $nesting_logic]
+            [renamed: (set [$($from => $to),*])]
+            [materialized: $materialized_state]
+            $($($rest)*)?
         );
     };
 
     (
-        $type:ident,
-        $datatype:ident,
-        $id_label:expr,
-        $id_logic:expr,
-        $nesting_logic:expr,
+        @options
+        [$type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr]
+        [renamed: (unset)]
+        [materialized: $materialized_state:tt]
         renamed = [$($from:literal -> $to:literal),* $(,)?]
+        $(, $($rest:tt)*)?
     ) => {
         $crate::dynamo_object!(
-            @impl $type,
-            $datatype,
-            $id_label,
-            $id_logic,
-            $nesting_logic,
-            [
+            @options
+            [$type, $datatype, $id_label, $id_logic, $nesting_logic]
+            [renamed: (set [$($from => $to),*])]
+            [materialized: $materialized_state]
+            $($($rest)*)?
+        );
+    };
+
+    (
+        @options
+        [$type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr]
+        [renamed: $renamed_state:tt]
+        [materialized: (unset)]
+        materialized = |$data:ident| {
+            $($name:literal => $value:expr),* $(,)?
+        }
+        $(, $($rest:tt)*)?
+    ) => {
+        $crate::dynamo_object!(
+            @options
+            [$type, $datatype, $id_label, $id_logic, $nesting_logic]
+            [renamed: $renamed_state]
+            [materialized: (one [$data] [$($name => $value),*])]
+            $($($rest)*)?
+        );
+    };
+
+    (
+        @options
+        [$type:ident, $datatype:ident, $id_label:expr, $id_logic:expr, $nesting_logic:expr]
+        [renamed: $renamed_state:tt]
+        [materialized: (unset)]
+        materialized = |$id:ident, $data:ident| {
+            $($name:literal => $value:expr),* $(,)?
+        }
+        $(, $($rest:tt)*)?
+    ) => {
+        $crate::dynamo_object!(
+            @options
+            [$type, $datatype, $id_label, $id_logic, $nesting_logic]
+            [renamed: $renamed_state]
+            [materialized: (two [$id, $data] [$($name => $value),*])]
+            $($($rest)*)?
+        );
+    };
+
+    (
+        @options
+        [$($base:tt)*]
+        [renamed: (set $renamed:tt)]
+        [materialized: $materialized:tt]
+        renamed = $duplicate:tt
+        $($rest:tt)*
+    ) => {
+        compile_error!("duplicate `renamed` option in dynamo_object!");
+    };
+
+    (
+        @options
+        [$($base:tt)*]
+        [renamed: $renamed:tt]
+        [materialized: $materialized:tt]
+        materialized = $duplicate:tt
+        $($rest:tt)*
+    ) => {
+        compile_error!("duplicate `materialized` option in dynamo_object!");
+    };
+
+    (
+        @options
+        [$($base:tt)*]
+        [renamed: $renamed:tt]
+        [materialized: $materialized:tt]
+        $($invalid:tt)+
+    ) => {
+        compile_error!("invalid option syntax in dynamo_object!");
+    };
+
+    (@renamed_impl (unset)) => {
+        fn renamed_fields() -> &'static [$crate::schema::DynamoFieldRename] {
+            &[]
+        }
+    };
+
+    (@renamed_impl (set [$($from:literal => $to:literal),*])) => {
+        fn renamed_fields() -> &'static [$crate::schema::DynamoFieldRename] {
+            &[
                 $(
                     $crate::schema::DynamoFieldRename {
                         from: $from,
@@ -321,7 +490,46 @@ macro_rules! dynamo_object {
                     }
                 ),*
             ]
-        );
+        }
+    };
+
+    (@materialized_impl (unset)) => {
+        fn materialized_attribute_names() -> &'static [&'static str] {
+            &[]
+        }
+    };
+
+    (@materialized_impl (one [$data:ident] [$($name:literal => $value:expr),*])) => {
+        fn materialized_attribute_names() -> &'static [&'static str] {
+            &[$($name),*]
+        }
+
+        fn materialized_attributes(
+            _id: &$crate::schema::PkSk,
+            data: &Self::Data,
+        ) -> $crate::schema::MaterializedAttributesResult {
+            let $data = data;
+            let mut attributes = $crate::schema::MaterializedAttributes::default();
+            $(attributes.insert($name, $value)?;)*
+            Ok(attributes)
+        }
+    };
+
+    (@materialized_impl (two [$id:ident, $data:ident] [$($name:literal => $value:expr),*])) => {
+        fn materialized_attribute_names() -> &'static [&'static str] {
+            &[$($name),*]
+        }
+
+        fn materialized_attributes(
+            id: &$crate::schema::PkSk,
+            data: &Self::Data,
+        ) -> $crate::schema::MaterializedAttributesResult {
+            let $id = id;
+            let $data = data;
+            let mut attributes = $crate::schema::MaterializedAttributes::default();
+            $(attributes.insert($name, $value)?;)*
+            Ok(attributes)
+        }
     };
 
     (
@@ -331,7 +539,8 @@ macro_rules! dynamo_object {
         $id_label:expr,
         $id_logic:expr,
         $nesting_logic:expr,
-        [$($renamed_field:expr),* $(,)?]
+        $renamed:tt,
+        $materialized:tt
     ) => {
         #[derive(Debug, Serialize, Deserialize, Clone)]
         pub struct $type {
@@ -381,9 +590,8 @@ macro_rules! dynamo_object {
             fn nesting_logic() -> $crate::schema::NestingLogic {
                 $nesting_logic
             }
-            fn renamed_fields() -> &'static [$crate::schema::DynamoFieldRename] {
-                &[$($renamed_field),*]
-            }
+            $crate::dynamo_object!(@renamed_impl $renamed);
+            $crate::dynamo_object!(@materialized_impl $materialized);
         }
     };
 }

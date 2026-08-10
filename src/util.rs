@@ -161,7 +161,7 @@ pub enum UpdateCondition<T: DynamoObject> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchDeletePartitionResult {
     /// Number of physical rows found in the partition.
-    pub physical_item_count: usize,
+    pub row_count: usize,
     /// Distinct object labels recognized in the deleted row keys.
     pub object_labels: HashSet<String>,
 }
@@ -1161,7 +1161,7 @@ impl DynamoUtil {
             }
         }
         let result = BatchDeletePartitionResult {
-            physical_item_count: keys.len(),
+            row_count: keys.len(),
             object_labels,
         };
         self.raw_batch_delete_ids(keys).await?;

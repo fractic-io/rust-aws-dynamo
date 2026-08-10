@@ -2645,7 +2645,7 @@ mod tests {
             .raw_batch_delete_partition("PARENT#1".to_string())
             .await
             .unwrap();
-        assert_eq!(deleted.physical_item_count, 4);
+        assert_eq!(deleted.row_count, 4);
         assert_eq!(
             deleted.object_labels,
             HashSet::from([
@@ -2669,7 +2669,7 @@ mod tests {
             .raw_batch_delete_partition("PARENT#1".to_string())
             .await
             .unwrap();
-        assert_eq!(deleted.physical_item_count, 0);
+        assert_eq!(deleted.row_count, 0);
         assert!(deleted.object_labels.is_empty());
     }
 

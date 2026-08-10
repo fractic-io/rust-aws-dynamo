@@ -1,6 +1,6 @@
 ## Correctness
 
-- Transaction support.
+- Atomic writes (maybe init & close capturing, where all in-between actions are 'committed' in a single operation up to 100 items?).
 - Consistent reads.
 
 ## Optimization

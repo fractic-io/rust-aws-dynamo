@@ -2557,6 +2557,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_raw_batch_delete_ignores_duplicate_ids() {
+        let first = PkSk {
+            pk: "ROOT".into(),
+            sk: "TEST#first".into(),
+        };
+        let second = PkSk {
+            pk: "ROOT".into(),
+            sk: "TEST#second".into(),
+        };
+        let first_key: HashMap<String, AttributeValue> = collection! {
+            "pk".to_string() => AttributeValue::S(first.pk.clone()),
+            "sk".to_string() => AttributeValue::S(first.sk.clone()),
+        };
+        let second_key: HashMap<String, AttributeValue> = collection! {
+            "pk".to_string() => AttributeValue::S(second.pk.clone()),
+            "sk".to_string() => AttributeValue::S(second.sk.clone()),
+        };
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_batch_delete_item()
+            .times(1)
+            .withf(move |_, keys| {
+                keys.len() == 2 && keys.contains(&first_key) && keys.contains(&second_key)
+            })
+            .returning(|_, _| Ok(BatchWriteItemOutput::builder().build()));
+
+        build_util(backend)
+            .await
+            .raw_batch_delete_ids(vec![first.clone(), second, first])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn test_raw_batch_put_errors_after_three_unprocessed_retries() {
         let item = build_item_low_sort().1;
         let mut backend = MockDynamoBackend::new();

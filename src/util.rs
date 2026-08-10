@@ -1119,6 +1119,38 @@ impl DynamoUtil {
         Ok(())
     }
 
+    /// Deletes every physical item in the given DynamoDB partition.
+    ///
+    /// This bypasses logical item expansion and collapse so batch-optimized
+    /// rows and all rows backing partitioned items are deleted directly.
+    /// Returns the number of physical rows found in the partition.
+    pub async fn raw_batch_delete_partition(
+        &self,
+        partition_key: String,
+    ) -> Result<usize, ServerError> {
+        let response = self
+            .backend
+            .query(
+                self.table.clone(),
+                None,
+                "pk = :pk_val".to_string(),
+                collection! {
+                    ":pk_val".to_string() => AttributeValue::S(partition_key),
+                },
+                Some("pk, sk".to_string()),
+            )
+            .await
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+        let keys = response
+            .into_iter()
+            .flat_map(|page| page.items.unwrap_or_default())
+            .map(|item| PkSk::from_map(&item))
+            .collect::<Result<Vec<_>, _>>()?;
+        let count = keys.len();
+        self.raw_batch_delete_ids(keys).await?;
+        Ok(count)
+    }
+
     /// Performs no checks and directly writes the given DynamoMaps to the
     /// database. If the item exists, it is updated. If it does not exist, it is
     /// created.

@@ -9,6 +9,9 @@ use super::{
 };
 use crate::errors::DynamoItemParsingError;
 
+// Public interface.
+// ----------------------------------------------------------------------------
+
 pub enum IdKeys {
     CopyFromObject,
     Override(String, String),
@@ -46,6 +49,9 @@ pub fn build_dynamo_map_for_existing_obj<T: DynamoObject>(
         .apply_to(&mut map, &mut nulls);
     Ok((map, nulls))
 }
+
+// Crate-internal.
+// ----------------------------------------------------------------------------
 
 /// Canonical top-level data as persisted, without IDs, automatic metadata, or
 /// materialized attributes.

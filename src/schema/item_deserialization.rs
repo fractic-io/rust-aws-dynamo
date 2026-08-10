@@ -8,6 +8,9 @@ use crate::{
 
 pub(crate) use super::attribute_value::dynamo_map_to_serde_value;
 
+// Public interface.
+// ----------------------------------------------------------------------------
+
 pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerError> {
     // DynamoMap -> Serde value.
     let Value::Object(mut serde_map) = dynamo_map_to_serde_value(map)? else {
@@ -43,7 +46,7 @@ pub fn parse_dynamo_map<T: DynamoObject>(map: &DynamoMap) -> Result<T, ServerErr
         .map_err(|e| DynamoItemParsingError::with_debug("failed to convert from Serde value", &e))
 }
 
-// Alternative conversion helpers.
+// Crate-internal.
 // ----------------------------------------------------------------------------
 
 pub(crate) fn deserialize_dynamo_map_partitions<I, S>(

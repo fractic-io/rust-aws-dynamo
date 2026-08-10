@@ -1059,24 +1059,40 @@ impl DynamoUtil {
         Ok(items)
     }
 
-    /// Performs no checks and directly deletes the given IDs from the database.
+    /// Performs no checks and directly deletes the given IDs from the database
+    /// (ignores duplicates).
     pub async fn raw_batch_delete_ids(&self, keys: Vec<PkSk>) -> Result<(), ServerError> {
         if keys.is_empty() {
             return Ok(());
         }
-        let items = keys
+
+        // Deduplicate IDs: Track borrowed keys so deduplication neither clones
+        // nor changes the order in which callers supplied the first occurrence.
+        let keep = {
+            let mut seen = HashSet::with_capacity(keys.len());
+            keys.iter().map(|key| seen.insert(key)).collect::<Vec<_>>()
+        };
+        let mut unique_keys = keys
             .into_iter()
-            .map(|id| {
-                collection! {
-                    "pk".to_string() => AttributeValue::S(id.pk),
-                    "sk".to_string() => AttributeValue::S(id.sk),
-                }
-            })
-            .collect::<Vec<_>>();
+            .zip(keep)
+            .filter_map(|(key, keep)| keep.then_some(key));
 
         // Split into 25-item batches (max supported by DynamoDB).
-        for batch in items.chunks(25) {
-            let mut pending = batch.to_vec();
+        loop {
+            let mut pending = unique_keys
+                .by_ref()
+                .take(25)
+                .map(|id| {
+                    collection! {
+                        "pk".to_string() => AttributeValue::S(id.pk),
+                        "sk".to_string() => AttributeValue::S(id.sk),
+                    }
+                })
+                .collect::<Vec<_>>();
+            if pending.is_empty() {
+                break;
+            }
+
             for attempt in 0..=MAX_BATCH_WRITE_RETRIES {
                 let response = self
                     .backend

@@ -28,9 +28,8 @@ pub fn build_dynamo_map_for_new_obj<T: DynamoObject>(
         pk: pk.clone(),
         sk: sk.clone(),
     };
-    let (mut map, mut nulls) = build_dynamo_map_internal(data, Some(pk), Some(sk), overrides)?;
-    build_materialized_write_plan_against::<T>(&id, data, &map, &nulls)?
-        .apply_to(&mut map, &mut nulls);
+    let (mut map, nulls) = build_dynamo_map_internal(data, Some(pk), Some(sk), overrides)?;
+    build_materialized_write_plan_against::<T>(&id, data, &map, &nulls)?.apply_to_put(&mut map);
     Ok(map)
 }
 
@@ -46,7 +45,7 @@ pub fn build_dynamo_map_for_existing_obj<T: DynamoObject>(
     };
     let (mut map, mut nulls) = build_dynamo_map_internal(object, pk, sk, overrides)?;
     build_materialized_write_plan_against::<T>(object.id(), object.data(), &map, &nulls)?
-        .apply_to(&mut map, &mut nulls);
+        .apply_to_update(&mut map, &mut nulls);
     Ok((map, nulls))
 }
 

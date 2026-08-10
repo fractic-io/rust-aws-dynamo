@@ -94,7 +94,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
     }
     let root_id_logic = BundleIdLogic::from_object::<O>();
     let policy = configured_bundle_policy(algorithms);
-    policy.normalize_bundle_data(&mut bundle)?;
+    policy.canonicalize_bundle_data(&mut bundle, parent)?;
     let effective_omissions = validate_import_policy(&bundle, &policy, root_id_logic, parent)?;
     let original_ids = build_source_id_map(&bundle)?
         .into_iter()
@@ -156,7 +156,7 @@ pub(crate) async fn import_bundle<O: DynamoObject>(
 
     let old = if existing.has_conflicts && replacing {
         Some(
-            export_with_omissions(
+            export_with_omissions::<O>(
                 util,
                 &policy,
                 &root_id,
@@ -530,7 +530,7 @@ fn build_write_plan(
             .materialized_write_plan(item, parent, id)?;
         match item.storage {
             DynamoBundleStorage::Standard => {
-                let (mut map, mut nulls) = build_dynamo_map_internal(
+                let (mut map, _) = build_dynamo_map_internal(
                     &item.data,
                     Some(id.pk.clone()),
                     Some(id.sk.clone()),
@@ -539,7 +539,7 @@ fn build_write_plan(
                         (AUTO_FIELDS_UPDATED_AT, Box::new(imported_at.clone())),
                     ]),
                 )?;
-                materialized.apply_to(&mut map, &mut nulls);
+                materialized.apply_to_put(&mut map);
                 puts.push(map);
                 if let Some(count) = existing_partition_counts.get(id) {
                     maintenance_deletes.extend(ext_partition_ids_for_count(id, *count));

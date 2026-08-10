@@ -162,8 +162,9 @@ crate::dynamo_object!(
     "SHAREDCHILD",
     IdLogic::UuidV4,
     NestingLogic::TopLevelChildOf("ROOTOBJ"),
+    renamed = ["legacy_root_name" => "required_name"],
     materialized = |data| {
-        "variant_marker" => format!("root:{}", data.required_name),
+        "root_marker" => format!("root:{}", data.required_name),
     }
 );
 crate::dynamo_object!(
@@ -172,9 +173,18 @@ crate::dynamo_object!(
     "SHAREDCHILD",
     IdLogic::UuidV4,
     NestingLogic::TopLevelChildOf("OTHERROOT"),
+    renamed = ["legacy_other_name" => "required_name"],
     materialized = |data| {
-        "variant_marker" => format!("other:{}", data.required_name),
+        "other_marker" => format!("other:{}", data.required_name),
     }
+);
+
+crate::dynamo_object!(
+    TestAmbiguousSharedChild,
+    TestStrictChildData,
+    "SHAREDCHILD",
+    IdLogic::UuidV4,
+    NestingLogic::TopLevelChildOfAny
 );
 
 struct TestAlgorithms;
@@ -487,7 +497,7 @@ async fn export_omits_materialized_attributes() {
             Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
         });
 
-    let bundle = export_from_config(
+    let bundle = export_from_config::<TestMaterializedRoot>(
         &util(backend),
         &MaterializedAlgorithms,
         PkSk {
@@ -680,7 +690,7 @@ async fn recursive_export_scopes_omissions_and_normalizes_ext_partitioning() {
             Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
         });
 
-    let bundle = export_from_config(
+    let bundle = export_from_config::<TestRoot>(
         &util(backend),
         &TestAlgorithms,
         PkSk {
@@ -776,7 +786,7 @@ async fn recursive_export_omits_configured_subtrees_and_records_the_omission() {
             Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
         });
 
-    let bundle = export_from_config(
+    let bundle = export_from_config::<TestRoot>(
         &util(backend),
         &TestAlgorithms,
         PkSk {
@@ -814,7 +824,7 @@ async fn recursive_export_rejects_denied_descendants() {
             Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
         });
 
-    let error = export_from_config(
+    let error = export_from_config::<TestRoot>(
         &util(backend),
         &TestAlgorithms,
         PkSk {
@@ -859,7 +869,7 @@ async fn export_reports_required_internal_targets_outside_the_scope() {
             Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
         });
 
-    let error = export_from_config(
+    let error = export_from_config::<TestRoot>(
         &util(backend),
         &RequiredReferenceAlgorithms,
         PkSk {
@@ -898,7 +908,7 @@ async fn export_loads_bundle_configuration_once() {
             Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
         });
 
-    export_from_config(
+    export_from_config::<TestRoot>(
         &util(backend),
         &algorithms,
         PkSk {
@@ -1137,7 +1147,7 @@ fn import_validates_batch_optimized_payload_members() {
 fn import_accepts_registered_schema_variants_sharing_a_label() {
     let root = id(0, "OTHERROOT", "OTHERROOT#root");
     let child = id(1, "SHAREDCHILD", "SHAREDCHILD#child");
-    let bundle = DynamoBundle {
+    let mut bundle = DynamoBundle {
         version: DynamoBundle::VERSION,
         source_root: PkSk {
             pk: "ROOT".into(),
@@ -1151,18 +1161,14 @@ fn import_accepts_registered_schema_variants_sharing_a_label() {
                 child,
                 Some(root),
                 BundleNesting::TopLevel,
-                json!({"required_name": "valid"}),
+                json!({"legacy_other_name": "valid"}),
             ),
         ],
     };
 
-    validate_import_policy(
-        &bundle,
-        &configured_bundle_policy(&SchemaValidationAlgorithms),
-        BundleIdLogic::UuidV4,
-        None,
-    )
-    .unwrap();
+    let policy = configured_bundle_policy(&SchemaValidationAlgorithms);
+    policy.canonicalize_bundle_data(&mut bundle, None).unwrap();
+    validate_import_policy(&bundle, &policy, BundleIdLogic::UuidV4, None).unwrap();
 }
 
 #[tokio::test]
@@ -1185,8 +1191,8 @@ async fn import_materializes_the_topology_matching_shared_label_variant() {
                 Some(root),
                 BundleNesting::TopLevel,
                 json!({
-                    "required_name": "selected",
-                    "variant_marker": "stale"
+                    "legacy_other_name": "selected",
+                    "other_marker": "stale"
                 }),
             ),
         ],
@@ -1210,9 +1216,10 @@ async fn import_materializes_the_topology_matching_shared_label_variant() {
                 .find(|item| item["sk"] == AttributeValue::S("SHAREDCHILD#child".into()))
                 .unwrap();
             assert_eq!(
-                child["variant_marker"],
+                child["other_marker"],
                 AttributeValue::S("other:selected".into())
             );
+            assert!(!child.contains_key("root_marker"));
             Ok(BatchWriteItemOutput::builder().build())
         });
 
@@ -1236,11 +1243,11 @@ fn bundling_is_denied_by_default() {
 }
 
 #[test]
-#[should_panic(expected = "declared different materialized attributes")]
-fn bundle_types_sharing_a_label_must_declare_the_same_materialized_attributes() {
+#[should_panic(expected = "overlapping topologies")]
+fn bundle_types_sharing_a_label_must_have_unambiguous_topologies() {
     let mut bundles = DynamoBundlePolicy::new();
-    bundles.include_label("MATROOT", BundleIdLogic::UuidV4, &[]);
-    bundles.include::<TestMaterializedRoot>();
+    bundles.include::<TestSharedChildOfRoot>();
+    bundles.include::<TestAmbiguousSharedChild>();
 }
 
 #[test]
@@ -1261,7 +1268,9 @@ fn bundle_config_normalizes_top_level_renames_before_selecting_references() {
         }),
     );
 
-    object.normalize_data(&mut item.data);
+    object
+        .canonicalize_data_for::<TestRenamedRoot>(&mut item.data)
+        .unwrap();
 
     assert_eq!(
         item.data,
@@ -1327,7 +1336,7 @@ fn bundle_policy_normalizes_batch_members_and_prefers_canonical_fields() {
     policy.include::<TestRenamedRoot>();
     policy.include::<TestRenamedBatch>();
 
-    policy.normalize_bundle_data(&mut bundle).unwrap();
+    policy.canonicalize_bundle_data(&mut bundle, None).unwrap();
 
     assert_eq!(
         bundle.items[0].data,

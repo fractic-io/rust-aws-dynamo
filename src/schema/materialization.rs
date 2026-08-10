@@ -49,7 +49,7 @@ pub(crate) struct MaterializedWritePlan {
 }
 
 impl MaterializedWritePlan {
-    pub(crate) fn apply_to(self, set: &mut DynamoMap, remove: &mut Vec<String>) {
+    pub(crate) fn apply_to_update(self, set: &mut DynamoMap, remove: &mut Vec<String>) {
         for (name, value) in self.set {
             remove.retain(|remove_name| remove_name != &name);
             set.insert(name, value);
@@ -59,6 +59,15 @@ impl MaterializedWritePlan {
             if !remove.contains(&name) {
                 remove.push(name);
             }
+        }
+    }
+
+    pub(crate) fn apply_to_put(self, item: &mut DynamoMap) {
+        for (name, value) in self.set {
+            item.insert(name, value);
+        }
+        for name in self.remove {
+            item.remove(&name);
         }
     }
 }

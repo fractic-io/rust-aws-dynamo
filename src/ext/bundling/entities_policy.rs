@@ -34,20 +34,22 @@ pub struct DynamoBundlePolicy {
     objects: HashMap<&'static str, DynamoBundleObjectPolicy>,
 }
 
-/// Bundle behavior for one included Dynamo object type.
+/// Shared bundle behavior and registered Rust schemas for one persisted label.
 pub struct DynamoBundleObjectPolicy {
+    label: &'static str,
     id_logic: BundleIdLogic,
-    renamed_fields: &'static [DynamoFieldRename],
-    materialized_attribute_names: &'static [&'static str],
-    schema_variants: Vec<DynamoBundleSchemaVariant>,
+    untyped_renamed_fields: &'static [DynamoFieldRename],
+    registered_schemas: Vec<RegisteredObjectSchema>,
     omitted_descendants: BTreeSet<String>,
     reference_rules: Vec<DynamoBundleReferenceRule>,
 }
 
-struct DynamoBundleSchemaVariant {
+struct RegisteredObjectSchema {
     type_name: &'static str,
     topology: DynamoBundleTopology,
-    validate_data: Arc<BundleDataValidator>,
+    renamed_fields: &'static [DynamoFieldRename],
+    materialized_attribute_names: &'static [&'static str],
+    validate_data: fn(&DynamoBundleItem) -> Result<(), String>,
     materialize: fn(&PkSk, &DynamoBundleItem) -> Result<MaterializedWritePlan, ServerError>,
 }
 
@@ -72,8 +74,6 @@ pub struct DynamoBundleReferenceRule {
 
 type BundleReferenceSelector =
     dyn Fn(&DynamoBundleItem) -> Result<Vec<DynamoBundleReferenceMatch>, ServerError> + Send + Sync;
-
-type BundleDataValidator = dyn Fn(&DynamoBundleItem) -> Result<(), String> + Send + Sync;
 
 /// A reference discovered by a custom bundle reference rule.
 #[derive(Debug, Clone)]
@@ -100,17 +100,12 @@ impl DynamoBundlePolicy {
 
     /// Includes an object type and returns its configuration builder.
     ///
-    /// Types sharing a persisted label share one configuration and must have
-    /// identical ID, rename, and materialized-attribute names. Each type
-    /// contributes its own allowed topology, data shape, and materialization
-    /// function.
+    /// Types sharing a persisted label share ID, omission, and reference
+    /// behavior. Each type contributes a distinct topology, data shape,
+    /// renames, and materialization function. Their topologies must not
+    /// overlap, so an item's parent and nesting always identify one type.
     pub fn include<O: DynamoObject>(&mut self) -> &mut DynamoBundleObjectPolicy {
-        let object = self.include_object_contract(
-            O::id_label(),
-            BundleIdLogic::from_object::<O>(),
-            O::renamed_fields(),
-            O::materialized_attribute_names(),
-        );
+        let object = self.include_object(O::id_label(), BundleIdLogic::from_object::<O>(), &[]);
         object.register_schema::<O>();
         object
     }
@@ -314,22 +309,30 @@ impl DynamoBundlePolicy {
         id_logic: BundleIdLogic,
         renamed_fields: &'static [DynamoFieldRename],
     ) -> &mut DynamoBundleObjectPolicy {
-        self.include_object_contract(label, id_logic, renamed_fields, &[])
+        let object = self.include_object(label, id_logic, renamed_fields);
+        assert!(
+            object.registered_schemas.is_empty(),
+            "bundle label `{label}` cannot mix typed and untyped registrations"
+        );
+        assert_eq!(
+            object.untyped_renamed_fields, renamed_fields,
+            "repeated untyped bundle registrations for label `{label}` used different field renames"
+        );
+        object
     }
 
-    fn include_object_contract(
+    fn include_object(
         &mut self,
         label: &'static str,
         id_logic: BundleIdLogic,
         renamed_fields: &'static [DynamoFieldRename],
-        materialized_attribute_names: &'static [&'static str],
     ) -> &mut DynamoBundleObjectPolicy {
         match self.objects.entry(label) {
             Entry::Vacant(entry) => entry.insert(DynamoBundleObjectPolicy {
+                label,
                 id_logic,
-                renamed_fields,
-                materialized_attribute_names,
-                schema_variants: Vec::new(),
+                untyped_renamed_fields: renamed_fields,
+                registered_schemas: Vec::new(),
                 omitted_descendants: BTreeSet::new(),
                 reference_rules: Vec::new(),
             }),
@@ -338,16 +341,6 @@ impl DynamoBundlePolicy {
                     entry.get().id_logic,
                     id_logic,
                     "bundle types sharing label `{label}` used different ID behavior"
-                );
-                assert_eq!(
-                    entry.get().renamed_fields,
-                    renamed_fields,
-                    "bundle types sharing label `{label}` used different field renames"
-                );
-                assert_eq!(
-                    entry.get().materialized_attribute_names,
-                    materialized_attribute_names,
-                    "bundle types sharing a label declared different materialized attributes"
                 );
                 entry.into_mut()
             }
@@ -366,12 +359,33 @@ impl DynamoBundlePolicy {
         })
     }
 
-    pub(crate) fn normalize_bundle_data(
+    pub(crate) fn canonicalize_bundle_data(
         &self,
         bundle: &mut DynamoBundle,
+        destination_parent: Option<&PkSk>,
     ) -> Result<(), ServerError> {
+        let root = bundle.root.clone();
+        let parent_labels = bundle
+            .items
+            .iter()
+            .map(|item| (item.id.clone(), item.id.label.clone()))
+            .collect::<HashMap<_, _>>();
         for item in &mut bundle.items {
-            self.require(&item.id.label)?.normalize_data(&mut item.data);
+            let parent = if item.id == root {
+                destination_parent.map_or(BundleItemParent::None, BundleItemParent::External)
+            } else {
+                let label = item
+                    .parent
+                    .as_ref()
+                    .and_then(|id| parent_labels.get(id))
+                    .ok_or_else(|| DynamoInvalidBundle::new("bundle item parent was missing"))?;
+                BundleItemParent::Bundled(label)
+            };
+            self.require(&item.id.label)?.canonicalize_data(
+                item.nesting,
+                parent,
+                &mut item.data,
+            )?;
         }
         Ok(())
     }
@@ -387,21 +401,53 @@ impl DynamoBundleObjectPolicy {
         &self.reference_rules
     }
 
-    pub(crate) fn normalize_data(&self, data: &mut Value) {
-        if self.id_logic == BundleIdLogic::BatchOptimized {
-            if let Some(members) = data
-                .get_mut(EXPAND_DATA_RESERVED_KEY)
-                .and_then(Value::as_array_mut)
-            {
-                for member in members {
-                    normalize_renamed_fields(member, self.renamed_fields);
-                    remove_materialized_attributes(member, self.materialized_attribute_names);
-                }
-            }
+    pub(crate) fn canonicalize_data(
+        &self,
+        nesting: BundleNesting,
+        parent: BundleItemParent<'_>,
+        data: &mut Value,
+    ) -> Result<(), ServerError> {
+        let (renamed_fields, materialized_attribute_names) = if self.registered_schemas.is_empty() {
+            (self.untyped_renamed_fields, &[][..])
         } else {
-            normalize_renamed_fields(data, self.renamed_fields);
-            remove_materialized_attributes(data, self.materialized_attribute_names);
-        }
+            let schema = self.resolve_registered_schema(nesting, parent)?;
+            (schema.renamed_fields, schema.materialized_attribute_names)
+        };
+        normalize_data(
+            data,
+            self.id_logic,
+            renamed_fields,
+            materialized_attribute_names,
+        );
+        Ok(())
+    }
+
+    pub(crate) fn canonicalize_data_for<O: DynamoObject>(
+        &self,
+        data: &mut Value,
+    ) -> Result<(), ServerError> {
+        let type_name = std::any::type_name::<O>();
+        let Some(schema) = self
+            .registered_schemas
+            .iter()
+            .find(|schema| schema.type_name == type_name)
+        else {
+            if self.registered_schemas.is_empty() {
+                normalize_data(data, self.id_logic, self.untyped_renamed_fields, &[]);
+                return Ok(());
+            }
+            return Err(DynamoInvalidOperation::new(&format!(
+                "bundle root type `{type_name}` was not registered for object label `{}`",
+                self.label
+            )));
+        };
+        normalize_data(
+            data,
+            self.id_logic,
+            schema.renamed_fields,
+            schema.materialized_attribute_names,
+        );
+        Ok(())
     }
 }
 
@@ -506,16 +552,30 @@ impl DynamoBundleObjectPolicy {
     fn register_schema<O: DynamoObject>(&mut self) {
         let type_name = std::any::type_name::<O>();
         if self
-            .schema_variants
+            .registered_schemas
             .iter()
-            .any(|variant| variant.type_name == type_name)
+            .any(|schema| schema.type_name == type_name)
         {
             return;
         }
-        self.schema_variants.push(DynamoBundleSchemaVariant {
+        let topology = DynamoBundleTopology::from_nesting(O::nesting_logic());
+        if let Some(existing) = self
+            .registered_schemas
+            .iter()
+            .find(|schema| schema.topology.overlaps(topology))
+        {
+            panic!(
+                "bundle object types `{}` and `{type_name}` sharing label `{}` have overlapping \
+                 topologies; nesting and parent must uniquely identify a registered type",
+                existing.type_name, self.label
+            );
+        }
+        self.registered_schemas.push(RegisteredObjectSchema {
             type_name,
-            topology: DynamoBundleTopology::from_nesting(O::nesting_logic()),
-            validate_data: Arc::new(validate_item_data::<O>),
+            topology,
+            renamed_fields: O::renamed_fields(),
+            materialized_attribute_names: O::materialized_attribute_names(),
+            validate_data: validate_item_data::<O>,
             materialize: materialize_item_data::<O>,
         });
     }
@@ -525,44 +585,44 @@ impl DynamoBundleObjectPolicy {
         item: &DynamoBundleItem,
         parent: BundleItemParent<'_>,
     ) -> Result<(), ServerError> {
-        if self.schema_variants.is_empty() {
+        if self.registered_schemas.is_empty() {
             return Ok(());
         }
-        self.resolve_schema_variant(item, parent).map(|_| ())
+        let schema = self.resolve_registered_schema(item.nesting, parent)?;
+        (schema.validate_data)(item).map_err(|error| {
+            DynamoInvalidBundle::new(&format!(
+                "item label `{}` data did not match local type `{}`: {error}",
+                item.id.label, schema.type_name
+            ))
+        })
     }
 
-    fn resolve_schema_variant(
+    fn resolve_registered_schema(
         &self,
-        item: &DynamoBundleItem,
+        nesting: BundleNesting,
         parent: BundleItemParent<'_>,
-    ) -> Result<&DynamoBundleSchemaVariant, ServerError> {
-        let mut variants = self
-            .schema_variants
+    ) -> Result<&RegisteredObjectSchema, ServerError> {
+        let mut schemas = self
+            .registered_schemas
             .iter()
-            .filter(|variant| variant.topology.matches(item.nesting, parent))
-            .peekable();
-        if variants.peek().is_none() {
+            .filter(|schema| schema.topology.matches(nesting, parent));
+        let Some(schema) = schemas.next() else {
             return Err(DynamoInvalidBundle::new(&format!(
-                "item label `{}` used {:?} nesting below {}, which does not match any local schema",
-                item.id.label,
-                item.nesting,
+                "item label `{}` used {nesting:?} nesting below {}, which does not match any \
+                 local schema",
+                self.label,
+                parent.description(),
+            )));
+        };
+        if schemas.next().is_some() {
+            return Err(DynamoInvalidBundle::new(&format!(
+                "item label `{}` used {nesting:?} nesting below {}, which ambiguously matched \
+                 multiple local schemas",
+                self.label,
                 parent.description(),
             )));
         }
-
-        let mut errors = Vec::new();
-        for variant in variants {
-            match (variant.validate_data)(item) {
-                Ok(()) => return Ok(variant),
-                Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
-            }
-        }
-
-        Err(DynamoInvalidBundle::new(&format!(
-            "item label `{}` data did not match its local schema: {}",
-            item.id.label,
-            errors.join("; "),
-        )))
+        Ok(schema)
     }
 
     pub(crate) fn materialized_write_plan(
@@ -571,11 +631,14 @@ impl DynamoBundleObjectPolicy {
         parent: BundleItemParent<'_>,
         destination_id: &PkSk,
     ) -> Result<MaterializedWritePlan, ServerError> {
-        if self.materialized_attribute_names.is_empty() {
+        if self.registered_schemas.is_empty() {
             return Ok(MaterializedWritePlan::default());
         }
-        let variant = self.resolve_schema_variant(item, parent)?;
-        (variant.materialize)(destination_id, item)
+        let schema = self.resolve_registered_schema(item.nesting, parent)?;
+        if schema.materialized_attribute_names.is_empty() {
+            return Ok(MaterializedWritePlan::default());
+        }
+        (schema.materialize)(destination_id, item)
     }
 }
 
@@ -611,6 +674,10 @@ impl DynamoBundleTopology {
     fn matches(&self, nesting: BundleNesting, parent: BundleItemParent<'_>) -> bool {
         self.nesting == nesting && self.parent.matches(parent)
     }
+
+    fn overlaps(self, other: Self) -> bool {
+        self.nesting == other.nesting && self.parent.overlaps(other.parent)
+    }
 }
 
 impl DynamoBundleParentRequirement {
@@ -619,6 +686,15 @@ impl DynamoBundleParentRequirement {
             Self::None => matches!(parent, BundleItemParent::None),
             Self::Any => !matches!(parent, BundleItemParent::None),
             Self::Label(expected) => parent.label().is_some_and(|actual| actual == expected),
+        }
+    }
+
+    fn overlaps(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::None, Self::None) => true,
+            (Self::Any, Self::Any | Self::Label(_)) | (Self::Label(_), Self::Any) => true,
+            (Self::Label(left), Self::Label(right)) => left == right,
+            _ => false,
         }
     }
 }
@@ -713,6 +789,28 @@ fn materialize_item_data<O: DynamoObject>(
         )
     })?;
     build_materialized_write_plan::<O>(destination_id, &data)
+}
+
+fn normalize_data(
+    data: &mut Value,
+    id_logic: BundleIdLogic,
+    renamed_fields: &[DynamoFieldRename],
+    materialized_attribute_names: &[&str],
+) {
+    if id_logic == BundleIdLogic::BatchOptimized {
+        if let Some(members) = data
+            .get_mut(EXPAND_DATA_RESERVED_KEY)
+            .and_then(Value::as_array_mut)
+        {
+            for member in members {
+                normalize_renamed_fields(member, renamed_fields);
+                remove_materialized_attributes(member, materialized_attribute_names);
+            }
+        }
+    } else {
+        normalize_renamed_fields(data, renamed_fields);
+        remove_materialized_attributes(data, materialized_attribute_names);
+    }
 }
 
 fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRename]) {

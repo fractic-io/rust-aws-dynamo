@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use crate::{
     errors::{DynamoInvalidOperation, DynamoItemParsingError},
     schema::{DynamoFieldRename, DynamoObject, IdLogic, PkSk},
-    util::DynamoMap,
+    util::{is_reserved_attribute_name, DynamoMap},
 };
 
 // Converting between DynamoMap and DynamoObject.
@@ -33,7 +33,9 @@ pub fn build_dynamo_map_for_new_obj<T: DynamoObject>(
     };
     let (mut dynamo_map, mut skipped_null_keys) =
         build_dynamo_map_internal(data, Some(pk), Some(sk), overrides)?;
-    apply_materialized_attributes::<T>(&mut dynamo_map, &mut skipped_null_keys, &id, data)?;
+    let materialized =
+        build_materialized_write_plan_against::<T>(&id, data, &dynamo_map, &skipped_null_keys)?;
+    materialized.apply_to(&mut dynamo_map, &mut skipped_null_keys);
     Ok(dynamo_map)
 }
 
@@ -53,34 +55,57 @@ pub fn build_dynamo_map_for_existing_obj<T: DynamoObject>(
         IdKeys::None => (None, None),
     };
     let (mut map, mut skipped_null_keys) = build_dynamo_map_internal(object, pk, sk, overrides)?;
-    apply_materialized_attributes::<T>(
-        &mut map,
-        &mut skipped_null_keys,
+    let materialized = build_materialized_write_plan_against::<T>(
         object.id(),
         object.data(),
+        &map,
+        &skipped_null_keys,
     )?;
+    materialized.apply_to(&mut map, &mut skipped_null_keys);
     Ok((map, skipped_null_keys))
 }
 
-/// Computes only the SET and REMOVE portions owned by materialized attributes.
-pub(crate) fn build_materialized_attribute_updates<T: DynamoObject>(
-    id: &PkSk,
+/// Canonical top-level data as persisted, without IDs, automatic metadata, or
+/// materialized attributes.
+pub(crate) fn build_canonical_data_map<T: DynamoObject>(
     data: &T::Data,
 ) -> Result<(DynamoMap, Vec<String>), ServerError> {
-    // Serialize canonical data independently so collisions are still detected
-    // even though the caller only needs materialized updates.
-    let (serialized_data, serialized_nulls) = build_dynamo_map_internal(data, None, None, None)?;
-    let mut set = DynamoMap::new();
-    let mut remove = Vec::new();
-    merge_materialized_attributes::<T>(
-        &serialized_data,
-        &serialized_nulls,
-        &mut set,
-        &mut remove,
-        id,
-        data,
-    )?;
-    Ok((set, remove))
+    build_dynamo_map_internal(data, None, None, None)
+}
+
+/// Persistence changes owned by a [`DynamoObject`]'s materialization logic.
+///
+/// Keeping this independent of a complete Dynamo item allows typed CRUD,
+/// maintenance backfills, and bundle import to share one calculation.
+#[derive(Debug, Default)]
+pub(crate) struct MaterializedWritePlan {
+    pub(crate) set: DynamoMap,
+    pub(crate) remove: Vec<String>,
+}
+
+impl MaterializedWritePlan {
+    pub(crate) fn apply_to(self, set: &mut DynamoMap, remove: &mut Vec<String>) {
+        for (name, value) in self.set {
+            remove.retain(|remove_name| remove_name != &name);
+            set.insert(name, value);
+        }
+        for name in self.remove {
+            set.remove(&name);
+            if !remove.contains(&name) {
+                remove.push(name);
+            }
+        }
+    }
+}
+
+/// Computes materialized changes and checks them against canonical serialized
+/// data. This is the preferred entry point for typed maintenance and bundling.
+pub(crate) fn build_materialized_write_plan<T: DynamoObject>(
+    id: &PkSk,
+    data: &T::Data,
+) -> Result<MaterializedWritePlan, ServerError> {
+    let (serialized_data, serialized_nulls) = build_canonical_data_map::<T>(data)?;
+    build_materialized_write_plan_against::<T>(id, data, &serialized_data, &serialized_nulls)
 }
 
 pub(crate) fn validate_materialized_storage<T: DynamoObject>() -> Result<(), ServerError> {
@@ -99,51 +124,19 @@ pub(crate) fn validate_materialized_storage<T: DynamoObject>() -> Result<(), Ser
     )))
 }
 
-fn apply_materialized_attributes<T: DynamoObject>(
-    map: &mut DynamoMap,
-    skipped_null_keys: &mut Vec<String>,
+fn build_materialized_write_plan_against<T: DynamoObject>(
     id: &PkSk,
     data: &T::Data,
-) -> Result<(), ServerError> {
-    let serialized = map.clone();
-    let serialized_nulls = skipped_null_keys.clone();
-    merge_materialized_attributes::<T>(
-        &serialized,
-        &serialized_nulls,
-        map,
-        skipped_null_keys,
-        id,
-        data,
-    )
-}
-
-fn merge_materialized_attributes<T: DynamoObject>(
     serialized: &DynamoMap,
     serialized_nulls: &[String],
-    set: &mut DynamoMap,
-    remove: &mut Vec<String>,
-    id: &PkSk,
-    data: &T::Data,
-) -> Result<(), ServerError> {
+) -> Result<MaterializedWritePlan, ServerError> {
     let names = T::materialized_attribute_names();
     if names.is_empty() {
-        return Ok(());
+        return Ok(MaterializedWritePlan::default());
     }
 
     validate_materialized_storage::<T>()?;
 
-    let reserved = [
-        "id",
-        "pk",
-        "sk",
-        "created_at",
-        "updated_at",
-        "sort",
-        "ttl",
-        "..",
-        "#!",
-        "##",
-    ];
     let mut declared = HashSet::with_capacity(names.len());
     for &name in names {
         if name.is_empty() {
@@ -151,7 +144,7 @@ fn merge_materialized_attributes<T: DynamoObject>(
                 "materialized attribute names cannot be empty",
             ));
         }
-        if reserved.contains(&name) {
+        if is_reserved_attribute_name(name) {
             return Err(DynamoInvalidOperation::new(&format!(
                 "materialized attribute '{name}' is reserved"
             )));
@@ -173,6 +166,7 @@ fn merge_materialized_attributes<T: DynamoObject>(
     }
 
     let materialized = T::materialized_attributes(id, data)?;
+    let mut plan = MaterializedWritePlan::default();
     let mut produced = HashSet::with_capacity(materialized.entries.len());
     for (name, value) in materialized.entries {
         if !declared.contains(name) {
@@ -187,14 +181,10 @@ fn merge_materialized_attributes<T: DynamoObject>(
         }
         match value {
             Some(value) => {
-                remove.retain(|remove_name| remove_name != name);
-                set.insert(name.to_string(), value);
+                plan.set.insert(name.to_string(), value);
             }
             None => {
-                set.remove(name);
-                if !remove.iter().any(|remove_name| remove_name == name) {
-                    remove.push(name.to_string());
-                }
+                plan.remove.push(name.to_string());
             }
         }
     }
@@ -207,7 +197,7 @@ fn merge_materialized_attributes<T: DynamoObject>(
             "materialization did not produce declared attribute '{missing}'"
         )));
     }
-    Ok(())
+    Ok(plan)
 }
 
 pub(crate) fn build_dynamo_map_internal<T: Serialize>(
@@ -369,7 +359,16 @@ pub(crate) fn dynamo_map_to_serde_value(map: &DynamoMap) -> Result<Value, Server
     ))
 }
 
-pub(crate) fn serde_value_to_attribute_value(
+pub(crate) fn serialize_attribute_value<T: Serialize>(
+    value: T,
+) -> Result<Option<AttributeValue>, ServerError> {
+    let value = serde_json::to_value(value).map_err(|error| {
+        DynamoItemParsingError::with_debug("failed to serialize DynamoDB attribute", &error)
+    })?;
+    serde_value_to_attribute_value(value)
+}
+
+fn serde_value_to_attribute_value(
     value: serde_json::Value,
 ) -> Result<Option<AttributeValue>, ServerError> {
     match value {
@@ -543,6 +542,34 @@ mod tests {
     );
 
     #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
+    pub struct TestInvalidMaterializedData {
+        value: String,
+    }
+
+    dynamo_object!(
+        TestDuplicateMaterialized,
+        TestInvalidMaterializedData,
+        "TESTDUPLICATEMATERIALIZED",
+        IdLogic::UuidV4,
+        NestingLogic::Root,
+        materialized = |data| {
+            "lookup" => data.value.clone(),
+            "lookup" => data.value.clone(),
+        },
+    );
+
+    dynamo_object!(
+        TestReservedMaterialized,
+        TestInvalidMaterializedData,
+        "TESTRESERVEDMATERIALIZED",
+        IdLogic::UuidV4,
+        NestingLogic::Root,
+        materialized = |data| {
+            "pk" => data.value.clone(),
+        },
+    );
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
     pub struct TestUnsupportedMaterializedData {
         value: String,
     }
@@ -616,6 +643,32 @@ mod tests {
             &TestMaterializedCollisionData { email: None },
             "ROOT".to_string(),
             "TESTMATERIALIZEDCOLLISION#1".to_string(),
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_duplicate_materialized_attribute_names_are_rejected() {
+        let result = build_dynamo_map_for_new_obj::<TestDuplicateMaterialized>(
+            &TestInvalidMaterializedData {
+                value: "value".to_string(),
+            },
+            "ROOT".to_string(),
+            "TESTDUPLICATEMATERIALIZED#1".to_string(),
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_reserved_materialized_attribute_names_are_rejected() {
+        let result = build_dynamo_map_for_new_obj::<TestReservedMaterialized>(
+            &TestInvalidMaterializedData {
+                value: "value".to_string(),
+            },
+            "ROOT".to_string(),
+            "TESTRESERVEDMATERIALIZED#1".to_string(),
             None,
         );
         assert!(result.is_err());

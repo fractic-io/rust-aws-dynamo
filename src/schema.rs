@@ -296,14 +296,8 @@ impl MaterializedAttributes {
         name: &'static str,
         value: T,
     ) -> Result<(), fractic_server_error::ServerError> {
-        let value = serde_json::to_value(value).map_err(|error| {
-            crate::errors::DynamoItemParsingError::with_debug(
-                "failed to serialize materialized attribute",
-                &error,
-            )
-        })?;
         self.entries
-            .push((name, parsing::serde_value_to_attribute_value(value)?));
+            .push((name, parsing::serialize_attribute_value(value)?));
         Ok(())
     }
 }

@@ -26,9 +26,9 @@ use crate::{
     schema::{
         identifiers::{generate_id, RawIdPath},
         parsing::{
-            build_dynamo_map_for_existing_obj, build_dynamo_map_for_new_obj,
-            build_dynamo_map_internal, build_materialized_attribute_updates, parse_dynamo_map,
-            validate_materialized_storage, IdKeys,
+            build_canonical_data_map, build_dynamo_map_for_existing_obj,
+            build_dynamo_map_for_new_obj, build_dynamo_map_internal, build_materialized_write_plan,
+            parse_dynamo_map, serialize_attribute_value, validate_materialized_storage, IdKeys,
         },
         pk_sk::id_fields_from_map,
         DynamoObject, IdLogic, PkSk, Timestamp,
@@ -86,6 +86,22 @@ pub const EXPAND_DATA_RESERVED_KEY: &str = "..";
 /// WARNING: Also hardcoded in `collapse_helpers.rs`.
 pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
 pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
+
+pub(crate) fn is_reserved_attribute_name(name: &str) -> bool {
+    [
+        "id",
+        "pk",
+        "sk",
+        AUTO_FIELDS_CREATED_AT,
+        AUTO_FIELDS_UPDATED_AT,
+        AUTO_FIELDS_SORT,
+        AUTO_FIELDS_TTL,
+        EXPAND_DATA_RESERVED_KEY,
+        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        COLLAPSE_DATA_RESERVED_KEY,
+    ]
+    .contains(&name)
+}
 
 use raw_batch_helpers::{MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES};
 
@@ -165,6 +181,16 @@ pub struct BatchDeletePartitionResult {
     pub row_count: usize,
     /// Distinct object labels recognized in the deleted row keys.
     pub object_labels: HashSet<String>,
+}
+
+#[derive(Default)]
+struct AttributeUpdatePlan {
+    set: DynamoMap,
+    remove: Vec<String>,
+    comparisons: HashMap<String, (AttributeValue, CmpOp)>,
+    conditions: Vec<String>,
+    expression_names: HashMap<String, String>,
+    expression_values: HashMap<String, AttributeValue>,
 }
 
 // Impls.
@@ -651,44 +677,67 @@ impl DynamoUtil {
             return Ok(());
         }
 
-        let (set, mut remove) =
-            build_materialized_attribute_updates::<T>(object.id(), object.data())?;
-        add_legacy_field_removals::<T>(&set, &mut remove);
+        let materialized = build_materialized_write_plan::<T>(object.id(), object.data())?;
+        let mut update = AttributeUpdatePlan {
+            set: materialized.set,
+            remove: materialized.remove,
+            conditions: vec![Self::ITEM_EXISTS_CONDITION.to_string()],
+            ..Default::default()
+        };
+        add_legacy_field_removals::<T>(&update.set, &mut update.remove);
 
-        let (source_values, source_nulls) =
-            build_dynamo_map_internal(object.data(), None, None, None)?;
-        let attribute_conditions = source_values
-            .into_iter()
-            .map(|(key, value)| (key, (value, CmpOp::Eq)))
-            .collect();
-        let mut custom_conditions = vec![Self::ITEM_EXISTS_CONDITION.to_string()];
-        let mut expression_attribute_names = HashMap::new();
-        let mut expression_attribute_values = HashMap::new();
-        for (idx, field) in source_nulls.into_iter().enumerate() {
-            let null_type_placeholder = format!(":mr{}n", idx + 1);
-            expression_attribute_values.insert(
-                null_type_placeholder.clone(),
-                AttributeValue::S("NULL".to_string()),
+        if let Some(updated_at) = object.updated_at() {
+            let string_value = serialize_attribute_value(updated_at)?.ok_or_else(|| {
+                CriticalError::new("updated_at serialized to an absent DynamoDB attribute")
+            })?;
+            let map_value = AttributeValue::M(HashMap::from([
+                (
+                    "seconds".to_string(),
+                    AttributeValue::N(updated_at.seconds.to_string()),
+                ),
+                (
+                    "nanos".to_string(),
+                    AttributeValue::N(updated_at.nanos.to_string()),
+                ),
+            ]));
+            update.expression_names.insert(
+                "#materialized_updated_at".to_string(),
+                AUTO_FIELDS_UPDATED_AT.to_string(),
             );
-            custom_conditions.push(rename_aware_presence_condition::<T>(
-                &field,
-                idx,
-                false,
-                &null_type_placeholder,
-                &mut expression_attribute_names,
-            ));
+            update
+                .expression_values
+                .insert(":materialized_updated_at_string".to_string(), string_value);
+            update
+                .expression_values
+                .insert(":materialized_updated_at_map".to_string(), map_value);
+            update.conditions.push(
+                "(#materialized_updated_at = :materialized_updated_at_string OR \
+                 #materialized_updated_at = :materialized_updated_at_map)"
+                    .to_string(),
+            );
+        } else {
+            let (source_values, source_nulls) = build_canonical_data_map::<T>(object.data())?;
+            update.comparisons = source_values
+                .into_iter()
+                .map(|(key, value)| (key, (value, CmpOp::Eq)))
+                .collect();
+            for (idx, field) in source_nulls.into_iter().enumerate() {
+                let null_type_placeholder = format!(":mr{}n", idx + 1);
+                update.expression_values.insert(
+                    null_type_placeholder.clone(),
+                    AttributeValue::S("NULL".to_string()),
+                );
+                update.conditions.push(rename_aware_presence_condition::<T>(
+                    &field,
+                    idx,
+                    false,
+                    &null_type_placeholder,
+                    &mut update.expression_names,
+                ));
+            }
         }
 
-        self.update_attribute_map::<T>(
-            object,
-            set,
-            remove,
-            attribute_conditions,
-            custom_conditions,
-            expression_attribute_names,
-            expression_attribute_values,
-        )
-        .await
+        self.update_attribute_map::<T>(object, update).await
     }
 
     /// Updates an object in an all-or-nothing transaction. If the object has
@@ -711,9 +760,9 @@ impl DynamoUtil {
             return Err(DynamoInvalidExtIdUsage::new());
         }
         let object_before = self.get_item::<T>(id.clone()).await?;
-        let (mut map_before, existance_condition) = match object_before {
+        let (map_before, existance_condition) = match object_before {
             Some(ref o) => (
-                build_dynamo_map_for_existing_obj::<T>(o, IdKeys::None, None)?.0,
+                build_canonical_data_map::<T>(o.data())?.0,
                 Self::ITEM_EXISTS_CONDITION.to_string(),
             ),
             None => (
@@ -721,8 +770,6 @@ impl DynamoUtil {
                 Self::ITEM_DOES_NOT_EXIST_CONDITION.to_string(),
             ),
         };
-        let materialized_names = T::materialized_attribute_names();
-        map_before.retain(|key, _| !materialized_names.contains(&key.as_str()));
         let object_after = T::new(id, op(object_before.map(DynamoObject::into_data))?);
         self.update_item_internal::<T>(
             &object_after,
@@ -859,60 +906,64 @@ impl DynamoUtil {
 
         self.update_attribute_map::<T>(
             object,
-            map,
-            null_keys,
-            attribute_conditions,
-            custom_conditions,
-            expression_attribute_names,
-            expression_attribute_values,
+            AttributeUpdatePlan {
+                set: map,
+                remove: null_keys,
+                comparisons: attribute_conditions,
+                conditions: custom_conditions,
+                expression_names: expression_attribute_names,
+                expression_values: expression_attribute_values,
+            },
         )
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn update_attribute_map<T: DynamoObject>(
         &self,
         object: &T,
-        map: DynamoMap,
-        null_keys: Vec<String>,
-        attribute_conditions: HashMap<String, (AttributeValue, CmpOp)>,
-        custom_conditions: Vec<String>,
-        mut expression_attribute_names: HashMap<String, String>,
-        mut expression_attribute_values: HashMap<String, AttributeValue>,
+        update: AttributeUpdatePlan,
     ) -> Result<(), ServerError> {
+        let AttributeUpdatePlan {
+            set,
+            remove,
+            comparisons,
+            conditions,
+            mut expression_names,
+            mut expression_values,
+        } = update;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
         };
 
         // Build update expression.
-        let set_expression = if map.is_empty() {
+        let set_expression = if set.is_empty() {
             String::new()
         } else {
             "SET ".to_string()
-                + &map
+                + &set
                     .into_iter()
                     .enumerate()
                     .map(|(idx, (key, value))| {
                         let key_placeholder = format!("#k{}", idx + 1);
                         let value_placeholder = format!(":v{}", idx + 1);
-                        expression_attribute_names.insert(key_placeholder.clone(), key);
-                        expression_attribute_values.insert(value_placeholder.clone(), value);
+                        expression_names.insert(key_placeholder.clone(), key);
+                        expression_values.insert(value_placeholder.clone(), value);
                         format!("{key_placeholder} = {value_placeholder}")
                     })
                     .collect::<Vec<String>>()
                     .join(", ")
         };
-        let remove_expression = if null_keys.is_empty() {
+        let remove_expression = if remove.is_empty() {
             String::new()
         } else {
             "REMOVE ".to_string()
-                + &null_keys
+                + &remove
                     .into_iter()
                     .enumerate()
                     .map(|(idx, key)| {
                         let key_placeholder = format!("#rmk{}", idx + 1);
-                        expression_attribute_names.insert(key_placeholder.clone(), key);
+                        expression_names.insert(key_placeholder.clone(), key);
                         key_placeholder
                     })
                     .collect::<Vec<String>>()
@@ -921,12 +972,12 @@ impl DynamoUtil {
         let update_expression = format!("{set_expression} {remove_expression}");
 
         // Build custom conditions & attribute equality conditions.
-        let condition_expression = custom_conditions
+        let condition_expression = conditions
             .into_iter()
             .chain(
                 // Append comparison conditions, using keyed placeholders to avoid
                 // ambiguity.
-                attribute_conditions
+                comparisons
                     .into_iter()
                     .enumerate()
                     .map(|(idx, (key, (value, op)))| {
@@ -935,8 +986,8 @@ impl DynamoUtil {
                             key,
                             value,
                             op,
-                            &mut expression_attribute_names,
-                            &mut expression_attribute_values,
+                            &mut expression_names,
+                            &mut expression_values,
                         )
                     }),
             )
@@ -948,8 +999,8 @@ impl DynamoUtil {
                 self.table.clone(),
                 key,
                 update_expression,
-                expression_attribute_values,
-                expression_attribute_names,
+                expression_values,
+                expression_names,
                 Some(condition_expression),
             )
             .await

@@ -1344,6 +1344,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_refresh_materialized_attributes_prefers_updated_at_condition() {
+        let updated_at = Timestamp {
+            seconds: 1_725_000_000,
+            nanos: 123_456_789,
+        };
+        let expected_updated_at = updated_at.clone();
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(move |_, _, _, values, names, condition| {
+                names
+                    .get("#materialized_updated_at")
+                    .is_some_and(|name| name == AUTO_FIELDS_UPDATED_AT)
+                    && !names
+                        .values()
+                        .any(|name| matches!(name.as_str(), "email" | "active" | "note"))
+                    && values
+                        .get(":materialized_updated_at_string")
+                        .is_some_and(|value| {
+                            value.as_s().is_ok_and(|value| {
+                                value
+                                    == &format!(
+                                        "{:011}.{:09}",
+                                        expected_updated_at.seconds, expected_updated_at.nanos
+                                    )
+                            })
+                        })
+                    && values
+                        .get(":materialized_updated_at_map")
+                        .is_some_and(|value| {
+                            value.as_m().is_ok_and(|value| {
+                                value.get("seconds").is_some_and(|seconds| {
+                                    seconds.as_n().is_ok_and(|seconds| {
+                                        seconds == &expected_updated_at.seconds.to_string()
+                                    })
+                                }) && value.get("nanos").is_some_and(|nanos| {
+                                    nanos.as_n().is_ok_and(|nanos| {
+                                        nanos == &expected_updated_at.nanos.to_string()
+                                    })
+                                })
+                            })
+                        })
+                    && condition.as_ref().is_some_and(|condition| {
+                        condition.contains("attribute_exists(pk)")
+                            && condition.contains(":materialized_updated_at_string")
+                            && condition.contains(":materialized_updated_at_map")
+                    })
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+        let util = build_util(backend).await;
+        let object = MaterializedUpdateObject {
+            id: PkSk {
+                pk: "ROOT".to_string(),
+                sk: "MATERIALIZEDUPDATE#1".to_string(),
+            },
+            data: MaterializedUpdateObjectData {
+                email: "User@Example.COM".to_string(),
+                active: false,
+                note: None,
+            },
+            auto_fields: AutoFields {
+                updated_at: Some(updated_at),
+                ..Default::default()
+            },
+        };
+
+        util.refresh_materialized_attributes(&object).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_update_item_removes_renamed_field_when_setting_canonical_field() {
         let mut backend = MockDynamoBackend::new();
         backend

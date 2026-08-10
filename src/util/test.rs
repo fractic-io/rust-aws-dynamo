@@ -1355,13 +1355,13 @@ mod tests {
             .expect_update_item()
             .withf(move |_, _, _, values, names, condition| {
                 names
-                    .get("#materialized_updated_at")
+                    .get("#unchanged_updated_at")
                     .is_some_and(|name| name == AUTO_FIELDS_UPDATED_AT)
                     && !names
                         .values()
                         .any(|name| matches!(name.as_str(), "email" | "active" | "note"))
                     && values
-                        .get(":materialized_updated_at_string")
+                        .get(":unchanged_updated_at_string")
                         .is_some_and(|value| {
                             value.as_s().is_ok_and(|value| {
                                 value
@@ -1372,7 +1372,7 @@ mod tests {
                             })
                         })
                     && values
-                        .get(":materialized_updated_at_map")
+                        .get(":unchanged_updated_at_map")
                         .is_some_and(|value| {
                             value.as_m().is_ok_and(|value| {
                                 value.get("seconds").is_some_and(|seconds| {
@@ -1388,8 +1388,8 @@ mod tests {
                         })
                     && condition.as_ref().is_some_and(|condition| {
                         condition.contains("attribute_exists(pk)")
-                            && condition.contains(":materialized_updated_at_string")
-                            && condition.contains(":materialized_updated_at_map")
+                            && condition.contains(":unchanged_updated_at_string")
+                            && condition.contains(":unchanged_updated_at_map")
                     })
             })
             .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
@@ -1411,6 +1411,135 @@ mod tests {
         };
 
         util.refresh_materialized_attributes(&object).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_unchanged_since_captures_updated_at_before_mutation() {
+        let updated_at = Timestamp {
+            seconds: 1_725_000_000,
+            nanos: 123_456_789,
+        };
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, _, _, values, names, condition| {
+                names.get("#unchanged_updated_at") == Some(&AUTO_FIELDS_UPDATED_AT.to_string())
+                    && !names
+                        .keys()
+                        .any(|placeholder| placeholder.starts_with("#c"))
+                    && values
+                        .values()
+                        .any(|value| value.as_s().is_ok_and(|value| value == "new_data"))
+                    && values
+                        .get(":unchanged_updated_at_string")
+                        .is_some_and(|value| {
+                            value
+                                .as_s()
+                                .is_ok_and(|value| value == "01725000000.123456789")
+                        })
+                    && condition.as_ref().is_some_and(|condition| {
+                        condition.contains("attribute_exists(pk)")
+                            && condition.contains(":unchanged_updated_at_string")
+                            && condition.contains(":unchanged_updated_at_map")
+                    })
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+        let util = build_util(backend).await;
+        let mut object = TestDynamoObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "TEST#321".to_string(),
+            },
+            data: TestDynamoObjectData {
+                val_non_null: "old_data".to_string(),
+                val_nullable: None,
+            },
+            auto_fields: AutoFields {
+                updated_at: Some(updated_at),
+                ..Default::default()
+            },
+        };
+
+        let unchanged = UpdateCondition::unchanged_since(&object);
+        object.data.val_non_null = "new_data".to_string();
+
+        util.update_item_with_conditions(&object, vec![unchanged])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_unchanged_since_captures_full_fallback_before_mutation() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, _, _, values, names, condition| {
+                let old_value_matches = names.iter().any(|(placeholder, name)| {
+                    if !placeholder.starts_with("#c") || name != "val_non_null" {
+                        return false;
+                    }
+                    values
+                        .get(&placeholder.replacen("#c", ":cv", 1))
+                        .is_some_and(|value| value.as_s().is_ok_and(|value| value == "old_data"))
+                });
+                old_value_matches
+                    && names.values().any(|name| name == "val_nullable")
+                    && values
+                        .values()
+                        .any(|value| value.as_s().is_ok_and(|value| value == "new_data"))
+                    && condition.as_ref().is_some_and(|condition| {
+                        condition.contains("attribute_exists(pk)")
+                            && condition.contains("attribute_not_exists")
+                            && condition.contains(" = :cv")
+                    })
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+        let util = build_util(backend).await;
+        let mut object = TestDynamoObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "TEST#321".to_string(),
+            },
+            data: TestDynamoObjectData {
+                val_non_null: "old_data".to_string(),
+                val_nullable: None,
+            },
+            auto_fields: AutoFields::default(),
+        };
+
+        let unchanged = UpdateCondition::unchanged_since(&object);
+        object.data.val_non_null = "new_data".to_string();
+        object.data.val_nullable = Some("new_nullable".to_string());
+
+        util.update_item_with_conditions(&object, vec![unchanged])
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_multiple_unchanged_since_conditions_are_rejected() {
+        let backend = MockDynamoBackend::new();
+        let util = build_util(backend).await;
+        let object = TestDynamoObject {
+            id: PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "TEST#321".to_string(),
+            },
+            data: TestDynamoObjectData::default(),
+            auto_fields: AutoFields::default(),
+        };
+
+        let result = util
+            .update_item_with_conditions(
+                &object,
+                vec![
+                    UpdateCondition::unchanged_since(&object),
+                    UpdateCondition::unchanged_since(&object),
+                ],
+            )
+            .await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -1785,8 +1914,8 @@ mod tests {
             .returning(|_, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
-                        // ID & auto fields should /not/ be included in the
-                        // condition expression of the transaction update:
+                        // ID and unrelated auto fields should not be included
+                        // in the fallback condition expression:
                         "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
                         "sk".to_string() => AttributeValue::S("TEST#321".to_string()),
                         "sort".to_string() => AttributeValue::N("0.75".to_string()),
@@ -1820,7 +1949,13 @@ mod tests {
                         &"val_nullable".to_string(),
                     ]
                     && keys.get("#rmk1").is_none()
-                    && *condition == Some("attribute_exists(pk) AND #c1 = :cv1".to_string())
+                    && condition.as_ref().is_some_and(|condition| {
+                        condition.contains("attribute_exists(pk)")
+                            && condition.contains("attribute_not_exists(#u1p1)")
+                            && condition.contains("#c1 = :cv1")
+                    })
+                    && keys.get("#u1p1").unwrap() == "val_nullable"
+                    && values.get(":u1n").unwrap().as_s().unwrap() == "NULL"
                     && keys.get("#c1").unwrap() == "val_non_null"
                     && values.get(":cv1").unwrap().as_s().unwrap() == "old_data"
             })

@@ -219,14 +219,9 @@ pub trait DynamoObject:
     fn renamed_fields() -> &'static [DynamoFieldRename] {
         &[]
     }
-    /// Names of top-level attributes derived from this object's canonical data
-    /// and persisted alongside it.
     fn materialized_attribute_names() -> &'static [&'static str] {
         &[]
     }
-    /// Computes the persisted materialized attributes for this object.
-    ///
-    /// Implementations must be deterministic functions of `id` and `data`.
     fn materialized_attributes(_id: &PkSk, _data: &Self::Data) -> MaterializedAttributesResult {
         Ok(MaterializedAttributes::default())
     }

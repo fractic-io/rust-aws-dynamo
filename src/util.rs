@@ -103,6 +103,15 @@ pub enum TtlConfig {
     CustomDate(DateTime<Utc>),
 }
 
+/// Summary of physical rows removed by a partition delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchDeletePartitionResult {
+    /// Number of physical rows found in the partition.
+    pub physical_item_count: usize,
+    /// Distinct object labels recognized in the deleted row keys.
+    pub object_labels: HashSet<String>,
+}
+
 #[derive(Debug)]
 pub struct CreateToken<T: DynamoObject> {
     // NOTE: It's important that this struct does not implement Clone, provides
@@ -1123,11 +1132,10 @@ impl DynamoUtil {
     ///
     /// This bypasses logical item expansion and collapse so batch-optimized
     /// rows and all rows backing partitioned items are deleted directly.
-    /// Returns the number of physical rows found in the partition.
     pub async fn raw_batch_delete_partition(
         &self,
         partition_key: String,
-    ) -> Result<usize, ServerError> {
+    ) -> Result<BatchDeletePartitionResult, ServerError> {
         let response = self
             .backend
             .query(
@@ -1146,9 +1154,20 @@ impl DynamoUtil {
             .flat_map(|page| page.items.unwrap_or_default())
             .map(|item| PkSk::from_map(&item))
             .collect::<Result<Vec<_>, _>>()?;
-        let count = keys.len();
+        let mut object_labels = HashSet::new();
+        for key in &keys {
+            if let Ok(label) = key.object_type() {
+                if !object_labels.contains(label) {
+                    object_labels.insert(label.to_owned());
+                }
+            }
+        }
+        let result = BatchDeletePartitionResult {
+            physical_item_count: keys.len(),
+            object_labels,
+        };
         self.raw_batch_delete_ids(keys).await?;
-        Ok(count)
+        Ok(result)
     }
 
     /// Performs no checks and directly writes the given DynamoMaps to the

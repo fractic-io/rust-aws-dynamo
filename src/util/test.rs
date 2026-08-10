@@ -31,7 +31,7 @@ mod tests {
     use mockall::predicate::*;
     use serde::{Deserialize, Serialize};
     use std::borrow::Cow;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -2645,7 +2645,15 @@ mod tests {
             .raw_batch_delete_partition("PARENT#1".to_string())
             .await
             .unwrap();
-        assert_eq!(deleted, 4);
+        assert_eq!(deleted.physical_item_count, 4);
+        assert_eq!(
+            deleted.object_labels,
+            HashSet::from([
+                "ORDINARY".to_string(),
+                "BATCH".to_string(),
+                "EXT".to_string()
+            ])
+        );
     }
 
     #[tokio::test]
@@ -2661,7 +2669,8 @@ mod tests {
             .raw_batch_delete_partition("PARENT#1".to_string())
             .await
             .unwrap();
-        assert_eq!(deleted, 0);
+        assert_eq!(deleted.physical_item_count, 0);
+        assert!(deleted.object_labels.is_empty());
     }
 
     #[tokio::test]

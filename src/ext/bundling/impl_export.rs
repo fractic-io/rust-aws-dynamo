@@ -10,7 +10,8 @@ use crate::{
     errors::{DynamoCalloutError, DynamoInvalidBundle, DynamoNotFound},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        identifiers::RawIdPath, parsing::dynamo_map_to_serde_value, pk_sk::id_fields_from_map, PkSk,
+        attribute_value::dynamo_map_to_serde_value, identifiers::RawIdPath,
+        pk_sk::id_fields_from_map, PkSk,
     },
     util::{
         collapse_helpers::{collapse_partitioned_items, ext_base_id},

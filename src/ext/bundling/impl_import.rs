@@ -9,8 +9,8 @@ use crate::{
     errors::{DynamoInvalidBundle, DynamoInvalidOperation},
     ext::crud::DynamoCrudAlgorithms,
     schema::{
-        identifiers::validate_parent_relation, parsing::build_dynamo_map_internal, DynamoObject,
-        PkSk, Timestamp,
+        identifiers::validate_parent_relation, persistence::build_dynamo_map_internal,
+        DynamoObject, PkSk, Timestamp,
     },
     util::{
         calculate_sort_values,

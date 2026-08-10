@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashSet, sync::Arc};
 
 use aws_sdk_dynamodb::{
     operation::{
@@ -25,10 +22,11 @@ use crate::{
     },
     schema::{
         identifiers::{generate_id, RawIdPath},
-        parsing::{
+        materialization::validate_materialized_storage,
+        parsing::parse_dynamo_map,
+        persistence::{
             build_canonical_data_map, build_dynamo_map_for_existing_obj,
-            build_dynamo_map_for_new_obj, build_materialized_write_plan, parse_dynamo_map,
-            serialize_attribute_value, validate_materialized_storage, IdKeys,
+            build_dynamo_map_for_new_obj, build_materialized_write_plan, IdKeys,
         },
         pk_sk::id_fields_from_map,
         DynamoObject, IdLogic, PkSk, Timestamp,
@@ -40,11 +38,8 @@ use crate::{
         },
         expand_helpers::{build_expandable_batch_maps, expand_batched_items},
         id_relations::{child_query_prefix, validate_object_id, validate_parent_for},
-        rename_safety_helpers::{
-            add_legacy_field_removals, rename_aware_comparison_condition,
-            rename_aware_presence_condition,
-        },
-        update_helpers::CmpOp,
+        rename_safety_helpers::add_legacy_field_removals,
+        update_helpers::{AttributeUpdatePlan, CmpOp},
     },
     DynamoCtxView,
 };
@@ -67,41 +62,10 @@ mod update_helpers;
 // Constants.
 // ----------------------------------------------------------------------------
 
-pub type DynamoMap = HashMap<String, AttributeValue>;
-pub const AUTO_FIELDS_CREATED_AT: &str = "created_at";
-pub const AUTO_FIELDS_UPDATED_AT: &str = "updated_at";
-pub const AUTO_FIELDS_SORT: &str = "sort";
-pub const AUTO_FIELDS_TTL: &str = "ttl";
-
-/// In case of batch items, the '..' key is used to store the batch items array,
-/// which should be expanded before returning to the caller.
-///
-/// WARNING: Also hardcoded in `expand_helpers.rs`.
-pub const EXPAND_DATA_RESERVED_KEY: &str = "..";
-
-/// In case of partition items, the '##' key is used to store the object
-/// partition string, which should be collapsed with other partitions before
-/// returning to the caller.
-///
-/// WARNING: Also hardcoded in `collapse_helpers.rs`.
-pub const COLLAPSE_PLACEHOLDER_RESERVED_KEY: &str = "#!";
-pub const COLLAPSE_DATA_RESERVED_KEY: &str = "##";
-
-pub(crate) fn is_reserved_attribute_name(name: &str) -> bool {
-    [
-        "id",
-        "pk",
-        "sk",
-        AUTO_FIELDS_CREATED_AT,
-        AUTO_FIELDS_UPDATED_AT,
-        AUTO_FIELDS_SORT,
-        AUTO_FIELDS_TTL,
-        EXPAND_DATA_RESERVED_KEY,
-        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
-        COLLAPSE_DATA_RESERVED_KEY,
-    ]
-    .contains(&name)
-}
+pub use crate::schema::{
+    DynamoMap, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT,
+    COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
+};
 
 use raw_batch_helpers::{MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES};
 
@@ -193,18 +157,6 @@ pub struct BatchDeletePartitionResult {
     pub object_labels: HashSet<String>,
 }
 
-#[derive(Default)]
-struct AttributeUpdatePlan {
-    set: DynamoMap,
-    remove: Vec<String>,
-    comparisons: HashMap<String, (AttributeValue, CmpOp)>,
-    conditions: Vec<String>,
-    expression_names: HashMap<String, String>,
-    expression_values: HashMap<String, AttributeValue>,
-    next_presence_index: usize,
-    has_unchanged_condition: bool,
-}
-
 // Impls.
 // ----------------------------------------------------------------------------
 
@@ -256,85 +208,6 @@ impl<T: DynamoObject> Default for CreateOptions<T> {
             ttl: None,
             token: None,
         }
-    }
-}
-
-impl AttributeUpdatePlan {
-    fn with_condition(condition: impl Into<String>) -> Self {
-        Self {
-            conditions: vec![condition.into()],
-            ..Default::default()
-        }
-    }
-
-    fn add_presence_condition<T: DynamoObject>(&mut self, field: &str, expect_some: bool) {
-        let idx = self.next_presence_index;
-        self.next_presence_index += 1;
-        let null_type_placeholder = format!(":u{}n", idx + 1);
-        self.expression_values.insert(
-            null_type_placeholder.clone(),
-            AttributeValue::S("NULL".to_string()),
-        );
-        self.conditions.push(rename_aware_presence_condition::<T>(
-            field,
-            idx,
-            expect_some,
-            &null_type_placeholder,
-            &mut self.expression_names,
-        ));
-    }
-
-    fn add_unchanged_condition<T: DynamoObject>(
-        &mut self,
-        updated_at: Option<&Timestamp>,
-        fallback_data: &T::Data,
-    ) -> Result<(), ServerError> {
-        if self.has_unchanged_condition {
-            return Err(DynamoInvalidOperation::new(
-                "only one unchanged-since condition may be used per update",
-            ));
-        }
-        self.has_unchanged_condition = true;
-
-        if let Some(updated_at) = updated_at {
-            let string_value = serialize_attribute_value(updated_at)?.ok_or_else(|| {
-                CriticalError::new("updated_at serialized to an absent DynamoDB attribute")
-            })?;
-            let map_value = AttributeValue::M(HashMap::from([
-                (
-                    "seconds".to_string(),
-                    AttributeValue::N(updated_at.seconds.to_string()),
-                ),
-                (
-                    "nanos".to_string(),
-                    AttributeValue::N(updated_at.nanos.to_string()),
-                ),
-            ]));
-            self.expression_names.insert(
-                "#unchanged_updated_at".to_string(),
-                AUTO_FIELDS_UPDATED_AT.to_string(),
-            );
-            self.expression_values
-                .insert(":unchanged_updated_at_string".to_string(), string_value);
-            self.expression_values
-                .insert(":unchanged_updated_at_map".to_string(), map_value);
-            self.conditions.push(
-                "(#unchanged_updated_at = :unchanged_updated_at_string OR \
-                 #unchanged_updated_at = :unchanged_updated_at_map)"
-                    .to_string(),
-            );
-        } else {
-            let (source_values, source_nulls) = build_canonical_data_map::<T>(fallback_data)?;
-            self.comparisons.extend(
-                source_values
-                    .into_iter()
-                    .map(|(key, value)| (key, (value, CmpOp::Eq))),
-            );
-            for field in source_nulls {
-                self.add_presence_condition::<T>(&field, false);
-            }
-        }
-        Ok(())
     }
 }
 
@@ -919,86 +792,20 @@ impl DynamoUtil {
         object: &T,
         update: AttributeUpdatePlan,
     ) -> Result<(), ServerError> {
-        let AttributeUpdatePlan {
-            set,
-            remove,
-            comparisons,
-            conditions,
-            mut expression_names,
-            mut expression_values,
-            ..
-        } = update;
         let key = collection! {
             "pk".to_string() => AttributeValue::S(object.pk().to_string()),
             "sk".to_string() => AttributeValue::S(object.sk().to_string()),
         };
-
-        // Build update expression.
-        let set_expression = if set.is_empty() {
-            String::new()
-        } else {
-            "SET ".to_string()
-                + &set
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, (key, value))| {
-                        let key_placeholder = format!("#k{}", idx + 1);
-                        let value_placeholder = format!(":v{}", idx + 1);
-                        expression_names.insert(key_placeholder.clone(), key);
-                        expression_values.insert(value_placeholder.clone(), value);
-                        format!("{key_placeholder} = {value_placeholder}")
-                    })
-                    .collect::<Vec<String>>()
-                    .join(", ")
-        };
-        let remove_expression = if remove.is_empty() {
-            String::new()
-        } else {
-            "REMOVE ".to_string()
-                + &remove
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, key)| {
-                        let key_placeholder = format!("#rmk{}", idx + 1);
-                        expression_names.insert(key_placeholder.clone(), key);
-                        key_placeholder
-                    })
-                    .collect::<Vec<String>>()
-                    .join(", ")
-        };
-        let update_expression = format!("{set_expression} {remove_expression}");
-
-        // Build custom conditions & attribute equality conditions.
-        let condition_expression = conditions
-            .into_iter()
-            .chain(
-                // Append comparison conditions, using keyed placeholders to avoid
-                // ambiguity.
-                comparisons
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, (key, (value, op)))| {
-                        rename_aware_comparison_condition::<T>(
-                            idx,
-                            key,
-                            value,
-                            op,
-                            &mut expression_names,
-                            &mut expression_values,
-                        )
-                    }),
-            )
-            .collect::<Vec<String>>()
-            .join(" AND ");
+        let expression = update.into_expression::<T>();
 
         self.backend
             .update_item(
                 self.table.clone(),
                 key,
-                update_expression,
-                expression_values,
-                expression_names,
-                Some(condition_expression),
+                expression.update,
+                expression.values,
+                expression.names,
+                Some(expression.condition),
             )
             .await
             .map_err(|e| match e.into_service_error() {

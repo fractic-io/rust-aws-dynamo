@@ -3,7 +3,7 @@ use serde::Serialize;
 
 use crate::{
     schema::{
-        identifiers::place_terminal_segment, parsing::build_dynamo_map_internal, DynamoObject,
+        identifiers::place_terminal_segment, persistence::build_dynamo_map_internal, DynamoObject,
         PkSk, Timestamp,
     },
     util::{

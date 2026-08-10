@@ -3,13 +3,24 @@ use std::{borrow::Cow, collections::HashMap};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub mod add_ons;
+mod attribute_names;
+pub(crate) mod attribute_value;
 pub mod coordinate;
 pub mod display;
 pub mod foreign_ref;
 pub(crate) mod identifiers;
+pub(crate) mod materialization;
 pub mod parsing;
+pub(crate) mod persistence;
 pub mod pk_sk;
 pub mod timestamp;
+
+pub use attribute_names::{
+    AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, AUTO_FIELDS_UPDATED_AT,
+    COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
+};
+pub use attribute_value::DynamoMap;
+pub use materialization::{MaterializedAttributes, MaterializedAttributesResult};
 
 type IdKeyFn<T> = dyn for<'a> Fn(&'a T) -> Cow<'a, str>;
 
@@ -269,36 +280,6 @@ pub struct DynamoFieldRename {
 impl DynamoFieldRename {
     pub fn is_noop(&self) -> bool {
         self.from.is_empty() || self.to.is_empty() || self.from == self.to
-    }
-}
-
-/// A set of top-level attributes computed from a [`DynamoObject`]'s ID and
-/// canonical data and persisted with the object.
-///
-/// This type is normally constructed by `dynamo_object!`'s `materialized`
-/// option rather than directly.
-#[derive(Debug, Default)]
-pub struct MaterializedAttributes {
-    pub(crate) entries: Vec<(
-        &'static str,
-        Option<aws_sdk_dynamodb::types::AttributeValue>,
-    )>,
-}
-
-#[doc(hidden)]
-pub type MaterializedAttributesResult =
-    Result<MaterializedAttributes, fractic_server_error::ServerError>;
-
-impl MaterializedAttributes {
-    #[doc(hidden)]
-    pub fn insert<T: Serialize>(
-        &mut self,
-        name: &'static str,
-        value: T,
-    ) -> Result<(), fractic_server_error::ServerError> {
-        self.entries
-            .push((name, parsing::serialize_attribute_value(value)?));
-        Ok(())
     }
 }
 

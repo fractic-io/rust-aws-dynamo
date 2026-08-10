@@ -56,6 +56,26 @@ crate::dynamo_object!(
 );
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct TestMaterializedRootData {
+    pub name: String,
+    pub target: Option<PkSk>,
+    pub enabled: bool,
+}
+crate::dynamo_object!(
+    TestMaterializedRoot,
+    TestMaterializedRootData,
+    "MATROOT",
+    IdLogic::UuidV4,
+    NestingLogic::Root,
+    materialized = |id, data| {
+        "name_upper" => data.name.to_uppercase(),
+        "destination_key" => format!("{}|{}", id.pk, id.sk),
+        "target_copy" => data.target.as_ref().map(ToString::to_string),
+        "enabled_marker" => data.enabled.then_some("enabled"),
+    }
+);
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TestOtherRootData {}
 crate::dynamo_object!(
     TestOtherRoot,
@@ -141,14 +161,20 @@ crate::dynamo_object!(
     TestStrictChildData,
     "SHAREDCHILD",
     IdLogic::UuidV4,
-    NestingLogic::TopLevelChildOf("ROOTOBJ")
+    NestingLogic::TopLevelChildOf("ROOTOBJ"),
+    materialized = |data| {
+        "variant_marker" => format!("root:{}", data.required_name),
+    }
 );
 crate::dynamo_object!(
     TestSharedChildOfOtherRoot,
     TestStrictChildData,
     "SHAREDCHILD",
     IdLogic::UuidV4,
-    NestingLogic::TopLevelChildOf("OTHERROOT")
+    NestingLogic::TopLevelChildOf("OTHERROOT"),
+    materialized = |data| {
+        "variant_marker" => format!("other:{}", data.required_name),
+    }
 );
 
 struct TestAlgorithms;
@@ -202,6 +228,22 @@ impl DynamoCrudAlgorithms for RequiredReferenceAlgorithms {
             .include::<TestRoot>()
             .bundled_pksk::<TestOrdered>("required_target")
             .omit_descendants::<TestOrdered>();
+        bundles.include::<TestOrdered>();
+    }
+}
+
+struct MaterializedAlgorithms;
+
+#[async_trait]
+impl DynamoCrudAlgorithms for MaterializedAlgorithms {
+    async fn recursive_delete(&self, _id: PkSk) -> Result<(), ServerError> {
+        Ok(())
+    }
+
+    fn bundle_policy(&self, bundles: &mut DynamoBundlePolicy) {
+        bundles
+            .include::<TestMaterializedRoot>()
+            .bundled_pksk::<TestOrdered>("target");
         bundles.include::<TestOrdered>();
     }
 }
@@ -410,6 +452,162 @@ fn util(backend: MockDynamoBackend) -> DynamoUtil {
         backend: Arc::new(backend),
         table: "table".into(),
     }
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn export_omits_materialized_attributes() {
+    let root_sk = "MATROOT#source";
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_query()
+        .times(2)
+        .returning(move |_, _, _, values, _| {
+            let pk = values.get(":pk").unwrap().as_s().unwrap();
+            let rows = if pk == "ROOT" {
+                vec![HashMap::from([
+                    ("pk".into(), AttributeValue::S("ROOT".into())),
+                    ("sk".into(), AttributeValue::S(root_sk.into())),
+                    ("name".into(), AttributeValue::S("portable".into())),
+                    ("enabled".into(), AttributeValue::Bool(false)),
+                    ("name_upper".into(), AttributeValue::S("STALE".into())),
+                    (
+                        "destination_key".into(),
+                        AttributeValue::S("stale-destination".into()),
+                    ),
+                    (
+                        "target_copy".into(),
+                        AttributeValue::S("stale-target".into()),
+                    ),
+                ])]
+            } else {
+                assert_eq!(pk, root_sk);
+                vec![]
+            };
+            Ok(vec![QueryOutput::builder().set_items(Some(rows)).build()])
+        });
+
+    let bundle = export_from_config(
+        &util(backend),
+        &MaterializedAlgorithms,
+        PkSk {
+            pk: "ROOT".into(),
+            sk: root_sk.into(),
+        },
+        BundleNesting::Root,
+        BundleIdLogic::UuidV4,
+    )
+    .await
+    .unwrap();
+
+    let data = bundle.items[0].data.as_object().unwrap();
+    assert_eq!(data.get("name"), Some(&json!("portable")));
+    assert_eq!(data.get("enabled"), Some(&json!(false)));
+    for name in [
+        "name_upper",
+        "destination_key",
+        "target_copy",
+        "enabled_marker",
+    ] {
+        assert!(!data.contains_key(name));
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn import_recomputes_materialized_attributes_after_id_and_reference_remapping() {
+    let root = id(0, "MATROOT", "MATROOT#source");
+    let target = id(1, "ORDERED", "ORDERED#source");
+    let source_target = PkSk {
+        pk: root.original_sk.clone(),
+        sk: target.original_sk.clone(),
+    };
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![
+            bundle_item(
+                root.clone(),
+                None,
+                BundleNesting::Root,
+                json!({
+                    "name": "portable",
+                    "target": source_target.to_string(),
+                    "enabled": false,
+                    "name_upper": "STALE",
+                    "destination_key": "stale-destination",
+                    "target_copy": "stale-target",
+                    "enabled_marker": "stale-enabled"
+                }),
+            ),
+            bundle_item(
+                target,
+                Some(root),
+                BundleNesting::TopLevel,
+                json!({"name": "target"}),
+            ),
+        ],
+    };
+
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(1)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(table, vec![])])))
+                .build())
+        });
+    backend
+        .expect_batch_put_item()
+        .times(1)
+        .returning(|_, items| {
+            let root = items
+                .iter()
+                .find(|item| item["sk"].as_s().unwrap().starts_with("MATROOT#"))
+                .unwrap();
+            let target = items
+                .iter()
+                .find(|item| item["sk"].as_s().unwrap().starts_with("ORDERED#"))
+                .unwrap();
+            let destination_root = PkSk::from_map(root).unwrap();
+            let destination_target = PkSk::from_map(target).unwrap();
+
+            assert_eq!(root["name_upper"], AttributeValue::S("PORTABLE".into()));
+            assert_eq!(
+                root["destination_key"],
+                AttributeValue::S(destination_root.to_string())
+            );
+            assert_eq!(
+                root["target"],
+                AttributeValue::S(destination_target.to_string())
+            );
+            assert_eq!(
+                root["target_copy"],
+                AttributeValue::S(destination_target.to_string())
+            );
+            assert!(!root.contains_key("enabled_marker"));
+            Ok(BatchWriteItemOutput::builder().build())
+        });
+
+    let result = import_bundle::<TestMaterializedRoot>(
+        &util(backend),
+        &MaterializedAlgorithms,
+        None,
+        bundle,
+        ImportMode::New { position: None },
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(result.created_new);
+    assert_ne!(result.root_id.sk, "MATROOT#source");
 }
 
 #[tokio::test]
@@ -967,11 +1165,82 @@ fn import_accepts_registered_schema_variants_sharing_a_label() {
     .unwrap();
 }
 
+#[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn import_materializes_the_topology_matching_shared_label_variant() {
+    let root = id(0, "OTHERROOT", "OTHERROOT#root");
+    let child = id(1, "SHAREDCHILD", "SHAREDCHILD#child");
+    let bundle = DynamoBundle {
+        version: DynamoBundle::VERSION,
+        source_root: PkSk {
+            pk: "ROOT".into(),
+            sk: root.original_sk.clone(),
+        },
+        root: root.clone(),
+        omitted_descendants: BTreeMap::new(),
+        items: vec![
+            bundle_item(root.clone(), None, BundleNesting::Root, json!({})),
+            bundle_item(
+                child,
+                Some(root),
+                BundleNesting::TopLevel,
+                json!({
+                    "required_name": "selected",
+                    "variant_marker": "stale"
+                }),
+            ),
+        ],
+    };
+
+    let mut backend = MockDynamoBackend::new();
+    backend
+        .expect_batch_get_item()
+        .times(1)
+        .returning(|table, _, _| {
+            Ok(BatchGetItemOutput::builder()
+                .set_responses(Some(HashMap::from([(table, vec![])])))
+                .build())
+        });
+    backend
+        .expect_batch_put_item()
+        .times(1)
+        .returning(|_, items| {
+            let child = items
+                .iter()
+                .find(|item| item["sk"] == AttributeValue::S("SHAREDCHILD#child".into()))
+                .unwrap();
+            assert_eq!(
+                child["variant_marker"],
+                AttributeValue::S("other:selected".into())
+            );
+            Ok(BatchWriteItemOutput::builder().build())
+        });
+
+    import_bundle::<TestOtherRoot>(
+        &util(backend),
+        &SchemaValidationAlgorithms,
+        None,
+        bundle,
+        ImportMode::Merge,
+        None,
+    )
+    .await
+    .unwrap();
+}
+
 #[test]
 fn bundling_is_denied_by_default() {
     let bundles = configured_bundle_policy(&DefaultAlgorithms);
     assert!(!bundles.contains_label("UNREGISTERED"));
     assert!(bundles.require("UNREGISTERED").is_err());
+}
+
+#[test]
+#[should_panic(expected = "declared different materialized attributes")]
+fn bundle_types_sharing_a_label_must_declare_the_same_materialized_attributes() {
+    let mut bundles = DynamoBundlePolicy::new();
+    bundles.include_label("MATROOT", BundleIdLogic::UuidV4, &[]);
+    bundles.include::<TestMaterializedRoot>();
 }
 
 #[test]

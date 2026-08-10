@@ -9,7 +9,11 @@ use serde_json::Value;
 use crate::{
     errors::{DynamoInvalidBundle, DynamoInvalidOperation},
     ext::crud::DynamoCrudAlgorithms,
-    schema::{DynamoFieldRename, DynamoObject, IdLogic, NestingLogic, PkSk},
+    schema::{
+        item_serialization::build_materialized_write_plan,
+        materialization::{validate_materialized_storage, MaterializedWritePlan},
+        DynamoFieldRename, DynamoObject, IdLogic, NestingLogic, PkSk,
+    },
     util::{AUTO_FIELDS_SORT, AUTO_FIELDS_TTL, EXPAND_DATA_RESERVED_KEY},
 };
 
@@ -34,6 +38,7 @@ pub struct DynamoBundlePolicy {
 pub struct DynamoBundleObjectPolicy {
     id_logic: BundleIdLogic,
     renamed_fields: &'static [DynamoFieldRename],
+    materialized_attribute_names: &'static [&'static str],
     schema_variants: Vec<DynamoBundleSchemaVariant>,
     omitted_descendants: BTreeSet<String>,
     reference_rules: Vec<DynamoBundleReferenceRule>,
@@ -43,6 +48,7 @@ struct DynamoBundleSchemaVariant {
     type_name: &'static str,
     topology: DynamoBundleTopology,
     validate_data: Arc<BundleDataValidator>,
+    materialize: fn(&PkSk, &DynamoBundleItem) -> Result<MaterializedWritePlan, ServerError>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,13 +101,15 @@ impl DynamoBundlePolicy {
     /// Includes an object type and returns its configuration builder.
     ///
     /// Types sharing a persisted label share one configuration and must have
-    /// identical ID and rename behavior. Each type contributes its own allowed
-    /// topology and data shape for import validation.
+    /// identical ID, rename, and materialized-attribute names. Each type
+    /// contributes its own allowed topology, data shape, and materialization
+    /// function.
     pub fn include<O: DynamoObject>(&mut self) -> &mut DynamoBundleObjectPolicy {
-        let object = self.include_label(
+        let object = self.include_object_contract(
             O::id_label(),
             BundleIdLogic::from_object::<O>(),
             O::renamed_fields(),
+            O::materialized_attribute_names(),
         );
         object.register_schema::<O>();
         object
@@ -299,16 +307,28 @@ pub(crate) enum DynamoBundleReferenceMatchTarget {
 }
 
 impl DynamoBundlePolicy {
+    #[cfg(test)]
     pub(crate) fn include_label(
         &mut self,
         label: &'static str,
         id_logic: BundleIdLogic,
         renamed_fields: &'static [DynamoFieldRename],
     ) -> &mut DynamoBundleObjectPolicy {
+        self.include_object_contract(label, id_logic, renamed_fields, &[])
+    }
+
+    fn include_object_contract(
+        &mut self,
+        label: &'static str,
+        id_logic: BundleIdLogic,
+        renamed_fields: &'static [DynamoFieldRename],
+        materialized_attribute_names: &'static [&'static str],
+    ) -> &mut DynamoBundleObjectPolicy {
         match self.objects.entry(label) {
             Entry::Vacant(entry) => entry.insert(DynamoBundleObjectPolicy {
                 id_logic,
                 renamed_fields,
+                materialized_attribute_names,
                 schema_variants: Vec::new(),
                 omitted_descendants: BTreeSet::new(),
                 reference_rules: Vec::new(),
@@ -323,6 +343,11 @@ impl DynamoBundlePolicy {
                     entry.get().renamed_fields,
                     renamed_fields,
                     "bundle types sharing label `{label}` used different field renames"
+                );
+                assert_eq!(
+                    entry.get().materialized_attribute_names,
+                    materialized_attribute_names,
+                    "bundle types sharing a label declared different materialized attributes"
                 );
                 entry.into_mut()
             }
@@ -370,10 +395,12 @@ impl DynamoBundleObjectPolicy {
             {
                 for member in members {
                     normalize_renamed_fields(member, self.renamed_fields);
+                    remove_materialized_attributes(member, self.materialized_attribute_names);
                 }
             }
         } else {
             normalize_renamed_fields(data, self.renamed_fields);
+            remove_materialized_attributes(data, self.materialized_attribute_names);
         }
     }
 }
@@ -450,16 +477,7 @@ pub(crate) fn validate_import_policy(
                 item.id.label, item.id_logic
             )));
         }
-        let parent = if item.id == bundle.root {
-            destination_parent.map_or(BundleItemParent::None, BundleItemParent::External)
-        } else {
-            let parent = item
-                .parent
-                .as_ref()
-                .and_then(|parent| items.get(parent))
-                .ok_or_else(|| DynamoInvalidBundle::new("bundle item parent was missing"))?;
-            BundleItemParent::Bundled(&parent.id.label)
-        };
+        let parent = bundle_item_parent(&bundle.root, &items, item, destination_parent)?;
         local.validate_schema(item, parent)?;
     }
     Ok(effective)
@@ -498,6 +516,7 @@ impl DynamoBundleObjectPolicy {
             type_name,
             topology: DynamoBundleTopology::from_nesting(O::nesting_logic()),
             validate_data: Arc::new(validate_item_data::<O>),
+            materialize: materialize_item_data::<O>,
         });
     }
 
@@ -509,6 +528,14 @@ impl DynamoBundleObjectPolicy {
         if self.schema_variants.is_empty() {
             return Ok(());
         }
+        self.resolve_schema_variant(item, parent).map(|_| ())
+    }
+
+    fn resolve_schema_variant(
+        &self,
+        item: &DynamoBundleItem,
+        parent: BundleItemParent<'_>,
+    ) -> Result<&DynamoBundleSchemaVariant, ServerError> {
         let mut variants = self
             .schema_variants
             .iter()
@@ -526,7 +553,7 @@ impl DynamoBundleObjectPolicy {
         let mut errors = Vec::new();
         for variant in variants {
             match (variant.validate_data)(item) {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(variant),
                 Err(error) => errors.push(format!("{}: {error}", variant.type_name)),
             }
         }
@@ -536,6 +563,19 @@ impl DynamoBundleObjectPolicy {
             item.id.label,
             errors.join("; "),
         )))
+    }
+
+    pub(crate) fn materialized_write_plan(
+        &self,
+        item: &DynamoBundleItem,
+        parent: BundleItemParent<'_>,
+        destination_id: &PkSk,
+    ) -> Result<MaterializedWritePlan, ServerError> {
+        if self.materialized_attribute_names.is_empty() {
+            return Ok(MaterializedWritePlan::default());
+        }
+        let variant = self.resolve_schema_variant(item, parent)?;
+        (variant.materialize)(destination_id, item)
     }
 }
 
@@ -584,10 +624,27 @@ impl DynamoBundleParentRequirement {
 }
 
 #[derive(Clone, Copy)]
-enum BundleItemParent<'a> {
+pub(crate) enum BundleItemParent<'a> {
     None,
     Bundled(&'a str),
     External(&'a PkSk),
+}
+
+pub(crate) fn bundle_item_parent<'a>(
+    root: &BundleId,
+    items: &HashMap<&BundleId, &'a DynamoBundleItem>,
+    item: &DynamoBundleItem,
+    destination_parent: Option<&'a PkSk>,
+) -> Result<BundleItemParent<'a>, ServerError> {
+    if &item.id == root {
+        return Ok(destination_parent.map_or(BundleItemParent::None, BundleItemParent::External));
+    }
+    let parent = item
+        .parent
+        .as_ref()
+        .and_then(|parent| items.get(parent))
+        .ok_or_else(|| DynamoInvalidBundle::new("bundle item parent was missing"))?;
+    Ok(BundleItemParent::Bundled(&parent.id.label))
 }
 
 impl<'a> BundleItemParent<'a> {
@@ -630,14 +687,32 @@ fn validate_item_data<O: DynamoObject>(item: &DynamoBundleItem) -> Result<(), St
 }
 
 fn validate_data_value<O: DynamoObject>(data: &Value) -> Result<(), String> {
+    deserialize_data_value::<O>(data)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn deserialize_data_value<O: DynamoObject>(data: &Value) -> Result<O::Data, serde_json::Error> {
     let mut data = data.clone();
     if let Value::Object(data) = &mut data {
         data.remove(AUTO_FIELDS_SORT);
         data.remove(AUTO_FIELDS_TTL);
     }
-    serde_json::from_value::<O::Data>(data)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    serde_json::from_value(data)
+}
+
+fn materialize_item_data<O: DynamoObject>(
+    destination_id: &PkSk,
+    item: &DynamoBundleItem,
+) -> Result<MaterializedWritePlan, ServerError> {
+    validate_materialized_storage::<O>()?;
+    let data = deserialize_data_value::<O>(&item.data).map_err(|error| {
+        DynamoInvalidBundle::with_debug(
+            "bundle item data could not be deserialized for materialization",
+            &error,
+        )
+    })?;
+    build_materialized_write_plan::<O>(destination_id, &data)
 }
 
 fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRename]) {
@@ -651,6 +726,15 @@ fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRenam
         if let Some(value) = data.remove(renamed.from) {
             data.entry(renamed.to).or_insert(value);
         }
+    }
+}
+
+fn remove_materialized_attributes(data: &mut Value, names: &[&str]) {
+    let Value::Object(data) = data else {
+        return;
+    };
+    for name in names {
+        data.remove(*name);
     }
 }
 

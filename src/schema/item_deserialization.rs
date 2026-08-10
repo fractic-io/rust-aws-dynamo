@@ -65,7 +65,6 @@ where
     for partition in partitions {
         json.push_str(partition.as_ref());
     }
-
     let value: serde_json::Value = serde_json::from_str(&json)
         .map_err(|e| DynamoItemParsingError::with_debug("failed to parse partition json", &e))?;
     super::attribute_value::serde_value_into_dynamo_map(value)

@@ -317,11 +317,10 @@ fn append_partition_groups(
 }
 
 fn normalize_rows(rows: Vec<DynamoMap>) -> Result<(DynamoBundleStorage, Value), ServerError> {
-    let partitioned = rows.iter().any(|row| {
+    if rows.iter().any(|row| {
         row.contains_key(COLLAPSE_PLACEHOLDER_RESERVED_KEY)
             || row.contains_key(COLLAPSE_DATA_RESERVED_KEY)
-    });
-    if partitioned {
+    }) {
         let collapsed = collapse_partitioned_items(rows)?;
         let [map] = collapsed.as_slice() else {
             return Err(DynamoInvalidBundle::new(

@@ -14,11 +14,10 @@ pub fn add_legacy_field_removals<T: DynamoObject>(
     null_keys: &mut Vec<String>,
 ) {
     let mut remove_keys = null_keys.iter().cloned().collect::<HashSet<_>>();
-    for renamed in T::renamed_fields() {
-        if renamed.is_noop() {
-            continue;
-        }
-
+    for renamed in T::renamed_fields()
+        .iter()
+        .filter(|renamed| !renamed.is_noop())
+    {
         let canonical_is_updated = map.contains_key(renamed.to) || remove_keys.contains(renamed.to);
         if canonical_is_updated
             && !map.contains_key(renamed.from)

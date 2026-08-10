@@ -825,10 +825,7 @@ fn normalize_renamed_fields(data: &mut Value, renamed_fields: &[DynamoFieldRenam
     let Value::Object(data) = data else {
         return;
     };
-    for renamed in renamed_fields {
-        if renamed.is_noop() {
-            continue;
-        }
+    for renamed in renamed_fields.iter().filter(|renamed| !renamed.is_noop()) {
         if let Some(value) = data.remove(renamed.from) {
             data.entry(renamed.to).or_insert(value);
         }

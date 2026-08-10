@@ -292,12 +292,12 @@ pub(super) fn reconcile_replace_out_of_table_references(
             .get(&reference.source)
             .cloned()
             .ok_or_else(|| DynamoInvalidBundle::new("reference source had no destination ID"))?;
-        let entry = incoming.entry((source_id, clear_path.clone())).or_insert(
-            IncomingOutOfTableAssociation {
+        let entry = incoming
+            .entry((source_id, clear_path.clone()))
+            .or_insert_with(|| IncomingOutOfTableAssociation {
                 reference_count: 0,
                 all_targets_valid: true,
-            },
-        );
+            });
         entry.reference_count += 1;
         entry.all_targets_valid &=
             valid_out_of_table_refs.is_some_and(|refs| refs.contains(lookup_id));

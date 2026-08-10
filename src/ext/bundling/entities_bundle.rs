@@ -65,8 +65,8 @@ pub struct DynamoBundleItem {
     pub nesting: BundleNesting,
     #[serde(default)]
     pub storage: DynamoBundleStorage,
-    /// Canonical object-shaped Serde data without IDs, regenerated temporal
-    /// metadata, or materialized attributes.
+    /// Canonical object-shaped Serde data without IDs, metadata, or
+    /// materialized attributes.
     pub data: Value,
 }
 

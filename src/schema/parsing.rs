@@ -73,133 +73,6 @@ pub(crate) fn build_canonical_data_map<T: DynamoObject>(
     build_dynamo_map_internal(data, None, None, None)
 }
 
-/// Persistence changes owned by a [`DynamoObject`]'s materialization logic.
-///
-/// Keeping this independent of a complete Dynamo item allows typed CRUD,
-/// maintenance backfills, and bundle import to share one calculation.
-#[derive(Debug, Default)]
-pub(crate) struct MaterializedWritePlan {
-    pub(crate) set: DynamoMap,
-    pub(crate) remove: Vec<String>,
-}
-
-impl MaterializedWritePlan {
-    pub(crate) fn apply_to(self, set: &mut DynamoMap, remove: &mut Vec<String>) {
-        for (name, value) in self.set {
-            remove.retain(|remove_name| remove_name != &name);
-            set.insert(name, value);
-        }
-        for name in self.remove {
-            set.remove(&name);
-            if !remove.contains(&name) {
-                remove.push(name);
-            }
-        }
-    }
-}
-
-/// Computes materialized changes and checks them against canonical serialized
-/// data. This is the preferred entry point for typed maintenance and bundling.
-pub(crate) fn build_materialized_write_plan<T: DynamoObject>(
-    id: &PkSk,
-    data: &T::Data,
-) -> Result<MaterializedWritePlan, ServerError> {
-    let (serialized_data, serialized_nulls) = build_canonical_data_map::<T>(data)?;
-    build_materialized_write_plan_against::<T>(id, data, &serialized_data, &serialized_nulls)
-}
-
-pub(crate) fn validate_materialized_storage<T: DynamoObject>() -> Result<(), ServerError> {
-    if T::materialized_attribute_names().is_empty()
-        || matches!(
-            T::id_logic(),
-            IdLogic::UuidV4 | IdLogic::UuidV7 | IdLogic::Singleton | IdLogic::IndexedSingleton(_)
-        )
-    {
-        return Ok(());
-    }
-    Err(DynamoInvalidOperation::new(&format!(
-        "materialized attributes are only supported for ordinary, non-partitioned objects; \
-         object type '{}' uses an incompatible ID logic",
-        T::id_label()
-    )))
-}
-
-fn build_materialized_write_plan_against<T: DynamoObject>(
-    id: &PkSk,
-    data: &T::Data,
-    serialized: &DynamoMap,
-    serialized_nulls: &[String],
-) -> Result<MaterializedWritePlan, ServerError> {
-    let names = T::materialized_attribute_names();
-    if names.is_empty() {
-        return Ok(MaterializedWritePlan::default());
-    }
-
-    validate_materialized_storage::<T>()?;
-
-    let mut declared = HashSet::with_capacity(names.len());
-    for &name in names {
-        if name.is_empty() {
-            return Err(DynamoInvalidOperation::new(
-                "materialized attribute names cannot be empty",
-            ));
-        }
-        if is_reserved_attribute_name(name) {
-            return Err(DynamoInvalidOperation::new(&format!(
-                "materialized attribute '{name}' is reserved"
-            )));
-        }
-        if !declared.insert(name) {
-            return Err(DynamoInvalidOperation::new(&format!(
-                "materialized attribute '{name}' is declared more than once"
-            )));
-        }
-        if serialized.contains_key(name)
-            || serialized_nulls
-                .iter()
-                .any(|serialized_name| serialized_name == name)
-        {
-            return Err(DynamoInvalidOperation::new(&format!(
-                "materialized attribute '{name}' collides with a serialized object attribute"
-            )));
-        }
-    }
-
-    let materialized = T::materialized_attributes(id, data)?;
-    let mut plan = MaterializedWritePlan::default();
-    let mut produced = HashSet::with_capacity(materialized.entries.len());
-    for (name, value) in materialized.entries {
-        if !declared.contains(name) {
-            return Err(DynamoInvalidOperation::new(&format!(
-                "materialization produced undeclared attribute '{name}'"
-            )));
-        }
-        if !produced.insert(name) {
-            return Err(DynamoInvalidOperation::new(&format!(
-                "materialization produced attribute '{name}' more than once"
-            )));
-        }
-        match value {
-            Some(value) => {
-                plan.set.insert(name.to_string(), value);
-            }
-            None => {
-                plan.remove.push(name.to_string());
-            }
-        }
-    }
-    if produced.len() != declared.len() {
-        let missing = names
-            .iter()
-            .find(|name| !produced.contains(**name))
-            .expect("materialized attribute counts differed without a missing name");
-        return Err(DynamoInvalidOperation::new(&format!(
-            "materialization did not produce declared attribute '{missing}'"
-        )));
-    }
-    Ok(plan)
-}
-
 pub(crate) fn build_dynamo_map_internal<T: Serialize>(
     object: &T,
     pk: Option<String>,
@@ -315,6 +188,136 @@ where
     let value: serde_json::Value = serde_json::from_str(&json)
         .map_err(|e| DynamoItemParsingError::with_debug("failed to parse partition json", &e))?;
     serde_value_into_dynamo_map(value)
+}
+
+// Materialized attributes.
+// ----------------------------------------------------------------------------
+
+/// Persistence changes owned by a [`DynamoObject`]'s materialization logic.
+///
+/// Keeping this independent of a complete Dynamo item allows typed CRUD,
+/// maintenance backfills, and bundle import to share one calculation.
+#[derive(Debug, Default)]
+pub(crate) struct MaterializedWritePlan {
+    pub(crate) set: DynamoMap,
+    pub(crate) remove: Vec<String>,
+}
+
+impl MaterializedWritePlan {
+    pub(crate) fn apply_to(self, set: &mut DynamoMap, remove: &mut Vec<String>) {
+        for (name, value) in self.set {
+            remove.retain(|remove_name| remove_name != &name);
+            set.insert(name, value);
+        }
+        for name in self.remove {
+            set.remove(&name);
+            if !remove.contains(&name) {
+                remove.push(name);
+            }
+        }
+    }
+}
+
+/// Computes materialized changes and checks them against canonical serialized
+/// data. This is the preferred entry point for typed maintenance and bundling.
+pub(crate) fn build_materialized_write_plan<T: DynamoObject>(
+    id: &PkSk,
+    data: &T::Data,
+) -> Result<MaterializedWritePlan, ServerError> {
+    let (serialized_data, serialized_nulls) = build_canonical_data_map::<T>(data)?;
+    build_materialized_write_plan_against::<T>(id, data, &serialized_data, &serialized_nulls)
+}
+
+pub(crate) fn validate_materialized_storage<T: DynamoObject>() -> Result<(), ServerError> {
+    if T::materialized_attribute_names().is_empty()
+        || matches!(
+            T::id_logic(),
+            IdLogic::UuidV4 | IdLogic::UuidV7 | IdLogic::Singleton | IdLogic::IndexedSingleton(_)
+        )
+    {
+        return Ok(());
+    }
+    Err(DynamoInvalidOperation::new(&format!(
+        "materialized attributes are only supported for ordinary, non-partitioned objects; object \
+         type '{}' uses an incompatible ID logic",
+        T::id_label()
+    )))
+}
+
+fn build_materialized_write_plan_against<T: DynamoObject>(
+    id: &PkSk,
+    data: &T::Data,
+    serialized: &DynamoMap,
+    serialized_nulls: &[String],
+) -> Result<MaterializedWritePlan, ServerError> {
+    let names = T::materialized_attribute_names();
+    if names.is_empty() {
+        return Ok(MaterializedWritePlan::default());
+    }
+
+    validate_materialized_storage::<T>()?;
+
+    let mut declared = HashSet::with_capacity(names.len());
+    for &name in names {
+        if name.is_empty() {
+            return Err(DynamoInvalidOperation::new(
+                "materialized attribute names cannot be empty",
+            ));
+        }
+        if is_reserved_attribute_name(name) {
+            return Err(DynamoInvalidOperation::new(&format!(
+                "materialized attribute '{name}' is reserved"
+            )));
+        }
+        if !declared.insert(name) {
+            return Err(DynamoInvalidOperation::new(&format!(
+                "materialized attribute '{name}' is declared more than once"
+            )));
+        }
+        if serialized.contains_key(name)
+            || serialized_nulls
+                .iter()
+                .any(|serialized_name| serialized_name == name)
+        {
+            return Err(DynamoInvalidOperation::new(&format!(
+                "materialized attribute '{name}' collides with a serialized object attribute"
+            )));
+        }
+    }
+
+    let materialized = T::materialized_attributes(id, data)?;
+    let mut plan = MaterializedWritePlan::default();
+    let mut produced = HashSet::with_capacity(materialized.entries.len());
+    for (name, value) in materialized.entries {
+        if !declared.contains(name) {
+            return Err(DynamoInvalidOperation::new(&format!(
+                "materialization produced undeclared attribute '{name}'"
+            )));
+        }
+        if !produced.insert(name) {
+            return Err(DynamoInvalidOperation::new(&format!(
+                "materialization produced attribute '{name}' more than once"
+            )));
+        }
+        match value {
+            Some(value) => {
+                plan.set.insert(name.to_string(), value);
+            }
+            None => {
+                plan.remove.push(name.to_string());
+            }
+        }
+    }
+    if produced.len() != declared.len() {
+        let missing = names
+            .iter()
+            .find(|name| !produced.contains(**name))
+            .expect("materialized attribute counts differed without a missing name");
+        return Err(DynamoInvalidOperation::new(&format!(
+            "materialization did not produce declared attribute '{missing}'"
+        )));
+    }
+    Ok(plan)
 }
 
 // Generic Serde/Dynamo conversion.

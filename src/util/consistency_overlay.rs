@@ -35,6 +35,12 @@ pub trait DynamoConsistencyOverlay: Send + Sync {
     fn snapshot(&self, table: &str) -> Vec<OverlayMutation>;
 }
 
+/// Default in-memory consistency overlay.
+pub struct InMemoryDynamoConsistencyOverlay {
+    retention: Duration,
+    state: Mutex<OverlayState>,
+}
+
 impl OverlayMutation {
     pub(crate) fn id(&self) -> PkSk {
         match self {
@@ -116,10 +122,10 @@ impl TableOverlay {
 // Internal: In-memory implementation.
 // ----------------------------------------------------------------------------
 
-/// Default in-memory consistency overlay.
-pub struct InMemoryDynamoConsistencyOverlay {
-    retention: Duration,
-    state: Mutex<OverlayState>,
+impl Default for InMemoryDynamoConsistencyOverlay {
+    fn default() -> Self {
+        Self::new(DEFAULT_CONSISTENCY_OVERLAY_RETENTION)
+    }
 }
 
 impl InMemoryDynamoConsistencyOverlay {
@@ -149,12 +155,6 @@ impl InMemoryDynamoConsistencyOverlay {
             generation,
             id,
         }));
-    }
-}
-
-impl Default for InMemoryDynamoConsistencyOverlay {
-    fn default() -> Self {
-        Self::new(DEFAULT_CONSISTENCY_OVERLAY_RETENTION)
     }
 }
 

@@ -24,6 +24,7 @@ pub struct DynamoGenericQuery {
     index: Option<IndexConfig>,
     partition: String,
     sort: SortKeyCondition,
+    consistent_read: bool,
 }
 
 /// Builds a typed query after its primary or secondary index is selected.
@@ -58,7 +59,7 @@ pub struct IndexConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum SortKeyCondition {
+pub(super) enum SortKeyCondition {
     Any,
     Equals(String),
     BeginsWith(String),
@@ -71,8 +72,12 @@ enum SortKeyCondition {
 
 pub(super) struct QueryExpression {
     pub index_name: Option<String>,
+    pub index: Option<IndexConfig>,
     pub condition: String,
     pub attribute_values: HashMap<String, AttributeValue>,
+    pub consistent_read: bool,
+    partition: String,
+    sort: SortKeyCondition,
 }
 
 impl<T> DynamoQuery<T> {
@@ -91,6 +96,17 @@ impl<T> DynamoQuery<T> {
             index,
             schema: PhantomData,
         }
+    }
+
+    /// Requests the strongest query consistency supported by this library.
+    ///
+    /// Table queries use DynamoDB's strongly consistent read mode. Global
+    /// secondary index queries are reconciled with recent successful writes
+    /// from this application context. GSI visibility for writes made outside
+    /// the context remains eventually consistent.
+    pub fn consistent_read(mut self) -> Self {
+        self.inner.consistent_read = true;
+        self
     }
 }
 
@@ -117,7 +133,19 @@ impl DynamoGenericQuery {
             index,
             partition: partition.into(),
             sort,
+            consistent_read: false,
         }
+    }
+
+    /// Requests the strongest query consistency supported by this library.
+    ///
+    /// Table queries use DynamoDB's strongly consistent read mode. Global
+    /// secondary index queries are reconciled with recent successful writes
+    /// from this application context. GSI visibility for writes made outside
+    /// the context remains eventually consistent.
+    pub fn consistent_read(mut self) -> Self {
+        self.consistent_read = true;
+        self
     }
 
     fn uuidv7_range<T: DynamoObject>(
@@ -207,7 +235,8 @@ impl DynamoGenericQuery {
     }
 
     pub(super) fn into_expression(self) -> QueryExpression {
-        let (index_name, partition_field, sort_field) = match self.index {
+        let index = self.index;
+        let (index_name, partition_field, sort_field) = match index {
             Some(index) => (
                 Some(index.name.to_owned()),
                 index.partition_field,
@@ -215,44 +244,84 @@ impl DynamoGenericQuery {
             ),
             None => (None, "pk", "sk"),
         };
-        let mut attribute_values =
-            HashMap::from([(":pk_val".to_string(), AttributeValue::S(self.partition))]);
-        let condition = match self.sort {
+        let mut attribute_values = HashMap::from([(
+            ":pk_val".to_string(),
+            AttributeValue::S(self.partition.clone()),
+        )]);
+        let condition = match &self.sort {
             SortKeyCondition::Any => format!("{partition_field} = :pk_val"),
             SortKeyCondition::Equals(value) => {
-                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value));
+                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value.clone()));
                 format!("{partition_field} = :pk_val AND {sort_field} = :sk_val")
             }
             SortKeyCondition::BeginsWith(value) => {
-                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value));
+                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value.clone()));
                 format!("{partition_field} = :pk_val AND begins_with({sort_field}, :sk_val)")
             }
             SortKeyCondition::GreaterThan(value) => {
-                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value));
+                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value.clone()));
                 format!("{partition_field} = :pk_val AND {sort_field} > :sk_val")
             }
             SortKeyCondition::GreaterThanOrEqual(value) => {
-                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value));
+                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value.clone()));
                 format!("{partition_field} = :pk_val AND {sort_field} >= :sk_val")
             }
             SortKeyCondition::LessThan(value) => {
-                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value));
+                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value.clone()));
                 format!("{partition_field} = :pk_val AND {sort_field} < :sk_val")
             }
             SortKeyCondition::LessThanOrEqual(value) => {
-                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value));
+                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(value.clone()));
                 format!("{partition_field} = :pk_val AND {sort_field} <= :sk_val")
             }
             SortKeyCondition::BetweenInclusive { lower, upper } => {
-                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(lower));
-                attribute_values.insert(":sk_max".to_string(), AttributeValue::S(upper));
+                attribute_values.insert(":sk_val".to_string(), AttributeValue::S(lower.clone()));
+                attribute_values.insert(":sk_max".to_string(), AttributeValue::S(upper.clone()));
                 format!("{partition_field} = :pk_val AND {sort_field} BETWEEN :sk_val AND :sk_max")
             }
         };
         QueryExpression {
             index_name,
+            index,
             condition,
             attribute_values,
+            consistent_read: self.consistent_read,
+            partition: self.partition,
+            sort: self.sort,
+        }
+    }
+}
+
+impl QueryExpression {
+    pub(super) fn needs_overlay(&self) -> bool {
+        self.consistent_read && self.index.is_some()
+    }
+
+    pub(super) fn matches_item(&self, item: &HashMap<String, AttributeValue>) -> bool {
+        let (partition_field, sort_field) = match self.index {
+            Some(index) => (index.partition_field, index.sort_field),
+            None => ("pk", "sk"),
+        };
+        if item
+            .get(partition_field)
+            .and_then(|value| value.as_s().ok())
+            != Some(&self.partition)
+        {
+            return false;
+        }
+        let sort_value = item.get(sort_field).and_then(|value| value.as_s().ok());
+        match (&self.sort, sort_value) {
+            (SortKeyCondition::Any, Some(_)) => true,
+            (_, None) => false,
+            (SortKeyCondition::Equals(expected), Some(value)) => value == expected,
+            (SortKeyCondition::BeginsWith(prefix), Some(value)) => value.starts_with(prefix),
+            (SortKeyCondition::GreaterThan(bound), Some(value)) => value > bound,
+            (SortKeyCondition::GreaterThanOrEqual(bound), Some(value)) => value >= bound,
+            (SortKeyCondition::LessThan(bound), Some(value)) => value < bound,
+            (SortKeyCondition::LessThanOrEqual(bound), Some(value)) => value <= bound,
+            (SortKeyCondition::BetweenInclusive { lower, upper }, Some(value)) => {
+                value >= lower && value <= upper
+            }
         }
     }
 }

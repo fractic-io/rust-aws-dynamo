@@ -8,6 +8,7 @@ define_ctx_view!(
     secrets {},
     deps_overlay {
         dyn crate::util::backend::DynamoBackend,
+        dyn crate::util::consistency_overlay::DynamoConsistencyOverlay,
     },
     req_impl {}
 );

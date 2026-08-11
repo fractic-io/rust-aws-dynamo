@@ -14,7 +14,9 @@ use aws_sdk_dynamodb::{
         scan::{ScanError, ScanOutput},
         update_item::{UpdateItemError, UpdateItemOutput},
     },
-    types::{AttributeValue, DeleteRequest, KeysAndAttributes, PutRequest, WriteRequest},
+    types::{
+        AttributeValue, DeleteRequest, KeysAndAttributes, PutRequest, ReturnValue, WriteRequest,
+    },
 };
 use fractic_context::register_ctx_singleton;
 use fractic_core::collection;
@@ -35,6 +37,14 @@ pub trait DynamoBackend: Send + Sync {
         &self,
         table_name: String,
         index: Option<String>,
+        condition: String,
+        attribute_values: HashMap<String, AttributeValue>,
+        projection_expression: Option<String>,
+    ) -> Result<Vec<QueryOutput>, SdkError<QueryError>>;
+
+    async fn query_consistent(
+        &self,
+        table_name: String,
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
@@ -111,6 +121,25 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .set_key_condition_expression(Some(condition))
             .set_expression_attribute_values(Some(attribute_values))
             .set_projection_expression(projection_expression)
+            .into_paginator()
+            .send()
+            .try_collect()
+            .await
+    }
+
+    async fn query_consistent(
+        &self,
+        table_name: String,
+        condition: String,
+        attribute_values: HashMap<String, AttributeValue>,
+        projection_expression: Option<String>,
+    ) -> Result<Vec<QueryOutput>, SdkError<QueryError>> {
+        self.query()
+            .set_table_name(Some(table_name))
+            .set_key_condition_expression(Some(condition))
+            .set_expression_attribute_values(Some(attribute_values))
+            .set_projection_expression(projection_expression)
+            .consistent_read(true)
             .into_paginator()
             .send()
             .try_collect()
@@ -211,6 +240,7 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .set_expression_attribute_values(Some(expression_attribute_values))
             .set_expression_attribute_names(Some(expression_attribute_names))
             .set_condition_expression(condition_expression)
+            .return_values(ReturnValue::AllNew)
             .send()
             .await
     }

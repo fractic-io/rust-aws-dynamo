@@ -13,8 +13,10 @@ mod tests {
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
         util::{
-            backend::MockDynamoBackend, DynamoGenericQuery, DynamoQuery, DynamoUtil,
-            AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
+            backend::MockDynamoBackend,
+            consistency_overlay::{InMemoryDynamoConsistencyOverlay, OverlayMutation},
+            DynamoGenericQuery, DynamoQuery, DynamoUtil, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT,
+            AUTO_FIELDS_UPDATED_AT,
         },
     };
 
@@ -167,6 +169,10 @@ mod tests {
     async fn build_util(mock_backend: MockDynamoBackend) -> DynamoUtil {
         let ctx = TestCtx::init_test("mock-region".to_string());
         ctx.override_dynamo_backend(Arc::new(mock_backend)).await;
+        ctx.override_dynamo_consistency_overlay(Arc::new(
+            InMemoryDynamoConsistencyOverlay::default(),
+        ))
+        .await;
         DynamoUtil::new(&*ctx, "my_table").await.unwrap()
     }
 
@@ -783,6 +789,10 @@ mod tests {
         assert_eq!(result.pk(), "ROOT".to_string());
         assert!(result.sk().starts_with("GROUP#123#TEST#"));
         assert_eq!(result.sk().len(), "GROUP#123#TEST#".len() + 22);
+        assert!(matches!(
+            util.consistency_overlay.snapshot("my_table").as_slice(),
+            [OverlayMutation::Put { id, .. }] if id == result.id()
+        ));
     }
 
     #[tokio::test]
@@ -1201,6 +1211,29 @@ mod tests {
         };
 
         util.update_item(&update_item).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_item_records_returned_post_image() {
+        let object = build_item_no_data().0;
+        let post_image = build_item_no_data().1;
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .once()
+            .returning(move |_, _, _, _, _, _| {
+                Ok(UpdateItemOutput::builder()
+                    .set_attributes(Some(post_image.clone()))
+                    .build())
+            });
+
+        let util = build_util(backend).await;
+        util.update_item(&object).await.unwrap();
+
+        assert!(matches!(
+            util.consistency_overlay.snapshot("my_table").as_slice(),
+            [OverlayMutation::Put { id, .. }] if id == object.id()
+        ));
     }
 
     #[tokio::test]
@@ -2068,6 +2101,11 @@ mod tests {
         })
         .await
         .unwrap();
+        assert!(matches!(
+            util.consistency_overlay.snapshot("my_table").as_slice(),
+            [OverlayMutation::Delete(id)]
+                if id.pk == "GROUP#123" && id.sk == "LIST#123#TEST#456"
+        ));
     }
 
     #[tokio::test]
@@ -2804,11 +2842,9 @@ mod tests {
             }
         });
 
-        build_util(backend)
-            .await
-            .raw_batch_put_item(vec![first, second])
-            .await
-            .unwrap();
+        let util = build_util(backend).await;
+        util.raw_batch_put_item(vec![first, second]).await.unwrap();
+        assert_eq!(util.consistency_overlay.snapshot("my_table").len(), 2);
     }
 
     #[tokio::test]
@@ -2898,11 +2934,11 @@ mod tests {
             }
         });
 
-        build_util(backend)
-            .await
-            .raw_batch_delete_ids(vec![first, second])
+        let util = build_util(backend).await;
+        util.raw_batch_delete_ids(vec![first, second])
             .await
             .unwrap();
+        assert_eq!(util.consistency_overlay.snapshot("my_table").len(), 2);
     }
 
     #[tokio::test]

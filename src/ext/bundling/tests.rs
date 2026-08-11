@@ -26,9 +26,9 @@ use crate::{
         DynamoObject, IdLogic, NestingLogic, PkSk,
     },
     util::{
-        backend::MockDynamoBackend, DynamoInsertPosition, DynamoMap, DynamoUtil,
-        AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY,
-        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        backend::MockDynamoBackend, consistency_overlay::InMemoryDynamoConsistencyOverlay,
+        DynamoInsertPosition, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
+        AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
     },
 };
 
@@ -460,6 +460,7 @@ fn bundle_item(
 fn util(backend: MockDynamoBackend) -> DynamoUtil {
     DynamoUtil {
         backend: Arc::new(backend),
+        consistency_overlay: Arc::new(InMemoryDynamoConsistencyOverlay::default()),
         table: "table".into(),
     }
 }

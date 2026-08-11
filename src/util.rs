@@ -33,10 +33,10 @@ use crate::{
     },
     util::{
         collapse_helpers::{
-            build_partition_write_plan, collapse_partitioned_items, expand_partition_delete_ids,
-            ext_base_id, fetch_num_partitions, fetch_num_partitions_batch, is_partitioned_id_logic,
+            build_partition_write_plan, expand_partition_delete_ids, ext_base_id,
+            fetch_num_partitions, fetch_num_partitions_batch, is_partitioned_id_logic,
         },
-        expand_helpers::{build_expandable_batch_maps, expand_batched_items},
+        expand_helpers::build_expandable_batch_maps,
         id_relations::{child_query_prefix, validate_object_id, validate_parent_for},
         rename_cleanup::add_legacy_field_removals,
         update_plan::{AttributeUpdatePlan, CmpOp},
@@ -50,10 +50,12 @@ use crate::{
 pub mod backend;
 mod calculate_sort;
 pub(crate) mod collapse_helpers;
+pub mod consistency_overlay;
 mod expand_helpers;
 mod id_relations;
 mod metadata_helpers;
 mod query;
+mod query_execution;
 mod raw_batch_helpers;
 mod rename_cleanup;
 mod test;
@@ -217,6 +219,7 @@ impl<T: DynamoObject> Default for CreateOptions<T> {
 #[derive(Clone)]
 pub struct DynamoUtil {
     pub backend: Arc<dyn DynamoBackend>,
+    pub consistency_overlay: Arc<dyn consistency_overlay::DynamoConsistencyOverlay>,
     pub table: String,
 }
 
@@ -230,83 +233,9 @@ impl DynamoUtil {
     ) -> Result<Self, ServerError> {
         Ok(Self {
             backend: ctx.dynamo_backend().await?,
+            consistency_overlay: ctx.dynamo_consistency_overlay().await?,
             table: table.into(),
         })
-    }
-
-    /// Executes a typed key query and deserializes matching objects.
-    pub async fn query<T: DynamoObject>(
-        &self,
-        query: DynamoQuery<T>,
-    ) -> Result<Vec<T>, ServerError> {
-        self.query_generic(query.into())
-            .await?
-            .into_iter()
-            .filter_map(|item| {
-                let (_, sk) =
-                    id_fields_from_map(&item).expect("query result item did not have pk/sk.");
-                (RawIdPath::new(sk).object_label().ok()? == T::id_label())
-                    .then(|| parse_dynamo_map::<T>(&item))
-            })
-            .collect::<Result<Vec<T>, ServerError>>()
-    }
-
-    /// Efficiently queries all children of type `T` belonging to the given
-    /// `parent_id`. Handles all nesting logic types.
-    pub async fn query_all<T: DynamoObject>(
-        &self,
-        parent_id: &PkSk,
-    ) -> Result<Vec<T>, ServerError> {
-        validate_parent_for::<T>(parent_id)?;
-        let prefix = child_query_prefix::<T>(parent_id);
-        self.query::<T>(DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk))
-            .await
-    }
-
-    /// Executes a generic key query and returns raw Dynamo maps.
-    pub async fn query_generic(
-        &self,
-        query: DynamoGenericQuery,
-    ) -> Result<Vec<DynamoMap>, ServerError> {
-        let expression = query.into_expression();
-        let response = self
-            .backend
-            .query(
-                self.table.clone(),
-                expression.index_name,
-                expression.condition,
-                expression.attribute_values,
-                None,
-            )
-            .await
-            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-
-        let items = collapse_partitioned_items(expand_batched_items(
-            response
-                .into_iter()
-                .flat_map(|page| page.items.unwrap_or_default().into_iter())
-                .collect(),
-        ))?;
-
-        // Sort by sort key. Since 'sort_by' is stable, ID-based ordering is
-        // preserved for items without a sort key.
-        let mut items = items
-            .into_iter()
-            .map(|item| {
-                let sort = item
-                    .get(AUTO_FIELDS_SORT)
-                    .and_then(|value| value.as_n().ok())
-                    .and_then(|value| value.parse::<f64>().ok());
-                (item, sort)
-            })
-            .collect::<Vec<_>>();
-        items.sort_by(|(_, a_sort), (_, b_sort)| match (a_sort, b_sort) {
-            (Some(a), Some(b)) => a.total_cmp(b),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        });
-        Ok(items.into_iter().map(|(item, _)| item).collect())
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {
@@ -420,9 +349,10 @@ impl DynamoUtil {
                 ]),
             )?;
             self.backend
-                .put_item(self.table.clone(), map)
+                .put_item(self.table.clone(), map.clone())
                 .await
                 .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+            self.consistency_overlay.record_put(&self.table, map);
             Ok(T::new(PkSk { pk, sk }, data))
         }
     }
@@ -529,13 +459,7 @@ impl DynamoUtil {
                 .into_iter()
                 .unzip();
 
-            // Split into 25-item batches (max supported by DynamoDB).
-            for batch in items.chunks(25) {
-                self.backend
-                    .batch_put_item(self.table.clone(), batch.to_vec())
-                    .await
-                    .map_err(|e| DynamoCalloutError::with_debug(&e))?;
-            }
+            self.raw_batch_put_item(items).await?;
             Ok(ids
                 .into_iter()
                 .zip(data_and_options)
@@ -798,7 +722,8 @@ impl DynamoUtil {
         };
         let expression = update.into_expression::<T>();
 
-        self.backend
+        let response = self
+            .backend
             .update_item(
                 self.table.clone(),
                 key,
@@ -812,6 +737,9 @@ impl DynamoUtil {
                 UpdateItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
                 other => DynamoCalloutError::with_debug(&other),
             })?;
+        if let Some(item) = response.attributes {
+            self.consistency_overlay.record_put(&self.table, item);
+        }
         Ok(())
     }
 
@@ -823,6 +751,7 @@ impl DynamoUtil {
             let ids = expand_partition_delete_ids::<T>(self, vec![id]).await?;
             self.raw_batch_delete_ids(ids).await
         } else {
+            let deleted_id = id.clone();
             let key = collection! {
                 "pk".to_string() => AttributeValue::S(id.pk),
                 "sk".to_string() => AttributeValue::S(id.sk),
@@ -834,6 +763,8 @@ impl DynamoUtil {
                     DeleteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
                     other => DynamoCalloutError::with_debug(&other),
                 })?;
+            self.consistency_overlay
+                .record_delete(&self.table, deleted_id);
             Ok(())
         }
     }
@@ -1044,15 +975,29 @@ impl DynamoUtil {
             }
 
             for attempt in 0..=MAX_BATCH_WRITE_RETRIES {
+                let requested = pending;
                 let response = self
                     .backend
-                    .batch_delete_item(self.table.clone(), pending)
+                    .batch_delete_item(self.table.clone(), requested.clone())
                     .await
                     .map_err(|e| match e.into_service_error() {
                         BatchWriteItemError::ResourceNotFoundException(_) => DynamoNotFound::new(),
                         other => DynamoCalloutError::with_debug(&other),
                     })?;
                 pending = unprocessed_delete_keys(&response, &self.table)?;
+                let pending_ids = pending
+                    .iter()
+                    .map(PkSk::from_map)
+                    .collect::<Result<HashSet<_>, _>>()?;
+                for id in requested
+                    .iter()
+                    .map(PkSk::from_map)
+                    .collect::<Result<Vec<_>, _>>()?
+                {
+                    if !pending_ids.contains(&id) {
+                        self.consistency_overlay.record_delete(&self.table, id);
+                    }
+                }
                 if pending.is_empty() {
                     break;
                 }
@@ -1126,12 +1071,22 @@ impl DynamoUtil {
         for batch in items.chunks(25) {
             let mut pending = batch.to_vec();
             for attempt in 0..=MAX_BATCH_WRITE_RETRIES {
+                let requested = pending;
                 let response = self
                     .backend
-                    .batch_put_item(self.table.clone(), pending)
+                    .batch_put_item(self.table.clone(), requested.clone())
                     .await
                     .map_err(|e| DynamoCalloutError::with_debug(&e))?;
                 pending = unprocessed_put_items(&response, &self.table)?;
+                let pending_ids = pending
+                    .iter()
+                    .map(PkSk::from_map)
+                    .collect::<Result<HashSet<_>, _>>()?;
+                for item in requested {
+                    if !pending_ids.contains(&PkSk::from_map(&item)?) {
+                        self.consistency_overlay.record_put(&self.table, item);
+                    }
+                }
                 if pending.is_empty() {
                     break;
                 }

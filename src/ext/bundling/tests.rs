@@ -473,7 +473,8 @@ async fn export_omits_materialized_attributes() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _, _| {
+        .returning(move |_, _, _, values, _, consistent_read| {
+            assert!(consistent_read);
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = if pk == "ROOT" {
                 vec![HashMap::from([
@@ -1850,10 +1851,9 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
         ],
     };
     let mut backend = MockDynamoBackend::new();
-    backend
-        .expect_batch_get_item()
-        .times(2)
-        .returning(move |table, keys, projection, _| {
+    backend.expect_batch_get_item().times(2).returning(
+        move |table, keys, projection, consistent_read| {
+            assert!(consistent_read);
             let is_conflict_check = keys.iter().any(|key| {
                 key.get("sk")
                     .and_then(|value| value.as_s().ok())
@@ -1869,7 +1869,8 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, rows)])))
                 .build())
-        });
+        },
+    );
     backend
         .expect_batch_put_item()
         .times(1)

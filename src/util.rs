@@ -916,6 +916,7 @@ impl DynamoUtil {
         &self,
         keys: Vec<PkSk>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<Vec<DynamoMap>, ServerError> {
         if keys.is_empty() {
             return Ok(Vec::new());
@@ -940,7 +941,7 @@ impl DynamoUtil {
                         self.table.clone(),
                         pending_keys,
                         projection_expression.clone(),
-                        false,
+                        consistent_read,
                     )
                     .await
                     .map_err(|e| DynamoCalloutError::with_debug(&e))?;

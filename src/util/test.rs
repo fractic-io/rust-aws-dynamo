@@ -1254,7 +1254,7 @@ mod tests {
                     },
                 ]),
                 eq(None),
-                eq(false),
+                eq(true),
             )
             .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
@@ -2280,7 +2280,7 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }]),
                 eq(None),
-                eq(false),
+                eq(true),
             )
             .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
@@ -2337,7 +2337,7 @@ mod tests {
                     },
                 ]),
                 eq(None),
-                eq(false),
+                eq(true),
             )
             .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
@@ -3029,7 +3029,7 @@ mod tests {
 
         build_util(backend)
             .await
-            .raw_batch_get_ids(vec![first, second], None)
+            .raw_batch_get_ids(vec![first, second], None, false)
             .await
             .unwrap();
     }
@@ -3258,7 +3258,7 @@ mod tests {
 
         let error = build_util(backend)
             .await
-            .raw_batch_get_ids(vec![id], None)
+            .raw_batch_get_ids(vec![id], None, false)
             .await
             .unwrap_err();
 

@@ -78,7 +78,7 @@ pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig, IndexKind};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GetOptions {
-    /// Uses DynamoDB's strongly consistent read mode.
+    /// Use strongly consistent read mode (increases read cost).
     pub consistent_read: bool,
 }
 

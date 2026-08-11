@@ -83,7 +83,6 @@ where
         self.resolve_opt(dynamo_util, GetOptions::default()).await
     }
 
-    /// Resolves into a concrete `O`, optionally using a consistent read when fetched.
     pub async fn resolve_opt(
         self,
         dynamo_util: &DynamoUtil,
@@ -625,7 +624,6 @@ where
         self.resolve_opt(dynamo_util, GetOptions::default()).await
     }
 
-    /// Resolves the object, optionally using a consistent read when fetched.
     pub async fn resolve_opt<'s>(
         &'s mut self,
         dynamo_util: &DynamoUtil,

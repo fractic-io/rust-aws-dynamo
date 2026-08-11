@@ -102,11 +102,15 @@ fn reconcile_gsi_results(
         .collect::<Result<HashMap<_, _>, _>>()?;
 
     for mutation in mutations {
-        let id = mutation.id();
-        by_id.remove(&id);
-        if let OverlayMutation::Put { item, .. } = mutation {
-            if query.matches_item(&item) {
-                by_id.insert(id, (*item).clone());
+        match mutation {
+            OverlayMutation::Put { id, item } => {
+                by_id.remove(&id);
+                if query.matches_item(&item) {
+                    by_id.insert(id, (*item).clone());
+                }
+            }
+            OverlayMutation::Delete(id) => {
+                by_id.remove(&id);
             }
         }
     }

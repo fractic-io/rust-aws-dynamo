@@ -304,10 +304,14 @@ impl DynamoUtil {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
         };
-        let projection = Some("pk".to_string());
         let response = self
             .backend
-            .get_item(self.table.clone(), key, projection, options.consistent_read)
+            .get_item(
+                self.table.clone(),
+                key,
+                Some("pk".to_string()),
+                options.consistent_read,
+            )
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         Ok(response.item.is_some())
@@ -1022,11 +1026,8 @@ impl DynamoUtil {
                     .iter()
                     .map(PkSk::from_map)
                     .collect::<Result<HashSet<_>, _>>()?;
-                for id in requested
-                    .iter()
-                    .map(PkSk::from_map)
-                    .collect::<Result<Vec<_>, _>>()?
-                {
+                for id in requested.iter().map(PkSk::from_map) {
+                    let id = id?;
                     if !pending_ids.contains(&id) {
                         self.consistency_overlay.record_delete(&self.table, id);
                     }

@@ -165,12 +165,10 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         projection_expression: Option<String>,
         consistent_read: bool,
     ) -> Result<BatchGetItemOutput, SdkError<BatchGetItemError>> {
-        let mut request = KeysAndAttributes::builder()
+        let request = KeysAndAttributes::builder()
             .set_keys(Some(keys))
+            .set_projection_expression(projection_expression)
             .consistent_read(consistent_read);
-        if let Some(projection_expression) = projection_expression {
-            request = request.projection_expression(projection_expression);
-        }
         self.batch_get_item()
             .set_request_items(Some(collection!(
                 table_name => request

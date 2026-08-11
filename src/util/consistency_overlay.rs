@@ -41,15 +41,6 @@ pub struct InMemoryDynamoConsistencyOverlay {
     state: Mutex<OverlayState>,
 }
 
-impl OverlayMutation {
-    pub(crate) fn id(&self) -> PkSk {
-        match self {
-            Self::Put { id, .. } => id.clone(),
-            Self::Delete(id) => id.clone(),
-        }
-    }
-}
-
 // Internal: Overlay state.
 // ----------------------------------------------------------------------------
 

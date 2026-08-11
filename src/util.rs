@@ -76,6 +76,12 @@ use raw_batch_helpers::{MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES};
 
 pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig, IndexKind};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GetOptions {
+    /// Uses DynamoDB's strongly consistent read mode.
+    pub consistent_read: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamoInsertPosition {
@@ -113,13 +119,6 @@ pub struct CreateOptions<T: DynamoObject> {
     /// name 'ttl'.
     pub ttl: Option<TtlConfig>,
     pub token: Option<CreateToken<T>>,
-}
-
-/// Controls how a primary-key item read is performed.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct GetOptions {
-    /// Uses DynamoDB's strongly consistent read mode when enabled.
-    pub consistent_read: bool,
 }
 
 /// Comparison operators for numeric conditions.

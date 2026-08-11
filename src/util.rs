@@ -10,6 +10,7 @@ use aws_sdk_dynamodb::{
 use backend::DynamoBackend;
 pub(crate) use calculate_sort::calculate_sort_values;
 use chrono::{DateTime, Duration, Utc};
+use consistency_overlay::DynamoConsistencyOverlay;
 use fractic_core::{collection, req_not_none};
 use fractic_server_error::{CriticalError, ServerError};
 use raw_batch_helpers::{unprocessed_delete_keys, unprocessed_put_items, wait_before_batch_retry};
@@ -225,7 +226,7 @@ impl<T: DynamoObject> Default for CreateOptions<T> {
 #[derive(Clone)]
 pub struct DynamoUtil {
     pub backend: Arc<dyn DynamoBackend>,
-    pub consistency_overlay: Arc<dyn consistency_overlay::DynamoConsistencyOverlay>,
+    pub consistency_overlay: Arc<dyn DynamoConsistencyOverlay>,
     pub table: String,
 }
 

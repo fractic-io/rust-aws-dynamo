@@ -35,7 +35,7 @@ pub trait DynamoConsistencyOverlay: Send + Sync {
     fn snapshot(&self, table: &str) -> Vec<OverlayMutation>;
 }
 
-/// Default in-memory consistency overlay.
+/// Default in-memory implementation.
 pub struct InMemoryDynamoConsistencyOverlay {
     retention: Duration,
     state: Mutex<OverlayState>,

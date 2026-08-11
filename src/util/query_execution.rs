@@ -19,6 +19,9 @@ use super::{
     DynamoGenericQuery, DynamoMap, DynamoQuery, DynamoUtil,
 };
 
+// Public interface.
+// ----------------------------------------------------------------------------
+
 impl DynamoUtil {
     /// Executes a typed key query and deserializes matching objects.
     pub async fn query<T: DynamoObject>(
@@ -85,6 +88,9 @@ impl DynamoUtil {
     }
 }
 
+// Helpers.
+// ----------------------------------------------------------------------------
+
 fn reconcile_gsi_results(
     query: &QueryExpression,
     items: &mut Vec<DynamoMap>,
@@ -147,6 +153,9 @@ fn sort_by_custom_order(items: Vec<DynamoMap>) -> Vec<DynamoMap> {
     });
     items.into_iter().map(|(item, _)| item).collect()
 }
+
+// Tests.
+// ----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

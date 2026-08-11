@@ -9,7 +9,7 @@ use crate::{
     errors::DynamoInvalidOperation,
     errors::DynamoNotFound,
     schema::{DynamoObject, IdLogic, PkSk},
-    util::{CreateOptions, CreateToken, DynamoInsertPosition, DynamoUtil},
+    util::{CreateOptions, CreateToken, DynamoInsertPosition, DynamoUtil, GetOptions},
 };
 
 /// Allows callers to either pass an already-fetched object `O`, or a `PkSk` id
@@ -80,10 +80,19 @@ where
     /// Resolves into a concrete `O` by either passing through the provided
     /// object or fetching it via `DynamoUtil`.
     pub async fn resolve(self, dynamo_util: &DynamoUtil) -> Result<O, ServerError> {
+        self.resolve_opt(dynamo_util, GetOptions::default()).await
+    }
+
+    /// Resolves into a concrete `O`, optionally using a consistent read when fetched.
+    pub async fn resolve_opt(
+        self,
+        dynamo_util: &DynamoUtil,
+        options: GetOptions,
+    ) -> Result<O, ServerError> {
         match self {
             PassOrFetch::Pass(obj) => Ok(obj),
             PassOrFetch::Fetch(id) => dynamo_util
-                .get_item::<O>(id)
+                .get_item_opt::<O>(id, options)
                 .await?
                 .ok_or_else(DynamoNotFound::new),
         }
@@ -613,12 +622,21 @@ where
     }
 
     pub async fn resolve<'s>(&'s mut self, dynamo_util: &DynamoUtil) -> Result<&'s O, ServerError> {
+        self.resolve_opt(dynamo_util, GetOptions::default()).await
+    }
+
+    /// Resolves the object, optionally using a consistent read when fetched.
+    pub async fn resolve_opt<'s>(
+        &'s mut self,
+        dynamo_util: &DynamoUtil,
+        options: GetOptions,
+    ) -> Result<&'s O, ServerError> {
         match self {
             RefOrFetch::Ref(reference) => Ok(*reference),
             RefOrFetch::Owned(object) => Ok(object),
             RefOrFetch::Fetch { id, cached } => {
                 if cached.is_none() {
-                    *cached = dynamo_util.get_item::<O>(id.clone()).await?;
+                    *cached = dynamo_util.get_item_opt::<O>(id.clone(), options).await?;
                 }
                 cached.as_ref().ok_or_else(DynamoNotFound::new)
             }
@@ -929,14 +947,17 @@ mod tests {
 
     use std::{borrow::Cow, sync::Arc};
 
-    use aws_sdk_dynamodb::operation::put_item::PutItemOutput;
+    use aws_sdk_dynamodb::operation::{get_item::GetItemOutput, put_item::PutItemOutput};
     use serde::{Deserialize, Serialize};
 
     use super::*;
     use crate::{
         context::test_ctx::TestCtx,
         dynamo_object,
-        schema::{IdLogic, NestingLogic},
+        schema::{
+            item_serialization::{build_dynamo_map_for_existing_obj, IdKeys},
+            IdLogic, NestingLogic,
+        },
         util::backend::MockDynamoBackend,
     };
 
@@ -1005,6 +1026,64 @@ mod tests {
         assert_eq!(referenced.id(), &id);
         assert_eq!(owned.id(), &id);
         assert_eq!(fetched.id(), &id);
+    }
+
+    #[tokio::test]
+    async fn resolve_opt_uses_consistent_reads_for_fetch_ingress() {
+        let id = PkSk {
+            pk: "ROOT".into(),
+            sk: "INGRESS_TEST#object".into(),
+        };
+        let object = TestObject::new(
+            id.clone(),
+            TestObjectData {
+                value: "fetched".into(),
+            },
+        );
+        let item = build_dynamo_map_for_existing_obj(&object, IdKeys::CopyFromObject, None)
+            .unwrap()
+            .0;
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item()
+            .withf(move |table, key, projection, consistent_read| {
+                table == "ingress_test"
+                    && key.get("pk").and_then(|value| value.as_s().ok()) == Some(&id.pk)
+                    && key.get("sk").and_then(|value| value.as_s().ok()) == Some(&id.sk)
+                    && projection.is_none()
+                    && *consistent_read
+            })
+            .times(2)
+            .returning(move |_, _, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(item.clone()))
+                    .build())
+            });
+        let dynamo_util = build_util_with_backend(backend).await;
+        let id = object.id().clone();
+
+        let passed = PassOrFetch::<TestObject>::from(id.clone())
+            .resolve_opt(
+                &dynamo_util,
+                GetOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+        let mut referenced = RefOrFetch::<TestObject>::from(id.clone());
+        let referenced = referenced
+            .resolve_opt(
+                &dynamo_util,
+                GetOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(passed.data.value, "fetched");
+        assert_eq!(referenced.data.value, "fetched");
     }
 
     #[tokio::test]

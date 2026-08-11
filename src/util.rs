@@ -83,6 +83,12 @@ pub struct GetOptions {
     pub consistent_read: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QueryAllOptions {
+    /// Use strongly consistent read mode (increases read cost).
+    pub consistent_read: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DynamoInsertPosition {

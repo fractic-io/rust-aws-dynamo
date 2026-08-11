@@ -6,9 +6,9 @@ mod tests {
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, DynamoInsertPosition, GetOptions, TtlConfig, UpdateCondition,
-        AUTO_FIELDS_TTL, COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
-        EXPAND_DATA_RESERVED_KEY,
+        CreateOptions, DynamoInsertPosition, GetOptions, QueryAllOptions, TtlConfig,
+        UpdateCondition, AUTO_FIELDS_TTL, COLLAPSE_DATA_RESERVED_KEY,
+        COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
@@ -2476,6 +2476,42 @@ mod tests {
         assert_eq!(result[0].id(), build_item_low_sort().0.id());
         assert_eq!(result[1].id(), build_item_high_sort().0.id());
         assert_eq!(result[2].id(), build_item_no_data().0.id());
+    }
+
+    #[tokio::test]
+    async fn test_query_all_opt_consistent() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
+                }),
+                eq(None),
+                eq(true),
+            )
+            .once()
+            .returning(|_, _, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+
+        let result = build_util(backend)
+            .await
+            .query_all_opt::<TestDynamoObject>(
+                &PkSk {
+                    pk: "ROOT".into(),
+                    sk: "GROUP#123".into(),
+                },
+                QueryAllOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ use super::{
     expand_helpers::expand_batched_items,
     id_relations::{child_query_prefix, validate_parent_for},
     query::QueryExpression,
-    DynamoGenericQuery, DynamoMap, DynamoQuery, DynamoUtil,
+    DynamoGenericQuery, DynamoMap, DynamoQuery, DynamoUtil, QueryAllOptions,
 };
 
 // Public interface.
@@ -45,10 +45,25 @@ impl DynamoUtil {
         &self,
         parent_id: &PkSk,
     ) -> Result<Vec<T>, ServerError> {
+        self.query_all_opt(parent_id, QueryAllOptions::default())
+            .await
+    }
+
+    /// Efficiently queries all children of type `T` belonging to `parent_id`.
+    pub async fn query_all_opt<T: DynamoObject>(
+        &self,
+        parent_id: &PkSk,
+        options: QueryAllOptions,
+    ) -> Result<Vec<T>, ServerError> {
         validate_parent_for::<T>(parent_id)?;
         let prefix = child_query_prefix::<T>(parent_id);
-        self.query::<T>(DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk))
-            .await
+        let query = DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk);
+        self.query::<T>(if options.consistent_read {
+            query.consistent_read()
+        } else {
+            query
+        })
+        .await
     }
 
     /// Executes a generic key query and returns raw Dynamo maps.

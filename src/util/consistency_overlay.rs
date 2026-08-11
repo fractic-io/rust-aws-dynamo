@@ -11,14 +11,28 @@ use crate::{schema::PkSk, DynamoCtxView};
 
 use super::DynamoMap;
 
+// Definitions.
+// ----------------------------------------------------------------------------
+
 /// How long successful local writes participate in reconciled GSI queries.
 pub const DEFAULT_CONSISTENCY_OVERLAY_RETENTION: Duration = Duration::from_secs(5);
 
-/// A recent successful mutation used to reconcile eventually consistent GSI results.
+/// A recent successful mutation used to reconcile eventually consistent GSI
+/// results.
 #[derive(Clone, Debug)]
 pub enum OverlayMutation {
     Put { id: PkSk, item: Arc<DynamoMap> },
     Delete(PkSk),
+}
+
+// Public interface.
+// ----------------------------------------------------------------------------
+
+/// Shared recent-write state used to reconcile GSI queries within one context.
+pub trait DynamoConsistencyOverlay: Send + Sync {
+    fn record_put(&self, table: &str, item: DynamoMap);
+    fn record_delete(&self, table: &str, id: PkSk);
+    fn snapshot(&self, table: &str) -> Vec<OverlayMutation>;
 }
 
 impl OverlayMutation {
@@ -30,11 +44,19 @@ impl OverlayMutation {
     }
 }
 
-/// Shared recent-write state used to reconcile GSI queries within one context.
-pub trait DynamoConsistencyOverlay: Send + Sync {
-    fn record_put(&self, table: &str, item: DynamoMap);
-    fn record_delete(&self, table: &str, id: PkSk);
-    fn snapshot(&self, table: &str) -> Vec<OverlayMutation>;
+// Internal: Overlay state.
+// ----------------------------------------------------------------------------
+
+#[derive(Default)]
+struct OverlayState {
+    next_generation: u64,
+    tables: HashMap<String, TableOverlay>,
+}
+
+#[derive(Default)]
+struct TableOverlay {
+    entries: HashMap<PkSk, Entry>,
+    expirations: BinaryHeap<Reverse<Expiration>>,
 }
 
 #[derive(Debug)]
@@ -72,12 +94,6 @@ impl Ord for Expiration {
     }
 }
 
-#[derive(Default)]
-struct TableOverlay {
-    entries: HashMap<PkSk, Entry>,
-    expirations: BinaryHeap<Reverse<Expiration>>,
-}
-
 impl TableOverlay {
     fn remove_expired(&mut self, now: Instant) {
         while self
@@ -97,11 +113,8 @@ impl TableOverlay {
     }
 }
 
-#[derive(Default)]
-struct OverlayState {
-    next_generation: u64,
-    tables: HashMap<String, TableOverlay>,
-}
+// Internal: In-memory implementation.
+// ----------------------------------------------------------------------------
 
 /// Default in-memory consistency overlay.
 pub struct InMemoryDynamoConsistencyOverlay {
@@ -178,11 +191,17 @@ impl DynamoConsistencyOverlay for InMemoryDynamoConsistencyOverlay {
     }
 }
 
+// Dependency registration.
+// ----------------------------------------------------------------------------
+
 register_ctx_singleton!(
     dyn DynamoCtxView,
     dyn DynamoConsistencyOverlay,
     |_ctx: Arc<dyn DynamoCtxView>| async move { Ok(InMemoryDynamoConsistencyOverlay::default()) }
 );
+
+// Tests.
+// ----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

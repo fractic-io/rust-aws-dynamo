@@ -380,7 +380,7 @@ async fn find_existing(
     ids: &HashMap<BundleId, PkSk>,
 ) -> Result<ExistingState, ServerError> {
     let rows = util
-        .raw_batch_get_ids(ids.values().cloned().collect(), None)
+        .raw_batch_get_ids(ids.values().cloned().collect(), None, true)
         .await?;
     let has_conflicts = !rows.is_empty();
     let mut ext_partition_counts = HashMap::new();
@@ -421,11 +421,15 @@ async fn resolve_references(
     let mut existing_in_table = if in_table_ids.is_empty() {
         HashSet::new()
     } else {
-        util.raw_batch_get_ids(in_table_ids.into_iter().collect(), Some("pk, sk".into()))
-            .await?
-            .iter()
-            .map(PkSk::from_map)
-            .collect::<Result<HashSet<_>, _>>()?
+        util.raw_batch_get_ids(
+            in_table_ids.into_iter().collect(),
+            Some("pk, sk".into()),
+            true,
+        )
+        .await?
+        .iter()
+        .map(PkSk::from_map)
+        .collect::<Result<HashSet<_>, _>>()?
     };
     if let Some(pending_deletes) = pending_deletes {
         existing_in_table.retain(|id| !pending_deletes.contains(id));

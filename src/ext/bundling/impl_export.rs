@@ -390,6 +390,7 @@ async fn raw_query(
             condition.to_string(),
             values,
             None,
+            true,
         )
         .await
         .map_err(|error| DynamoCalloutError::with_debug(&error))?;

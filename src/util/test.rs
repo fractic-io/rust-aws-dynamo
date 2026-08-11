@@ -6,15 +6,18 @@ mod tests {
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, DynamoInsertPosition, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL,
-        COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
+        CreateOptions, DynamoInsertPosition, GetOptions, TtlConfig, UpdateCondition,
+        AUTO_FIELDS_TTL, COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        EXPAND_DATA_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
         schema::{AutoFields, DynamoObject, NestingLogic, PkSk},
         util::{
-            backend::MockDynamoBackend, DynamoGenericQuery, DynamoQuery, DynamoUtil,
-            AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT,
+            backend::MockDynamoBackend,
+            consistency_overlay::{InMemoryDynamoConsistencyOverlay, OverlayMutation},
+            DynamoGenericQuery, DynamoQuery, DynamoUtil, AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_SORT,
+            AUTO_FIELDS_UPDATED_AT,
         },
     };
 
@@ -167,6 +170,10 @@ mod tests {
     async fn build_util(mock_backend: MockDynamoBackend) -> DynamoUtil {
         let ctx = TestCtx::init_test("mock-region".to_string());
         ctx.override_dynamo_backend(Arc::new(mock_backend)).await;
+        ctx.override_dynamo_consistency_overlay(Arc::new(
+            InMemoryDynamoConsistencyOverlay::default(),
+        ))
+        .await;
         DynamoUtil::new(&*ctx, "my_table").await.unwrap()
     }
 
@@ -282,8 +289,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123".to_string())
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![
                     QueryOutput::builder()
                         .set_items(Some(vec![
@@ -332,8 +340,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123".to_string())
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![
                     QueryOutput::builder()
                         .set_items(Some(vec![
@@ -410,8 +419,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("TEST#".to_string()),
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(move |_, _, _, _, _| {
+            .returning(move |_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         // Non-batch item:
@@ -525,8 +535,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST".to_string())
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_item_high_sort().1,
@@ -554,16 +565,17 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
-            .withf(|table, index, condition, values, projection| {
+            .withf(|table, index, condition, values, projection, consistent| {
                 table == "my_table"
                     && index.is_none()
                     && condition == "pk = :pk_val AND sk BETWEEN :sk_val AND :sk_max"
                     && projection.is_none()
+                    && !consistent
                     && matches!(values.get(":pk_val"), Some(AttributeValue::S(pk)) if pk == "ROOT")
                     && matches!(values.get(":sk_val"), Some(AttributeValue::S(sk)) if sk.starts_with("PARENT#1#TIMETEST#"))
                     && matches!(values.get(":sk_max"), Some(AttributeValue::S(sk)) if sk.starts_with("PARENT#1#TIMETEST#"))
             })
-            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+            .returning(|_, _, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
 
         let util = build_util(backend).await;
         let query = DynamoGenericQuery::pk("ROOT")
@@ -588,8 +600,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("@PARTSINGLE".to_string())
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2),
@@ -625,8 +638,9 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("GROUP#123#TEST#2".to_string())
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(build_item_high_sort().1))
                     .build())
@@ -651,6 +665,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_item_opt_consistent() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("GROUP#123#TEST#2".to_string())
+                }),
+                eq(None),
+                eq(true),
+            )
+            .once()
+            .returning(|_, _, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(build_item_high_sort().1))
+                    .build())
+            });
+
+        let result = build_util(backend)
+            .await
+            .get_item_opt::<TestDynamoObject>(
+                PkSk {
+                    pk: "ROOT".into(),
+                    sk: "GROUP#123#TEST#2".into(),
+                },
+                GetOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
     async fn test_get_item_partitioned_singleton_uses_query_and_collapses() {
         let mut backend = MockDynamoBackend::new();
         backend
@@ -664,8 +715,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("@PARTSINGLE".to_string())
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2),
@@ -693,6 +745,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_item_opt_partitioned_consistent_uses_consistent_query() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("@PARTSINGLE".to_string())
+                }),
+                eq(None),
+                eq(true),
+            )
+            .once()
+            .returning(|_, _, _, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2),
+                        build_partitioned_item("ROOT", "@PARTSINGLE+0", "{\"val\":\"hel"),
+                        build_partitioned_item("ROOT", "@PARTSINGLE+1", "lo\",\"num\":7}"),
+                    ]))
+                    .build()])
+            });
+
+        let result = build_util(backend)
+            .await
+            .get_item_opt::<PartitionedSingleton>(
+                PkSk {
+                    pk: "ROOT".into(),
+                    sk: "@PARTSINGLE".into(),
+                },
+                GetOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
     async fn test_item_exists() {
         let mut backend = MockDynamoBackend::new();
         backend
@@ -704,8 +799,9 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("GROUP#123#TEST#2".to_string())
                 }),
                 eq(Some("pk".to_string())),
+                eq(false),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
                         "pk".to_string() => AttributeValue::S("ROOT".to_string()),
@@ -721,8 +817,9 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("NOT_EXISTS#456".to_string())
                 }),
                 eq(Some("pk".to_string())),
+                eq(false),
             )
-            .returning(|_, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
+            .returning(|_, _, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
 
         let util = build_util(backend).await;
 
@@ -743,6 +840,45 @@ mod tests {
         assert!(expect_not_exists.is_ok());
         assert!(expect_exists.unwrap());
         assert!(!expect_not_exists.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_item_exists_opt_consistent() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("TEST#1".to_string())
+                }),
+                eq(Some("pk".to_string())),
+                eq(true),
+            )
+            .once()
+            .returning(|_, _, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string())
+                    }))
+                    .build())
+            });
+
+        let exists = build_util(backend)
+            .await
+            .item_exists_opt(
+                PkSk {
+                    pk: "ROOT".into(),
+                    sk: "TEST#1".into(),
+                },
+                GetOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(exists);
     }
 
     #[tokio::test]
@@ -783,6 +919,10 @@ mod tests {
         assert_eq!(result.pk(), "ROOT".to_string());
         assert!(result.sk().starts_with("GROUP#123#TEST#"));
         assert_eq!(result.sk().len(), "GROUP#123#TEST#".len() + 22);
+        assert!(matches!(
+            util.consistency_overlay.snapshot("my_table").as_slice(),
+            [OverlayMutation::Put { id, .. }] if id == result.id()
+        ));
     }
 
     #[tokio::test]
@@ -820,7 +960,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_item_ordered_opt_uses_creation_token() {
         let mut backend = MockDynamoBackend::new();
-        backend.expect_query().returning(|_, _, _, _, _| {
+        backend.expect_query().returning(|_, _, _, _, _, _| {
             Ok(vec![QueryOutput::builder().set_items(Some(vec![])).build()])
         });
         backend
@@ -923,8 +1063,9 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }),
                 eq(None),
+                eq(true),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
                         "pk".to_string() => AttributeValue::S("ROOT".to_string()),
@@ -1113,8 +1254,9 @@ mod tests {
                     },
                 ]),
                 eq(None),
+                eq(true),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
                     .set_responses(Some(collection! {
                         "my_table".to_string() => vec![],
@@ -1201,6 +1343,29 @@ mod tests {
         };
 
         util.update_item(&update_item).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_item_records_returned_post_image() {
+        let object = build_item_no_data().0;
+        let post_image = build_item_no_data().1;
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .once()
+            .returning(move |_, _, _, _, _, _| {
+                Ok(UpdateItemOutput::builder()
+                    .set_attributes(Some(post_image.clone()))
+                    .build())
+            });
+
+        let util = build_util(backend).await;
+        util.update_item(&object).await.unwrap();
+
+        assert!(matches!(
+            util.consistency_overlay.snapshot("my_table").as_slice(),
+            [OverlayMutation::Put { id, .. }] if id == object.id()
+        ));
     }
 
     #[tokio::test]
@@ -1630,8 +1795,9 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("RENAMEDUPDATE#321".to_string())
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
                         "pk".to_string() => AttributeValue::S("ABC#123".to_string()),
@@ -1910,8 +2076,9 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("TEST#321".to_string())
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(GetItemOutput::builder()
                     .set_item(Some(collection! {
                         // ID and unrelated auto fields should not be included
@@ -1991,8 +2158,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_get_item()
-            .withf(|table, _key, _projection| table == "my_table")
-            .returning(|_, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
+            .withf(|table, _key, _projection, consistent| table == "my_table" && !consistent)
+            .returning(|_, _, _, _| Ok(GetItemOutput::builder().set_item(None).build()));
         backend
             .expect_update_item()
             .withf(|_, id, update_expr, values, keys, condition| {
@@ -2068,6 +2235,11 @@ mod tests {
         })
         .await
         .unwrap();
+        assert!(matches!(
+            util.consistency_overlay.snapshot("my_table").as_slice(),
+            [OverlayMutation::Delete(id)]
+                if id.pk == "GROUP#123" && id.sk == "LIST#123#TEST#456"
+        ));
     }
 
     #[tokio::test]
@@ -2108,8 +2280,9 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }]),
                 eq(None),
+                eq(true),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
                     .set_responses(Some(collection! {
                         "my_table".to_string() => vec![build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2)],
@@ -2164,8 +2337,9 @@ mod tests {
                     },
                 ]),
                 eq(None),
+                eq(true),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
                     .set_responses(Some(collection! {
                         "my_table".to_string() => vec![
@@ -2275,8 +2449,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
                 }),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_item_high_sort().1,
@@ -2319,8 +2494,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
                 }),
                 eq(Some("pk, sk".to_string())),
+                eq(true),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![build_item_no_data().1]))
                     .build()])
@@ -2362,8 +2538,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("@PARTINDEX".to_string()),
                 }),
                 eq(Some("pk, sk".to_string())),
+                eq(true),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         build_partitioned_placeholder("ROOT", "@PARTINDEX[a]", 2),
@@ -2405,8 +2582,9 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#".to_string()),
                 }),
                 eq(Some("pk, sk".to_string())),
+                eq(true),
             )
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         collection! {
@@ -2452,10 +2630,10 @@ mod tests {
 
         backend
             .expect_query()
-            .withf(|table, _index, _cond, _vals, projection| {
+            .withf(|table, _index, _cond, _vals, projection, _consistent| {
                 table == "my_table" && projection.as_deref() == Some("pk, sk")
             })
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![
                         collection! {
@@ -2549,10 +2727,10 @@ mod tests {
 
         backend
             .expect_query()
-            .withf(|table, _index, _cond, _vals, projection| {
+            .withf(|table, _index, _cond, _vals, projection, _consistent| {
                 table == "my_table" && projection.as_deref() == Some("pk, sk")
             })
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![
                     QueryOutput::builder()
                         .set_items(Some(vec![
@@ -2645,10 +2823,10 @@ mod tests {
 
         backend
             .expect_query()
-            .withf(|table, _index, _cond, _vals, projection| {
+            .withf(|table, _index, _cond, _vals, projection, _consistent| {
                 table == "my_table" && projection.as_deref() == Some("pk, sk")
             })
-            .returning(|_, _, _, _, _| {
+            .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
                     .set_items(Some(vec![collection! {
                         "pk".to_string() => AttributeValue::S("GROUP#789".to_string()),
@@ -2714,8 +2892,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_scan()
-            .with(eq("my_table".to_string()))
-            .returning(|_| {
+            .with(eq("my_table".to_string()), eq(false))
+            .returning(|_, _| {
                 Ok(vec![ScanOutput::builder()
                     .set_items(Some(vec![
                         build_item_low_sort().1.clone(),
@@ -2738,8 +2916,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_scan()
-            .with(eq("my_table".to_string()))
-            .returning(|_| {
+            .with(eq("my_table".to_string()), eq(false))
+            .returning(|_, _| {
                 Ok(vec![
                     ScanOutput::builder()
                         .set_items(Some(vec![build_item_no_data().1.clone()]))
@@ -2804,11 +2982,9 @@ mod tests {
             }
         });
 
-        build_util(backend)
-            .await
-            .raw_batch_put_item(vec![first, second])
-            .await
-            .unwrap();
+        let util = build_util(backend).await;
+        util.raw_batch_put_item(vec![first, second]).await.unwrap();
+        assert_eq!(util.consistency_overlay.snapshot("my_table").len(), 2);
     }
 
     #[tokio::test]
@@ -2830,7 +3006,8 @@ mod tests {
         backend.expect_batch_get_item().times(2).returning({
             let calls = calls.clone();
             let second_key = second_key.clone();
-            move |table, keys, _| {
+            move |table, keys, _, consistent_read| {
+                assert!(!consistent_read);
                 let call = calls.fetch_add(1, Ordering::Relaxed);
                 if call == 0 {
                     assert_eq!(keys.len(), 2);
@@ -2852,7 +3029,7 @@ mod tests {
 
         build_util(backend)
             .await
-            .raw_batch_get_ids(vec![first, second], None)
+            .raw_batch_get_ids(vec![first, second], None, false)
             .await
             .unwrap();
     }
@@ -2898,11 +3075,11 @@ mod tests {
             }
         });
 
-        build_util(backend)
-            .await
-            .raw_batch_delete_ids(vec![first, second])
+        let util = build_util(backend).await;
+        util.raw_batch_delete_ids(vec![first, second])
             .await
             .unwrap();
+        assert_eq!(util.consistency_overlay.snapshot("my_table").len(), 2);
     }
 
     #[tokio::test]
@@ -2970,10 +3147,11 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("PARENT#1".to_string()),
                 }),
                 eq(Some("pk, sk".to_string())),
+                eq(true),
             )
             .returning({
                 let expected_keys = expected_keys.clone();
-                move |_, _, _, _, _| {
+                move |_, _, _, _, _, _| {
                     Ok(vec![
                         QueryOutput::builder()
                             .set_items(Some(expected_keys[..2].to_vec()))
@@ -3010,7 +3188,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
-            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().set_items(None).build()]));
+            .withf(|_, _, _, _, _, consistent_read| *consistent_read)
+            .returning(|_, _, _, _, _, _| Ok(vec![QueryOutput::builder().set_items(None).build()]));
         backend.expect_batch_delete_item().times(0);
 
         let deleted = build_util(backend)
@@ -3064,7 +3243,8 @@ mod tests {
         backend
             .expect_batch_get_item()
             .times(4)
-            .returning(|table, keys, _| {
+            .returning(|table, keys, _, consistent_read| {
+                assert!(!consistent_read);
                 Ok(BatchGetItemOutput::builder()
                     .set_unprocessed_keys(Some(HashMap::from([(
                         table,
@@ -3078,7 +3258,7 @@ mod tests {
 
         let error = build_util(backend)
             .await
-            .raw_batch_get_ids(vec![id], None)
+            .raw_batch_get_ids(vec![id], None, false)
             .await
             .unwrap_err();
 

@@ -26,9 +26,9 @@ use crate::{
         DynamoObject, IdLogic, NestingLogic, PkSk,
     },
     util::{
-        backend::MockDynamoBackend, DynamoInsertPosition, DynamoMap, DynamoUtil,
-        AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY,
-        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        backend::MockDynamoBackend, consistency_overlay::InMemoryDynamoConsistencyOverlay,
+        DynamoInsertPosition, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
+        AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
     },
 };
 
@@ -460,6 +460,7 @@ fn bundle_item(
 fn util(backend: MockDynamoBackend) -> DynamoUtil {
     DynamoUtil {
         backend: Arc::new(backend),
+        consistency_overlay: Arc::new(InMemoryDynamoConsistencyOverlay::default()),
         table: "table".into(),
     }
 }
@@ -472,7 +473,8 @@ async fn export_omits_materialized_attributes() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, consistent_read| {
+            assert!(consistent_read);
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = if pk == "ROOT" {
                 vec![HashMap::from([
@@ -568,7 +570,7 @@ async fn import_recomputes_materialized_attributes_after_id_and_reference_remapp
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -628,7 +630,7 @@ async fn recursive_export_scopes_omissions_and_normalizes_ext_partitioning() {
     backend
         .expect_query()
         .times(7)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => {
@@ -773,7 +775,7 @@ async fn recursive_export_omits_configured_subtrees_and_records_the_omission() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => vec![row("ROOT", root_sk)],
@@ -814,7 +816,7 @@ async fn recursive_export_rejects_denied_descendants() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => vec![row("ROOT", root_sk)],
@@ -852,7 +854,7 @@ async fn export_reports_required_internal_targets_outside_the_scope() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => {
@@ -898,7 +900,7 @@ async fn export_loads_bundle_configuration_once() {
     backend
         .expect_query()
         .times(2)
-        .returning(|_, _, _, values, _| {
+        .returning(|_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => vec![row("ROOT", "ROOTOBJ#root")],
@@ -1202,7 +1204,7 @@ async fn import_materializes_the_topology_matching_shared_label_variant() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -1389,7 +1391,7 @@ async fn import_normalizes_legacy_reference_fields_before_remapping_and_writing(
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, Vec::new())])))
                 .build())
@@ -1707,18 +1709,21 @@ async fn ordered_new_gets_a_fresh_id_and_is_placed_last() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
         });
-    backend.expect_query().times(1).returning(|_, _, _, _, _| {
-        let mut existing = row("ROOTOBJ#parent", "ORDERED#existing");
-        existing.insert("sort".into(), AttributeValue::N("7".into()));
-        Ok(vec![QueryOutput::builder()
-            .set_items(Some(vec![existing]))
-            .build()])
-    });
+    backend
+        .expect_query()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            let mut existing = row("ROOTOBJ#parent", "ORDERED#existing");
+            existing.insert("sort".into(), AttributeValue::N("7".into()));
+            Ok(vec![QueryOutput::builder()
+                .set_items(Some(vec![existing]))
+                .build()])
+        });
     backend
         .expect_batch_put_item()
         .times(1)
@@ -1773,7 +1778,7 @@ async fn new_without_an_insertion_position_clears_the_source_sort() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -1846,10 +1851,9 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
         ],
     };
     let mut backend = MockDynamoBackend::new();
-    backend
-        .expect_batch_get_item()
-        .times(2)
-        .returning(move |table, keys, projection| {
+    backend.expect_batch_get_item().times(2).returning(
+        move |table, keys, projection, consistent_read| {
+            assert!(consistent_read);
             let is_conflict_check = keys.iter().any(|key| {
                 key.get("sk")
                     .and_then(|value| value.as_s().ok())
@@ -1865,7 +1869,8 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, rows)])))
                 .build())
-        });
+        },
+    );
     backend
         .expect_batch_put_item()
         .times(1)
@@ -1937,7 +1942,7 @@ async fn new_preserves_valid_out_of_table_references() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -2111,7 +2116,7 @@ async fn external_reference_to_an_incoming_id_is_not_cleared() {
     backend
         .expect_batch_get_item()
         .times(2)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -2168,7 +2173,7 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, projection| {
+        .returning(|table, _, projection, _| {
             assert_eq!(projection, None);
             let mut placeholder = row("ROOT", "ROOTOBJ#root");
             placeholder.insert(
@@ -2278,7 +2283,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
     backend
         .expect_batch_get_item()
         .times(2)
-        .returning(|table, _, projection| {
+        .returning(|table, _, projection, _| {
             let rows = if projection.is_none() {
                 vec![row("ROOT", "ROOTOBJ#root")]
             } else {
@@ -2290,7 +2295,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
         });
     backend.expect_query().times(6).returning({
         let local_out_of_table_id = local_out_of_table_id.clone();
-        move |_, _, _, values, _| {
+        move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => {
@@ -2476,7 +2481,7 @@ async fn new_allows_a_fixed_batch_root_below_a_different_parent() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())

@@ -14,7 +14,9 @@ use aws_sdk_dynamodb::{
         scan::{ScanError, ScanOutput},
         update_item::{UpdateItemError, UpdateItemOutput},
     },
-    types::{AttributeValue, DeleteRequest, KeysAndAttributes, PutRequest, WriteRequest},
+    types::{
+        AttributeValue, DeleteRequest, KeysAndAttributes, PutRequest, ReturnValue, WriteRequest,
+    },
 };
 use fractic_context::register_ctx_singleton;
 use fractic_core::collection;
@@ -38,15 +40,21 @@ pub trait DynamoBackend: Send + Sync {
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<Vec<QueryOutput>, SdkError<QueryError>>;
 
-    async fn scan(&self, table_name: String) -> Result<Vec<ScanOutput>, SdkError<ScanError>>;
+    async fn scan(
+        &self,
+        table_name: String,
+        consistent_read: bool,
+    ) -> Result<Vec<ScanOutput>, SdkError<ScanError>>;
 
     async fn get_item(
         &self,
         table_name: String,
         key: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<GetItemOutput, SdkError<GetItemError>>;
 
     async fn batch_get_item(
@@ -54,6 +62,7 @@ pub trait DynamoBackend: Send + Sync {
         table_name: String,
         keys: Vec<HashMap<String, AttributeValue>>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<BatchGetItemOutput, SdkError<BatchGetItemError>>;
 
     async fn put_item(
@@ -104,6 +113,7 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<Vec<QueryOutput>, SdkError<QueryError>> {
         self.query()
             .set_table_name(Some(table_name))
@@ -111,15 +121,21 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .set_key_condition_expression(Some(condition))
             .set_expression_attribute_values(Some(attribute_values))
             .set_projection_expression(projection_expression)
+            .set_consistent_read(Some(consistent_read))
             .into_paginator()
             .send()
             .try_collect()
             .await
     }
 
-    async fn scan(&self, table_name: String) -> Result<Vec<ScanOutput>, SdkError<ScanError>> {
+    async fn scan(
+        &self,
+        table_name: String,
+        consistent_read: bool,
+    ) -> Result<Vec<ScanOutput>, SdkError<ScanError>> {
         self.scan()
             .set_table_name(Some(table_name))
+            .set_consistent_read(Some(consistent_read))
             .into_paginator()
             .send()
             .try_collect()
@@ -131,11 +147,13 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         table_name: String,
         key: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<GetItemOutput, SdkError<GetItemError>> {
         self.get_item()
             .set_table_name(Some(table_name))
             .set_key(Some(key))
             .set_projection_expression(projection_expression)
+            .set_consistent_read(Some(consistent_read))
             .send()
             .await
     }
@@ -145,11 +163,12 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         table_name: String,
         keys: Vec<HashMap<String, AttributeValue>>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<BatchGetItemOutput, SdkError<BatchGetItemError>> {
-        let mut request = KeysAndAttributes::builder().set_keys(Some(keys));
-        if let Some(projection_expression) = projection_expression {
-            request = request.projection_expression(projection_expression);
-        }
+        let request = KeysAndAttributes::builder()
+            .set_keys(Some(keys))
+            .set_projection_expression(projection_expression)
+            .consistent_read(consistent_read);
         self.batch_get_item()
             .set_request_items(Some(collection!(
                 table_name => request
@@ -211,6 +230,7 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .set_expression_attribute_values(Some(expression_attribute_values))
             .set_expression_attribute_names(Some(expression_attribute_names))
             .set_condition_expression(condition_expression)
+            .return_values(ReturnValue::AllNew)
             .send()
             .await
     }

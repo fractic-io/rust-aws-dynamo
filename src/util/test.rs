@@ -1254,8 +1254,9 @@ mod tests {
                     },
                 ]),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
                     .set_responses(Some(collection! {
                         "my_table".to_string() => vec![],
@@ -2279,8 +2280,9 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }]),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
                     .set_responses(Some(collection! {
                         "my_table".to_string() => vec![build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2)],
@@ -2335,8 +2337,9 @@ mod tests {
                     },
                 ]),
                 eq(None),
+                eq(false),
             )
-            .returning(|_, _, _| {
+            .returning(|_, _, _, _| {
                 Ok(BatchGetItemOutput::builder()
                     .set_responses(Some(collection! {
                         "my_table".to_string() => vec![
@@ -2889,8 +2892,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_scan()
-            .with(eq("my_table".to_string()))
-            .returning(|_| {
+            .with(eq("my_table".to_string()), eq(false))
+            .returning(|_, _| {
                 Ok(vec![ScanOutput::builder()
                     .set_items(Some(vec![
                         build_item_low_sort().1.clone(),
@@ -2913,8 +2916,8 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_scan()
-            .with(eq("my_table".to_string()))
-            .returning(|_| {
+            .with(eq("my_table".to_string()), eq(false))
+            .returning(|_, _| {
                 Ok(vec![
                     ScanOutput::builder()
                         .set_items(Some(vec![build_item_no_data().1.clone()]))
@@ -3003,7 +3006,7 @@ mod tests {
         backend.expect_batch_get_item().times(2).returning({
             let calls = calls.clone();
             let second_key = second_key.clone();
-            move |table, keys, _| {
+            move |table, keys, _, _| {
                 let call = calls.fetch_add(1, Ordering::Relaxed);
                 if call == 0 {
                     assert_eq!(keys.len(), 2);
@@ -3238,7 +3241,7 @@ mod tests {
         backend
             .expect_batch_get_item()
             .times(4)
-            .returning(|table, keys, _| {
+            .returning(|table, keys, _, _| {
                 Ok(BatchGetItemOutput::builder()
                     .set_unprocessed_keys(Some(HashMap::from([(
                         table,

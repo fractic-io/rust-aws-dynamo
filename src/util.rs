@@ -904,7 +904,7 @@ impl DynamoUtil {
     pub async fn raw_full_table_scan(&self) -> Result<Vec<DynamoMap>, ServerError> {
         let response = self
             .backend
-            .scan(self.table.clone())
+            .scan(self.table.clone(), false)
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         Ok(response
@@ -942,6 +942,7 @@ impl DynamoUtil {
                         self.table.clone(),
                         pending_keys,
                         projection_expression.clone(),
+                        false,
                     )
                     .await
                     .map_err(|e| DynamoCalloutError::with_debug(&e))?;

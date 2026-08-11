@@ -43,7 +43,11 @@ pub trait DynamoBackend: Send + Sync {
         consistent_read: bool,
     ) -> Result<Vec<QueryOutput>, SdkError<QueryError>>;
 
-    async fn scan(&self, table_name: String) -> Result<Vec<ScanOutput>, SdkError<ScanError>>;
+    async fn scan(
+        &self,
+        table_name: String,
+        consistent_read: bool,
+    ) -> Result<Vec<ScanOutput>, SdkError<ScanError>>;
 
     async fn get_item(
         &self,
@@ -58,6 +62,7 @@ pub trait DynamoBackend: Send + Sync {
         table_name: String,
         keys: Vec<HashMap<String, AttributeValue>>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<BatchGetItemOutput, SdkError<BatchGetItemError>>;
 
     async fn put_item(
@@ -123,9 +128,14 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .await
     }
 
-    async fn scan(&self, table_name: String) -> Result<Vec<ScanOutput>, SdkError<ScanError>> {
+    async fn scan(
+        &self,
+        table_name: String,
+        consistent_read: bool,
+    ) -> Result<Vec<ScanOutput>, SdkError<ScanError>> {
         self.scan()
             .set_table_name(Some(table_name))
+            .set_consistent_read(Some(consistent_read))
             .into_paginator()
             .send()
             .try_collect()
@@ -153,8 +163,11 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         table_name: String,
         keys: Vec<HashMap<String, AttributeValue>>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<BatchGetItemOutput, SdkError<BatchGetItemError>> {
-        let mut request = KeysAndAttributes::builder().set_keys(Some(keys));
+        let mut request = KeysAndAttributes::builder()
+            .set_keys(Some(keys))
+            .consistent_read(consistent_read);
         if let Some(projection_expression) = projection_expression {
             request = request.projection_expression(projection_expression);
         }

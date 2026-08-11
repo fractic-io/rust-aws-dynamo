@@ -569,7 +569,7 @@ async fn import_recomputes_materialized_attributes_after_id_and_reference_remapp
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -1203,7 +1203,7 @@ async fn import_materializes_the_topology_matching_shared_label_variant() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -1390,7 +1390,7 @@ async fn import_normalizes_legacy_reference_fields_before_remapping_and_writing(
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, Vec::new())])))
                 .build())
@@ -1708,7 +1708,7 @@ async fn ordered_new_gets_a_fresh_id_and_is_placed_last() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -1777,7 +1777,7 @@ async fn new_without_an_insertion_position_clears_the_source_sort() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -1853,7 +1853,7 @@ async fn new_remaps_bundled_refs_and_clears_zeroed_external_refs() {
     backend
         .expect_batch_get_item()
         .times(2)
-        .returning(move |table, keys, projection| {
+        .returning(move |table, keys, projection, _| {
             let is_conflict_check = keys.iter().any(|key| {
                 key.get("sk")
                     .and_then(|value| value.as_s().ok())
@@ -1941,7 +1941,7 @@ async fn new_preserves_valid_out_of_table_references() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -2115,7 +2115,7 @@ async fn external_reference_to_an_incoming_id_is_not_cleared() {
     backend
         .expect_batch_get_item()
         .times(2)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
@@ -2172,7 +2172,7 @@ async fn merge_upserts_preserved_ids_and_removes_old_ext_partitions() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, projection| {
+        .returning(|table, _, projection, _| {
             assert_eq!(projection, None);
             let mut placeholder = row("ROOT", "ROOTOBJ#root");
             placeholder.insert(
@@ -2282,7 +2282,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
     backend
         .expect_batch_get_item()
         .times(2)
-        .returning(|table, _, projection| {
+        .returning(|table, _, projection, _| {
             let rows = if projection.is_none() {
                 vec![row("ROOT", "ROOTOBJ#root")]
             } else {
@@ -2480,7 +2480,7 @@ async fn new_allows_a_fixed_batch_root_below_a_different_parent() {
     backend
         .expect_batch_get_item()
         .times(1)
-        .returning(|table, _, _| {
+        .returning(|table, _, _, _| {
             Ok(BatchGetItemOutput::builder()
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())

@@ -935,7 +935,7 @@ impl DynamoUtil {
                 })
                 .collect::<Vec<_>>();
             for attempt in 0..=MAX_BATCH_READ_RETRIES {
-                let response = self
+                let mut response = self
                     .backend
                     .batch_get_item(
                         self.table.clone(),
@@ -946,15 +946,17 @@ impl DynamoUtil {
                     .await
                     .map_err(|e| DynamoCalloutError::with_debug(&e))?;
                 if let Some(found) = response
-                    .responses()
-                    .and_then(|responses| responses.get(&self.table))
+                    .responses
+                    .as_mut()
+                    .and_then(|responses| responses.remove(&self.table))
                 {
-                    items.extend(found.iter().cloned());
+                    items.extend(found);
                 }
                 pending_keys = response
-                    .unprocessed_keys()
-                    .and_then(|keys| keys.get(&self.table))
-                    .map(|keys| keys.keys().to_vec())
+                    .unprocessed_keys
+                    .as_mut()
+                    .and_then(|keys| keys.remove(&self.table))
+                    .map(|keys| keys.keys)
                     .unwrap_or_default();
                 if pending_keys.is_empty() {
                     break;
@@ -1100,8 +1102,12 @@ impl DynamoUtil {
         }
 
         // Split into 25-item batches (max supported by DynamoDB).
-        for batch in items.chunks(25) {
-            let mut pending = batch.to_vec();
+        let mut items = items.into_iter();
+        loop {
+            let mut pending = items.by_ref().take(25).collect::<Vec<_>>();
+            if pending.is_empty() {
+                break;
+            }
             for attempt in 0..=MAX_BATCH_WRITE_RETRIES {
                 let requested = pending;
                 let response = self

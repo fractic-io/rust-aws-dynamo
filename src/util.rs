@@ -829,7 +829,7 @@ impl DynamoUtil {
                     ":sk_val".to_string() => AttributeValue::S(search_prefix.sk),
                 },
                 Some("pk, sk".to_string()),
-                false,
+                true,
             )
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
@@ -1060,7 +1060,7 @@ impl DynamoUtil {
                     ":pk_val".to_string() => AttributeValue::S(partition_key),
                 },
                 Some("pk, sk".to_string()),
-                false,
+                true,
             )
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;

@@ -74,7 +74,7 @@ pub(crate) async fn fetch_num_partitions(
     ]);
     let response = util
         .backend
-        .get_item(util.table.clone(), key, None, false)
+        .get_item(util.table.clone(), key, None, true)
         .await
         .map_err(|e| DynamoCalloutError::with_debug(&e))?;
     Ok(response.item.and_then(|item| {

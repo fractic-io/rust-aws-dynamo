@@ -1063,7 +1063,7 @@ mod tests {
                     "sk".to_string() => AttributeValue::S("@PARTSINGLE".to_string()),
                 }),
                 eq(None),
-                eq(false),
+                eq(true),
             )
             .returning(|_, _, _, _| {
                 Ok(GetItemOutput::builder()
@@ -2494,7 +2494,7 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("GROUP#123#TEST#".to_string()),
                 }),
                 eq(Some("pk, sk".to_string())),
-                eq(false),
+                eq(true),
             )
             .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
@@ -2538,7 +2538,7 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("@PARTINDEX".to_string()),
                 }),
                 eq(Some("pk, sk".to_string())),
-                eq(false),
+                eq(true),
             )
             .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
@@ -2582,7 +2582,7 @@ mod tests {
                     ":sk_val".to_string() => AttributeValue::S("BATCHOPTTOPLEVEL#".to_string()),
                 }),
                 eq(Some("pk, sk".to_string())),
-                eq(false),
+                eq(true),
             )
             .returning(|_, _, _, _, _, _| {
                 Ok(vec![QueryOutput::builder()
@@ -3006,7 +3006,8 @@ mod tests {
         backend.expect_batch_get_item().times(2).returning({
             let calls = calls.clone();
             let second_key = second_key.clone();
-            move |table, keys, _, _| {
+            move |table, keys, _, consistent_read| {
+                assert!(!consistent_read);
                 let call = calls.fetch_add(1, Ordering::Relaxed);
                 if call == 0 {
                     assert_eq!(keys.len(), 2);
@@ -3146,7 +3147,7 @@ mod tests {
                     ":pk_val".to_string() => AttributeValue::S("PARENT#1".to_string()),
                 }),
                 eq(Some("pk, sk".to_string())),
-                eq(false),
+                eq(true),
             )
             .returning({
                 let expected_keys = expected_keys.clone();
@@ -3187,6 +3188,7 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query()
+            .withf(|_, _, _, _, _, consistent_read| *consistent_read)
             .returning(|_, _, _, _, _, _| Ok(vec![QueryOutput::builder().set_items(None).build()]));
         backend.expect_batch_delete_item().times(0);
 
@@ -3241,7 +3243,8 @@ mod tests {
         backend
             .expect_batch_get_item()
             .times(4)
-            .returning(|table, keys, _, _| {
+            .returning(|table, keys, _, consistent_read| {
+                assert!(!consistent_read);
                 Ok(BatchGetItemOutput::builder()
                     .set_unprocessed_keys(Some(HashMap::from([(
                         table,

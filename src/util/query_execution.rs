@@ -49,7 +49,6 @@ impl DynamoUtil {
             .await
     }
 
-    /// Efficiently queries all children of type `T` belonging to `parent_id`.
     pub async fn query_all_opt<T: DynamoObject>(
         &self,
         parent_id: &PkSk,

@@ -279,14 +279,11 @@ impl DynamoUtil {
                 "pk".to_string() => AttributeValue::S(id.pk),
                 "sk".to_string() => AttributeValue::S(id.sk),
             };
-            let response = if options.consistent_read {
-                self.backend
-                    .get_item_consistent(self.table.clone(), key, None)
-                    .await
-            } else {
-                self.backend.get_item(self.table.clone(), key, None).await
-            }
-            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+            let response = self
+                .backend
+                .get_item(self.table.clone(), key, None, options.consistent_read)
+                .await
+                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
             response
                 .item
                 .map(|item| parse_dynamo_map::<T>(&item))
@@ -310,16 +307,11 @@ impl DynamoUtil {
             "sk".to_string() => AttributeValue::S(id.sk),
         };
         let projection = Some("pk".to_string());
-        let response = if options.consistent_read {
-            self.backend
-                .get_item_consistent(self.table.clone(), key, projection)
-                .await
-        } else {
-            self.backend
-                .get_item(self.table.clone(), key, projection)
-                .await
-        }
-        .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+        let response = self
+            .backend
+            .get_item(self.table.clone(), key, projection, options.consistent_read)
+            .await
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         Ok(response.item.is_some())
     }
 
@@ -839,6 +831,7 @@ impl DynamoUtil {
                     ":sk_val".to_string() => AttributeValue::S(search_prefix.sk),
                 },
                 Some("pk, sk".to_string()),
+                false,
             )
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;
@@ -1068,6 +1061,7 @@ impl DynamoUtil {
                     ":pk_val".to_string() => AttributeValue::S(partition_key),
                 },
                 Some("pk, sk".to_string()),
+                false,
             )
             .await
             .map_err(|e| DynamoCalloutError::with_debug(&e))?;

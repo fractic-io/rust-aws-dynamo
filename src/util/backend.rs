@@ -40,15 +40,7 @@ pub trait DynamoBackend: Send + Sync {
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
-    ) -> Result<Vec<QueryOutput>, SdkError<QueryError>>;
-
-    async fn query_consistent(
-        &self,
-        table_name: String,
-        index: Option<String>,
-        condition: String,
-        attribute_values: HashMap<String, AttributeValue>,
-        projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<Vec<QueryOutput>, SdkError<QueryError>>;
 
     async fn scan(&self, table_name: String) -> Result<Vec<ScanOutput>, SdkError<ScanError>>;
@@ -58,13 +50,7 @@ pub trait DynamoBackend: Send + Sync {
         table_name: String,
         key: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
-    ) -> Result<GetItemOutput, SdkError<GetItemError>>;
-
-    async fn get_item_consistent(
-        &self,
-        table_name: String,
-        key: HashMap<String, AttributeValue>,
-        projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<GetItemOutput, SdkError<GetItemError>>;
 
     async fn batch_get_item(
@@ -122,6 +108,7 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         condition: String,
         attribute_values: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<Vec<QueryOutput>, SdkError<QueryError>> {
         self.query()
             .set_table_name(Some(table_name))
@@ -129,27 +116,7 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
             .set_key_condition_expression(Some(condition))
             .set_expression_attribute_values(Some(attribute_values))
             .set_projection_expression(projection_expression)
-            .into_paginator()
-            .send()
-            .try_collect()
-            .await
-    }
-
-    async fn query_consistent(
-        &self,
-        table_name: String,
-        index: Option<String>,
-        condition: String,
-        attribute_values: HashMap<String, AttributeValue>,
-        projection_expression: Option<String>,
-    ) -> Result<Vec<QueryOutput>, SdkError<QueryError>> {
-        self.query()
-            .set_table_name(Some(table_name))
-            .set_index_name(index)
-            .set_key_condition_expression(Some(condition))
-            .set_expression_attribute_values(Some(attribute_values))
-            .set_projection_expression(projection_expression)
-            .consistent_read(true)
+            .set_consistent_read(Some(consistent_read))
             .into_paginator()
             .send()
             .try_collect()
@@ -170,26 +137,13 @@ impl DynamoBackend for aws_sdk_dynamodb::Client {
         table_name: String,
         key: HashMap<String, AttributeValue>,
         projection_expression: Option<String>,
+        consistent_read: bool,
     ) -> Result<GetItemOutput, SdkError<GetItemError>> {
         self.get_item()
             .set_table_name(Some(table_name))
             .set_key(Some(key))
             .set_projection_expression(projection_expression)
-            .send()
-            .await
-    }
-
-    async fn get_item_consistent(
-        &self,
-        table_name: String,
-        key: HashMap<String, AttributeValue>,
-        projection_expression: Option<String>,
-    ) -> Result<GetItemOutput, SdkError<GetItemError>> {
-        self.get_item()
-            .set_table_name(Some(table_name))
-            .set_key(Some(key))
-            .set_projection_expression(projection_expression)
-            .consistent_read(true)
+            .set_consistent_read(Some(consistent_read))
             .send()
             .await
     }

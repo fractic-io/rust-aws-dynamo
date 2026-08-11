@@ -59,28 +59,18 @@ impl DynamoUtil {
         let overlay = expression
             .needs_overlay()
             .then(|| self.consistency_overlay.snapshot(&self.table));
-        let response = if expression.uses_native_consistency() {
-            self.backend
-                .query_consistent(
-                    self.table.clone(),
-                    expression.index_name.clone(),
-                    expression.condition.clone(),
-                    expression.attribute_values.clone(),
-                    None,
-                )
-                .await
-        } else {
-            self.backend
-                .query(
-                    self.table.clone(),
-                    expression.index_name.clone(),
-                    expression.condition.clone(),
-                    expression.attribute_values.clone(),
-                    None,
-                )
-                .await
-        }
-        .map_err(|error| DynamoCalloutError::with_debug(&error))?;
+        let response = self
+            .backend
+            .query(
+                self.table.clone(),
+                expression.index_name.clone(),
+                expression.condition.clone(),
+                expression.attribute_values.clone(),
+                None,
+                expression.uses_native_consistency(),
+            )
+            .await
+            .map_err(|error| DynamoCalloutError::with_debug(&error))?;
 
         let mut raw_items = response
             .into_iter()
@@ -204,16 +194,17 @@ mod tests {
     async fn consistent_table_query_uses_native_consistency() {
         let mut backend = MockDynamoBackend::new();
         backend
-            .expect_query_consistent()
-            .withf(|table, index, condition, values, projection| {
+            .expect_query()
+            .withf(|table, index, condition, values, projection, consistent| {
                 table == "table"
                     && index.is_none()
                     && condition == "pk = :pk_val"
                     && values.get(":pk_val") == Some(&AttributeValue::S("ROOT".into()))
                     && projection.is_none()
+                    && *consistent
             })
             .once()
-            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+            .returning(|_, _, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
 
         let util = util(
             backend,
@@ -236,16 +227,17 @@ mod tests {
         overlay.record_put("table", item("ITEM#LOCAL", "TARGET", "1"));
         let mut backend = MockDynamoBackend::new();
         backend
-            .expect_query_consistent()
-            .withf(|table, index, condition, values, projection| {
+            .expect_query()
+            .withf(|table, index, condition, values, projection, consistent| {
                 table == "table"
                     && index.as_deref() == Some("by_group")
                     && condition == "group = :pk_val"
                     && values.get(":pk_val") == Some(&AttributeValue::S("TARGET".into()))
                     && projection.is_none()
+                    && *consistent
             })
             .once()
-            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+            .returning(|_, _, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
 
         let result = util(backend, overlay)
             .query_generic(
@@ -278,7 +270,7 @@ mod tests {
         overlay.record_put("table", sparse);
 
         let mut backend = MockDynamoBackend::new();
-        backend.expect_query().once().returning(|_, _, _, _, _| {
+        backend.expect_query().once().returning(|_, _, _, _, _, _| {
             Ok(vec![QueryOutput::builder()
                 .set_items(Some(vec![
                     item("ITEM#A", "TARGET", "0"),
@@ -315,7 +307,7 @@ mod tests {
         backend
             .expect_query()
             .once()
-            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+            .returning(|_, _, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
 
         let result = util(backend, overlay)
             .query_generic(DynamoGenericQuery::index(INDEX).pk("TARGET").all())

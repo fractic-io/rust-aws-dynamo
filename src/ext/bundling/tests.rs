@@ -473,7 +473,7 @@ async fn export_omits_materialized_attributes() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = if pk == "ROOT" {
                 vec![HashMap::from([
@@ -629,7 +629,7 @@ async fn recursive_export_scopes_omissions_and_normalizes_ext_partitioning() {
     backend
         .expect_query()
         .times(7)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => {
@@ -774,7 +774,7 @@ async fn recursive_export_omits_configured_subtrees_and_records_the_omission() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => vec![row("ROOT", root_sk)],
@@ -815,7 +815,7 @@ async fn recursive_export_rejects_denied_descendants() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => vec![row("ROOT", root_sk)],
@@ -853,7 +853,7 @@ async fn export_reports_required_internal_targets_outside_the_scope() {
     backend
         .expect_query()
         .times(2)
-        .returning(move |_, _, _, values, _| {
+        .returning(move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => {
@@ -899,7 +899,7 @@ async fn export_loads_bundle_configuration_once() {
     backend
         .expect_query()
         .times(2)
-        .returning(|_, _, _, values, _| {
+        .returning(|_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => vec![row("ROOT", "ROOTOBJ#root")],
@@ -1713,13 +1713,16 @@ async fn ordered_new_gets_a_fresh_id_and_is_placed_last() {
                 .set_responses(Some(HashMap::from([(table, vec![])])))
                 .build())
         });
-    backend.expect_query().times(1).returning(|_, _, _, _, _| {
-        let mut existing = row("ROOTOBJ#parent", "ORDERED#existing");
-        existing.insert("sort".into(), AttributeValue::N("7".into()));
-        Ok(vec![QueryOutput::builder()
-            .set_items(Some(vec![existing]))
-            .build()])
-    });
+    backend
+        .expect_query()
+        .times(1)
+        .returning(|_, _, _, _, _, _| {
+            let mut existing = row("ROOTOBJ#parent", "ORDERED#existing");
+            existing.insert("sort".into(), AttributeValue::N("7".into()));
+            Ok(vec![QueryOutput::builder()
+                .set_items(Some(vec![existing]))
+                .build()])
+        });
     backend
         .expect_batch_put_item()
         .times(1)
@@ -2291,7 +2294,7 @@ async fn replace_deletes_omitted_descendants_when_their_managed_parent_is_remove
         });
     backend.expect_query().times(6).returning({
         let local_out_of_table_id = local_out_of_table_id.clone();
-        move |_, _, _, values, _| {
+        move |_, _, _, values, _, _| {
             let pk = values.get(":pk").unwrap().as_s().unwrap();
             let rows = match pk.as_str() {
                 "ROOT" => {

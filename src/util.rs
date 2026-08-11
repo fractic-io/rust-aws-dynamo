@@ -249,7 +249,6 @@ impl DynamoUtil {
         self.get_item_opt(id, GetOptions::default()).await
     }
 
-    /// Fetches an item by primary key with caller-selected read options.
     pub async fn get_item_opt<T: DynamoObject>(
         &self,
         id: PkSk,
@@ -296,7 +295,6 @@ impl DynamoUtil {
         self.item_exists_opt(id, GetOptions::default()).await
     }
 
-    /// Efficiently checks if an item exists with caller-selected consistency.
     pub async fn item_exists_opt(
         &self,
         id: PkSk,

@@ -6,8 +6,9 @@ mod tests {
     use crate::errors::DynamoNotFound;
     use crate::schema::{IdLogic, Timestamp};
     use crate::util::{
-        CreateOptions, DynamoInsertPosition, TtlConfig, UpdateCondition, AUTO_FIELDS_TTL,
-        COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY, EXPAND_DATA_RESERVED_KEY,
+        CreateOptions, DynamoInsertPosition, GetOptions, TtlConfig, UpdateCondition,
+        AUTO_FIELDS_TTL, COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        EXPAND_DATA_RESERVED_KEY,
     };
     use crate::{
         dynamo_object,
@@ -657,6 +658,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_item_opt_consistent() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item_consistent()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("GROUP#123#TEST#2".to_string())
+                }),
+                eq(None),
+            )
+            .once()
+            .returning(|_, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(build_item_high_sort().1))
+                    .build())
+            });
+
+        let result = build_util(backend)
+            .await
+            .get_item_opt::<TestDynamoObject>(
+                PkSk {
+                    pk: "ROOT".into(),
+                    sk: "GROUP#123#TEST#2".into(),
+                },
+                GetOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(result.is_some());
+    }
+
+    #[tokio::test]
     async fn test_get_item_partitioned_singleton_uses_query_and_collapses() {
         let mut backend = MockDynamoBackend::new();
         backend
@@ -696,6 +733,48 @@ mod tests {
         assert_eq!(item.data.val, "hello");
         assert_eq!(item.data.num, 7);
         assert_eq!(item.auto_fields, AutoFields::default());
+    }
+
+    #[tokio::test]
+    async fn test_get_item_opt_partitioned_consistent_uses_consistent_query() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query_consistent()
+            .with(
+                eq("my_table".to_string()),
+                eq(None),
+                eq("pk = :pk_val AND begins_with(sk, :sk_val)".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    ":pk_val".to_string() => AttributeValue::S("ROOT".to_string()),
+                    ":sk_val".to_string() => AttributeValue::S("@PARTSINGLE".to_string())
+                }),
+                eq(None),
+            )
+            .once()
+            .returning(|_, _, _, _, _| {
+                Ok(vec![QueryOutput::builder()
+                    .set_items(Some(vec![
+                        build_partitioned_placeholder("ROOT", "@PARTSINGLE", 2),
+                        build_partitioned_item("ROOT", "@PARTSINGLE+0", "{\"val\":\"hel"),
+                        build_partitioned_item("ROOT", "@PARTSINGLE+1", "lo\",\"num\":7}"),
+                    ]))
+                    .build()])
+            });
+
+        let result = build_util(backend)
+            .await
+            .get_item_opt::<PartitionedSingleton>(
+                PkSk {
+                    pk: "ROOT".into(),
+                    sk: "@PARTSINGLE".into(),
+                },
+                GetOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(result.is_some());
     }
 
     #[tokio::test]
@@ -749,6 +828,44 @@ mod tests {
         assert!(expect_not_exists.is_ok());
         assert!(expect_exists.unwrap());
         assert!(!expect_not_exists.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_item_exists_opt_consistent() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_get_item_consistent()
+            .with(
+                eq("my_table".to_string()),
+                eq::<HashMap<String, AttributeValue>>(collection! {
+                    "pk".to_string() => AttributeValue::S("ROOT".to_string()),
+                    "sk".to_string() => AttributeValue::S("TEST#1".to_string())
+                }),
+                eq(Some("pk".to_string())),
+            )
+            .once()
+            .returning(|_, _, _| {
+                Ok(GetItemOutput::builder()
+                    .set_item(Some(collection! {
+                        "pk".to_string() => AttributeValue::S("ROOT".to_string())
+                    }))
+                    .build())
+            });
+
+        let exists = build_util(backend)
+            .await
+            .item_exists_opt(
+                PkSk {
+                    pk: "ROOT".into(),
+                    sk: "TEST#1".into(),
+                },
+                GetOptions {
+                    consistent_read: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(exists);
     }
 
     #[tokio::test]

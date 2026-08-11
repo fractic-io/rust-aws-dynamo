@@ -74,7 +74,7 @@ use raw_batch_helpers::{MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES};
 // Definitions.
 // ----------------------------------------------------------------------------
 
-pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig};
+pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig, IndexKind};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -113,6 +113,13 @@ pub struct CreateOptions<T: DynamoObject> {
     /// name 'ttl'.
     pub ttl: Option<TtlConfig>,
     pub token: Option<CreateToken<T>>,
+}
+
+/// Controls how a primary-key item read is performed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GetOptions {
+    /// Uses DynamoDB's strongly consistent read mode when enabled.
+    pub consistent_read: bool,
 }
 
 /// Comparison operators for numeric conditions.
@@ -239,13 +246,26 @@ impl DynamoUtil {
     }
 
     pub async fn get_item<T: DynamoObject>(&self, id: PkSk) -> Result<Option<T>, ServerError> {
+        self.get_item_opt(id, GetOptions::default()).await
+    }
+
+    /// Fetches an item by primary key with caller-selected read options.
+    pub async fn get_item_opt<T: DynamoObject>(
+        &self,
+        id: PkSk,
+        options: GetOptions,
+    ) -> Result<Option<T>, ServerError> {
         reject_batch_optimized_ids::<T>()?;
         validate_object_id::<T>(&id)?;
         if is_partitioned_id_logic::<T>() {
             let prefix = ext_base_id(&id);
-            let items = self
-                .query::<T>(DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk))
-                .await?;
+            let query = DynamoQuery::pk(prefix.pk).sk_begins_with(prefix.sk);
+            let query = if options.consistent_read {
+                query.consistent_read()
+            } else {
+                query
+            };
+            let items = self.query::<T>(query).await?;
             match items.len() {
                 0 => Ok(None),
                 1 => Ok(items.into_iter().next()),
@@ -259,11 +279,14 @@ impl DynamoUtil {
                 "pk".to_string() => AttributeValue::S(id.pk),
                 "sk".to_string() => AttributeValue::S(id.sk),
             };
-            let response = self
-                .backend
-                .get_item(self.table.clone(), key, None)
-                .await
-                .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+            let response = if options.consistent_read {
+                self.backend
+                    .get_item_consistent(self.table.clone(), key, None)
+                    .await
+            } else {
+                self.backend.get_item(self.table.clone(), key, None).await
+            }
+            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
             response
                 .item
                 .map(|item| parse_dynamo_map::<T>(&item))
@@ -273,15 +296,30 @@ impl DynamoUtil {
 
     /// Efficiently checks if an item exists, without fetching item data.
     pub async fn item_exists(&self, id: PkSk) -> Result<bool, ServerError> {
+        self.item_exists_opt(id, GetOptions::default()).await
+    }
+
+    /// Efficiently checks if an item exists with caller-selected consistency.
+    pub async fn item_exists_opt(
+        &self,
+        id: PkSk,
+        options: GetOptions,
+    ) -> Result<bool, ServerError> {
         let key = collection! {
             "pk".to_string() => AttributeValue::S(id.pk),
             "sk".to_string() => AttributeValue::S(id.sk),
         };
-        let response = self
-            .backend
-            .get_item(self.table.clone(), key, Some("pk".to_string()))
-            .await
-            .map_err(|e| DynamoCalloutError::with_debug(&e))?;
+        let projection = Some("pk".to_string());
+        let response = if options.consistent_read {
+            self.backend
+                .get_item_consistent(self.table.clone(), key, projection)
+                .await
+        } else {
+            self.backend
+                .get_item(self.table.clone(), key, projection)
+                .await
+        }
+        .map_err(|e| DynamoCalloutError::with_debug(&e))?;
         Ok(response.item.is_some())
     }
 

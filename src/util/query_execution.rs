@@ -59,10 +59,11 @@ impl DynamoUtil {
         let overlay = expression
             .needs_overlay()
             .then(|| self.consistency_overlay.snapshot(&self.table));
-        let response = if expression.consistent_read && expression.index.is_none() {
+        let response = if expression.uses_native_consistency() {
             self.backend
                 .query_consistent(
                     self.table.clone(),
+                    expression.index_name.clone(),
                     expression.condition.clone(),
                     expression.attribute_values.clone(),
                     None,
@@ -117,8 +118,8 @@ fn reconcile_gsi_results(
     items.extend(by_id.into_values());
     if let Some(index) = query.index {
         items.sort_by(|left, right| {
-            string_attribute(left, index.sort_field)
-                .cmp(&string_attribute(right, index.sort_field))
+            string_attribute(left, index.config.sort_field)
+                .cmp(&string_attribute(right, index.config.sort_field))
                 .then_with(|| item_id_order(left, right))
         });
     }
@@ -204,14 +205,15 @@ mod tests {
         let mut backend = MockDynamoBackend::new();
         backend
             .expect_query_consistent()
-            .withf(|table, condition, values, projection| {
+            .withf(|table, index, condition, values, projection| {
                 table == "table"
+                    && index.is_none()
                     && condition == "pk = :pk_val"
                     && values.get(":pk_val") == Some(&AttributeValue::S("ROOT".into()))
                     && projection.is_none()
             })
             .once()
-            .returning(|_, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
 
         let util = util(
             backend,
@@ -221,6 +223,37 @@ mod tests {
         );
         let result = util
             .query_generic(DynamoGenericQuery::pk("ROOT").all().consistent_read())
+            .await
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn consistent_lsi_query_uses_native_consistency_without_overlay() {
+        let overlay = Arc::new(InMemoryDynamoConsistencyOverlay::new(Duration::from_secs(
+            60,
+        )));
+        overlay.record_put("table", item("ITEM#LOCAL", "TARGET", "1"));
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_query_consistent()
+            .withf(|table, index, condition, values, projection| {
+                table == "table"
+                    && index.as_deref() == Some("by_group")
+                    && condition == "group = :pk_val"
+                    && values.get(":pk_val") == Some(&AttributeValue::S("TARGET".into()))
+                    && projection.is_none()
+            })
+            .once()
+            .returning(|_, _, _, _, _| Ok(vec![QueryOutput::builder().build()]));
+
+        let result = util(backend, overlay)
+            .query_generic(
+                DynamoGenericQuery::lsi(INDEX)
+                    .pk("TARGET")
+                    .all()
+                    .consistent_read(),
+            )
             .await
             .unwrap();
         assert!(result.is_empty());
@@ -257,7 +290,7 @@ mod tests {
 
         let result = util(backend, overlay)
             .query_generic(
-                DynamoGenericQuery::index(INDEX)
+                DynamoGenericQuery::gsi(INDEX)
                     .pk("TARGET")
                     .all()
                     .consistent_read(),

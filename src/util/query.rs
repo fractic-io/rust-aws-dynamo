@@ -21,7 +21,7 @@ pub struct DynamoQuery<T> {
 /// A complete key-query specification that returns raw DynamoDB maps.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DynamoGenericQuery {
-    index: Option<IndexConfig>,
+    index: Option<SelectedIndex>,
     partition: String,
     sort: SortKeyCondition,
     consistent_read: bool,
@@ -29,26 +29,26 @@ pub struct DynamoGenericQuery {
 
 /// Builds a typed query after its primary or secondary index is selected.
 pub struct DynamoQueryPartition<T, P> {
-    index: Option<IndexConfig>,
+    index: Option<SelectedIndex>,
     partition: P,
     schema: PhantomData<fn() -> T>,
 }
 
 /// Builds a generic query after its primary or secondary index is selected.
 pub struct DynamoGenericQueryPartition<P> {
-    index: Option<IndexConfig>,
+    index: Option<SelectedIndex>,
     partition: P,
 }
 
 /// Selects the partition queried through a secondary index.
 pub struct DynamoQueryIndex<T> {
-    index: IndexConfig,
+    index: SelectedIndex,
     schema: PhantomData<fn() -> T>,
 }
 
 /// Selects the partition queried through a secondary index for generic results.
 pub struct DynamoGenericQueryIndex {
-    index: IndexConfig,
+    index: SelectedIndex,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,6 +56,18 @@ pub struct IndexConfig {
     pub name: &'static str,
     pub partition_field: &'static str,
     pub sort_field: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IndexKind {
+    Global,
+    Local,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SelectedIndex {
+    pub config: IndexConfig,
+    pub kind: IndexKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,7 +84,7 @@ pub(super) enum SortKeyCondition {
 
 pub(super) struct QueryExpression {
     pub index_name: Option<String>,
-    pub index: Option<IndexConfig>,
+    pub index: Option<SelectedIndex>,
     pub condition: String,
     pub attribute_values: HashMap<String, AttributeValue>,
     pub consistent_read: bool,
@@ -90,20 +102,42 @@ impl<T> DynamoQuery<T> {
         }
     }
 
-    /// Starts a query against `index`.
+    /// Starts a query against a global secondary index.
+    ///
+    /// This compatibility alias is equivalent to [`Self::gsi`].
     pub fn index(index: IndexConfig) -> DynamoQueryIndex<T> {
+        Self::gsi(index)
+    }
+
+    /// Starts a query against a global secondary index.
+    pub fn gsi(index: IndexConfig) -> DynamoQueryIndex<T> {
         DynamoQueryIndex {
-            index,
+            index: SelectedIndex {
+                config: index,
+                kind: IndexKind::Global,
+            },
+            schema: PhantomData,
+        }
+    }
+
+    /// Starts a query against a local secondary index.
+    pub fn lsi(index: IndexConfig) -> DynamoQueryIndex<T> {
+        DynamoQueryIndex {
+            index: SelectedIndex {
+                config: index,
+                kind: IndexKind::Local,
+            },
             schema: PhantomData,
         }
     }
 
     /// Requests the strongest query consistency supported by this library.
     ///
-    /// Table queries use DynamoDB's strongly consistent read mode. Global
-    /// secondary index queries are reconciled with recent successful writes
-    /// from this application context. GSI visibility for writes made outside
-    /// the context remains eventually consistent.
+    /// Table and local-secondary-index queries use DynamoDB's strongly
+    /// consistent read mode. Global-secondary-index queries are reconciled
+    /// with recent successful writes from this application context. GSI
+    /// visibility for writes made outside the context remains eventually
+    /// consistent.
     pub fn consistent_read(mut self) -> Self {
         self.inner.consistent_read = true;
         self
@@ -119,15 +153,37 @@ impl DynamoGenericQuery {
         }
     }
 
-    /// Starts a query against `index`.
+    /// Starts a query against a global secondary index.
+    ///
+    /// This compatibility alias is equivalent to [`Self::gsi`].
     pub fn index(index: IndexConfig) -> DynamoGenericQueryIndex {
-        DynamoGenericQueryIndex { index }
+        Self::gsi(index)
+    }
+
+    /// Starts a query against a global secondary index.
+    pub fn gsi(index: IndexConfig) -> DynamoGenericQueryIndex {
+        DynamoGenericQueryIndex {
+            index: SelectedIndex {
+                config: index,
+                kind: IndexKind::Global,
+            },
+        }
+    }
+
+    /// Starts a query against a local secondary index.
+    pub fn lsi(index: IndexConfig) -> DynamoGenericQueryIndex {
+        DynamoGenericQueryIndex {
+            index: SelectedIndex {
+                config: index,
+                kind: IndexKind::Local,
+            },
+        }
     }
 
     fn new(
         partition: impl Into<String>,
         sort: SortKeyCondition,
-        index: Option<IndexConfig>,
+        index: Option<SelectedIndex>,
     ) -> Self {
         Self {
             index,
@@ -139,10 +195,11 @@ impl DynamoGenericQuery {
 
     /// Requests the strongest query consistency supported by this library.
     ///
-    /// Table queries use DynamoDB's strongly consistent read mode. Global
-    /// secondary index queries are reconciled with recent successful writes
-    /// from this application context. GSI visibility for writes made outside
-    /// the context remains eventually consistent.
+    /// Table and local-secondary-index queries use DynamoDB's strongly
+    /// consistent read mode. Global-secondary-index queries are reconciled
+    /// with recent successful writes from this application context. GSI
+    /// visibility for writes made outside the context remains eventually
+    /// consistent.
     pub fn consistent_read(mut self) -> Self {
         self.consistent_read = true;
         self
@@ -153,7 +210,7 @@ impl DynamoGenericQuery {
         sk_prefix: impl Into<String>,
         start_millis: i64,
         end_millis: i64,
-        index: Option<IndexConfig>,
+        index: Option<SelectedIndex>,
     ) -> Result<Self, ServerError> {
         if start_millis > end_millis {
             return Err(DynamoInvalidOperation::with_debug(
@@ -184,7 +241,7 @@ impl DynamoGenericQuery {
         partition: impl Into<String>,
         lower: impl Into<String>,
         upper: impl Into<String>,
-        index: Option<IndexConfig>,
+        index: Option<SelectedIndex>,
     ) -> Result<Self, ServerError> {
         let lower = lower.into();
         let upper = upper.into();
@@ -205,7 +262,7 @@ impl DynamoGenericQuery {
         partition: impl Into<String>,
         sort_key: impl Into<String>,
         delimiter: char,
-        index: Option<IndexConfig>,
+        index: Option<SelectedIndex>,
     ) -> Result<Self, ServerError> {
         let sort_key = sort_key.into();
         let (prefix, _) = sort_key.rsplit_once(delimiter).ok_or_else(|| {
@@ -222,7 +279,7 @@ impl DynamoGenericQuery {
         partition: impl Into<String>,
         sort_key: impl Into<String>,
         delimiter: char,
-        index: Option<IndexConfig>,
+        index: Option<SelectedIndex>,
     ) -> Result<Self, ServerError> {
         let sort_key = sort_key.into();
         let (prefix, _) = sort_key.rsplit_once(delimiter).ok_or_else(|| {
@@ -238,9 +295,9 @@ impl DynamoGenericQuery {
         let index = self.index;
         let (index_name, partition_field, sort_field) = match index {
             Some(index) => (
-                Some(index.name.to_owned()),
-                index.partition_field,
-                index.sort_field,
+                Some(index.config.name.to_owned()),
+                index.config.partition_field,
+                index.config.sort_field,
             ),
             None => (None, "pk", "sk"),
         };
@@ -294,12 +351,22 @@ impl DynamoGenericQuery {
 
 impl QueryExpression {
     pub(super) fn needs_overlay(&self) -> bool {
-        self.consistent_read && self.index.is_some()
+        self.consistent_read
+            && self
+                .index
+                .is_some_and(|index| index.kind == IndexKind::Global)
+    }
+
+    pub(super) fn uses_native_consistency(&self) -> bool {
+        self.consistent_read
+            && self
+                .index
+                .is_none_or(|index| index.kind == IndexKind::Local)
     }
 
     pub(super) fn matches_item(&self, item: &HashMap<String, AttributeValue>) -> bool {
         let (partition_field, sort_field) = match self.index {
-            Some(index) => (index.partition_field, index.sort_field),
+            Some(index) => (index.config.partition_field, index.config.sort_field),
             None => ("pk", "sk"),
         };
         if item
@@ -579,10 +646,21 @@ mod tests {
         .sk_equals("EVENT#1")
         .into_expression();
         assert_eq!(expression.index_name.as_deref(), Some("by_owner"));
+        assert_eq!(expression.index.unwrap().kind, IndexKind::Global);
         assert_eq!(
             expression.condition,
             "owner_pk = :pk_val AND owner_sk = :sk_val"
         );
+
+        let expression = DynamoGenericQuery::lsi(IndexConfig {
+            name: "by_date",
+            partition_field: "pk",
+            sort_field: "date",
+        })
+        .pk("OWNER")
+        .all()
+        .into_expression();
+        assert_eq!(expression.index.unwrap().kind, IndexKind::Local);
 
         let expression = DynamoGenericQuery::pk("P")
             .sk_same_prefix_at_or_after("EVENT#050", '#')

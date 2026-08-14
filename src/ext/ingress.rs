@@ -194,10 +194,7 @@ where
                 "creation data changed after its ID was reserved",
             ));
         }
-        let options = CreateOptions {
-            token: Some(token),
-            ..Default::default()
-        };
+        let options = CreateOptions::default().token(token);
         match insert_position {
             Some(insert_position) => {
                 dynamo_util
@@ -1061,22 +1058,12 @@ mod tests {
         let id = object.id().clone();
 
         let passed = PassOrFetch::<TestObject>::from(id.clone())
-            .resolve_opt(
-                &dynamo_util,
-                GetOptions {
-                    consistent_read: true,
-                },
-            )
+            .resolve_opt(&dynamo_util, GetOptions::consistent())
             .await
             .unwrap();
         let mut referenced = RefOrFetch::<TestObject>::from(id.clone());
         let referenced = referenced
-            .resolve_opt(
-                &dynamo_util,
-                GetOptions {
-                    consistent_read: true,
-                },
-            )
+            .resolve_opt(&dynamo_util, GetOptions::consistent())
             .await
             .unwrap();
 

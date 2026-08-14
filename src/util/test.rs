@@ -692,9 +692,7 @@ mod tests {
                     pk: "ROOT".into(),
                     sk: "GROUP#123#TEST#2".into(),
                 },
-                GetOptions {
-                    consistent_read: true,
-                },
+                GetOptions::consistent(),
             )
             .await
             .unwrap();
@@ -778,9 +776,7 @@ mod tests {
                     pk: "ROOT".into(),
                     sk: "@PARTSINGLE".into(),
                 },
-                GetOptions {
-                    consistent_read: true,
-                },
+                GetOptions::default().consistent_read(true),
             )
             .await
             .unwrap();
@@ -872,9 +868,7 @@ mod tests {
                     pk: "ROOT".into(),
                     sk: "TEST#1".into(),
                 },
-                GetOptions {
-                    consistent_read: true,
-                },
+                GetOptions::consistent(),
             )
             .await
             .unwrap();
@@ -908,10 +902,7 @@ mod tests {
                     sk: "GROUP#123".to_string(),
                 },
                 new_item.data,
-                CreateOptions {
-                    custom_sort: Some(0.75),
-                    ..Default::default()
-                },
+                CreateOptions::default().custom_sort(0.75),
             )
             .await
             .unwrap();
@@ -986,10 +977,7 @@ mod tests {
                 &parent_id,
                 data,
                 DynamoInsertPosition::Last,
-                CreateOptions {
-                    token: Some(token),
-                    ..Default::default()
-                },
+                CreateOptions::default().token(token),
             )
             .await
             .unwrap();
@@ -1038,10 +1026,7 @@ mod tests {
                     sk: "GROUP#123".to_string(),
                 },
                 new_item.data,
-                CreateOptions {
-                    ttl: Some(TtlConfig::OneYear),
-                    ..Default::default()
-                },
+                CreateOptions::default().ttl(TtlConfig::OneYear),
             )
             .await
             .unwrap();
@@ -1153,20 +1138,8 @@ mod tests {
         let item1 = build_item_no_data().0;
         let item2 = build_item_no_data().0;
         let items = vec![
-            (
-                item1.data,
-                CreateOptions {
-                    custom_sort: Some(0.12),
-                    ..Default::default()
-                },
-            ),
-            (
-                item2.data,
-                CreateOptions {
-                    custom_sort: Some(12.0),
-                    ..Default::default()
-                },
-            ),
+            (item1.data, CreateOptions::default().custom_sort(0.12)),
+            (item2.data, CreateOptions::default().custom_sort(12.0)),
         ];
 
         let result = util
@@ -2504,9 +2477,7 @@ mod tests {
                     pk: "ROOT".into(),
                     sk: "GROUP#123".into(),
                 },
-                QueryAllOptions {
-                    consistent_read: true,
-                },
+                QueryAllOptions::consistent(),
             )
             .await
             .unwrap();

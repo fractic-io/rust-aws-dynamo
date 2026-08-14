@@ -172,14 +172,14 @@ pub struct BatchDeletePartitionResult {
 // ----------------------------------------------------------------------------
 
 impl GetOptions {
-    /// Uses strongly consistent read mode (increases read cost).
+    /// Use strongly consistent read mode (increases read cost).
     pub const fn consistent() -> Self {
         Self {
             consistent_read: true,
         }
     }
 
-    /// Sets whether strongly consistent read mode is used (increases read cost).
+    /// Sets whether strongly consistent read mode is used.
     pub const fn consistent_read(mut self, consistent_read: bool) -> Self {
         self.consistent_read = consistent_read;
         self
@@ -187,14 +187,14 @@ impl GetOptions {
 }
 
 impl QueryAllOptions {
-    /// Uses strongly consistent read mode (increases read cost).
+    /// Use strongly consistent read mode (increases read cost).
     pub const fn consistent() -> Self {
         Self {
             consistent_read: true,
         }
     }
 
-    /// Sets whether strongly consistent read mode is used (increases read cost).
+    /// Sets whether strongly consistent read mode is used.
     pub const fn consistent_read(mut self, consistent_read: bool) -> Self {
         self.consistent_read = consistent_read;
         self

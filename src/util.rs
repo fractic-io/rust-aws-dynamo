@@ -78,15 +78,15 @@ use raw_batch_helpers::{MAX_BATCH_READ_RETRIES, MAX_BATCH_WRITE_RETRIES};
 pub use query::{DynamoGenericQuery, DynamoQuery, IndexConfig, IndexKind};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct GetOptions {
-    /// Use strongly consistent read mode (increases read cost).
-    pub consistent_read: bool,
+    consistent_read: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct QueryAllOptions {
-    /// Use strongly consistent read mode (increases read cost).
-    pub consistent_read: bool,
+    consistent_read: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -117,15 +117,11 @@ pub struct CreateToken<T: DynamoObject> {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct CreateOptions<T: DynamoObject> {
-    pub custom_sort: Option<f64>,
-    /// If provided, the given item is automatically deleted by Dynamo after the
-    /// expiry time, usually within a day or two.
-    ///
-    /// IMPORTANT: This requires TTL to be enabled on the table, using attribute
-    /// name 'ttl'.
-    pub ttl: Option<TtlConfig>,
-    pub token: Option<CreateToken<T>>,
+    custom_sort: Option<f64>,
+    ttl: Option<TtlConfig>,
+    token: Option<CreateToken<T>>,
 }
 
 /// Comparison operators for numeric conditions.
@@ -175,6 +171,36 @@ pub struct BatchDeletePartitionResult {
 // Impls.
 // ----------------------------------------------------------------------------
 
+impl GetOptions {
+    /// Use strongly consistent read mode (increases read cost).
+    pub const fn consistent() -> Self {
+        Self {
+            consistent_read: true,
+        }
+    }
+
+    /// Sets whether strongly consistent read mode is used.
+    pub const fn consistent_read(mut self, consistent_read: bool) -> Self {
+        self.consistent_read = consistent_read;
+        self
+    }
+}
+
+impl QueryAllOptions {
+    /// Use strongly consistent read mode (increases read cost).
+    pub const fn consistent() -> Self {
+        Self {
+            consistent_read: true,
+        }
+    }
+
+    /// Sets whether strongly consistent read mode is used.
+    pub const fn consistent_read(mut self, consistent_read: bool) -> Self {
+        self.consistent_read = consistent_read;
+        self
+    }
+}
+
 impl TtlConfig {
     fn compute_timestamp(&self) -> i64 {
         match self {
@@ -223,6 +249,30 @@ impl<T: DynamoObject> Default for CreateOptions<T> {
             ttl: None,
             token: None,
         }
+    }
+}
+
+impl<T: DynamoObject> CreateOptions<T> {
+    /// Sets a custom sort value for the new item.
+    pub fn custom_sort(mut self, custom_sort: f64) -> Self {
+        self.custom_sort = Some(custom_sort);
+        self
+    }
+
+    /// The given item is automatically deleted by Dynamo after the expiry time,
+    /// usually within a day or two.
+    ///
+    /// IMPORTANT: This requires TTL to be enabled on the table, using attribute
+    /// name `ttl`.
+    pub fn ttl(mut self, ttl: TtlConfig) -> Self {
+        self.ttl = Some(ttl);
+        self
+    }
+
+    /// Uses a previously reserved creation token for the new item.
+    pub fn token(mut self, token: CreateToken<T>) -> Self {
+        self.token = Some(token);
+        self
     }
 }
 
@@ -576,15 +626,7 @@ impl DynamoUtil {
             parent_id,
             data.into_iter()
                 .zip(new_ids)
-                .map(|(d, sort_val)| {
-                    (
-                        d,
-                        CreateOptions {
-                            custom_sort: Some(sort_val),
-                            ..Default::default()
-                        },
-                    )
-                })
+                .map(|(d, sort_val)| (d, CreateOptions::default().custom_sort(sort_val)))
                 .collect(),
         )
         .await

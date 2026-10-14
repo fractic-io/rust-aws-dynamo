@@ -22,6 +22,7 @@ use crate::{
         DynamoInvalidPhantomObjectUsage, DynamoNotFound, DynamoUnexpectedItemCount,
     },
     schema::{
+        attribute_value::serialize_attribute_value,
         identifiers::{generate_id, RawIdPath},
         item_deserialization::parse_dynamo_map,
         item_serialization::{
@@ -647,6 +648,40 @@ impl DynamoUtil {
             AttributeUpdatePlan::with_condition(Self::ITEM_EXISTS_CONDITION),
         )
         .await
+    }
+
+    /// Writes only the ordering `sort` field of an existing item.
+    ///
+    /// `update_item` leaves `sort` unchanged because that field is omitted from
+    /// object serialization. Reorder operations call this instead. The write is
+    /// one `UpdateItem` request and does not fetch the item first.
+    pub async fn update_sort<T: DynamoObject>(
+        &self,
+        id: &PkSk,
+        sort: f64,
+    ) -> Result<(), ServerError> {
+        reject_phantom_objects::<T>()?;
+        reject_batch_optimized_ids::<T>()?;
+        if is_partitioned_id_logic::<T>() {
+            return Err(DynamoInvalidExtIdUsage::new());
+        }
+        validate_object_id::<T>(id)?;
+        if !sort.is_finite() {
+            return Err(DynamoInvalidOperation::new("sort value must be finite"));
+        }
+
+        let updated_at = serialize_attribute_value(&Timestamp::now())?.ok_or_else(|| {
+            CriticalError::new("updated_at serialized to an absent DynamoDB attribute")
+        })?;
+        let mut update = AttributeUpdatePlan::with_condition(Self::ITEM_EXISTS_CONDITION);
+        update.set.insert(
+            AUTO_FIELDS_SORT.to_string(),
+            AttributeValue::N(sort.to_string()),
+        );
+        update
+            .set
+            .insert(AUTO_FIELDS_UPDATED_AT.to_string(), updated_at);
+        self.execute_update_plan::<T>(id, update).await
     }
 
     /// Recomputes and atomically refreshes only an object's materialized

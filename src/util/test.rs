@@ -1389,6 +1389,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_sort_writes_sort_without_touching_data() {
+        let mut backend = MockDynamoBackend::new();
+        backend
+            .expect_update_item()
+            .withf(|_, id, update_expr, values, keys, condition| {
+                id.get("pk").unwrap().as_s().unwrap() == "ABC#123"
+                    && id.get("sk").unwrap().as_s().unwrap() == "TEST#321"
+                    && update_expr.trim() == "SET #k1 = :v1, #k2 = :v2"
+                    && values.get(":v1").is_some()
+                    && values.get(":v2").is_some()
+                    && {
+                        let mut names = vec![
+                            keys.get("#k1").unwrap().as_str(),
+                            keys.get("#k2").unwrap().as_str(),
+                        ];
+                        names.sort();
+                        names
+                    } == vec![AUTO_FIELDS_SORT, AUTO_FIELDS_UPDATED_AT]
+                    && matches!(condition, Some(c) if c == "attribute_exists(pk)")
+            })
+            .returning(|_, _, _, _, _, _| Ok(UpdateItemOutput::builder().build()));
+
+        let util = build_util(backend).await;
+        util.update_sort::<TestDynamoObject>(
+            &PkSk {
+                pk: "ABC#123".to_string(),
+                sk: "TEST#321".to_string(),
+            },
+            1.5,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_sort_rejects_non_finite_values() {
+        let util = build_util(MockDynamoBackend::new()).await;
+        let id = PkSk {
+            pk: "ABC#123".to_string(),
+            sk: "TEST#321".to_string(),
+        };
+        assert!(util
+            .update_sort::<TestDynamoObject>(&id, f64::NAN)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
     async fn test_update_item_sets_and_removes_materialized_attributes() {
         let mut backend = MockDynamoBackend::new();
         backend

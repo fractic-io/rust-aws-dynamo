@@ -27,8 +27,9 @@ use crate::{
     },
     util::{
         backend::MockDynamoBackend, consistency_overlay::InMemoryDynamoConsistencyOverlay,
-        DynamoInsertPosition, DynamoMap, DynamoUtil, AUTO_FIELDS_CREATED_AT,
-        AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY, COLLAPSE_PLACEHOLDER_RESERVED_KEY,
+        write_observer::DynamoWriteObservers, DynamoInsertPosition, DynamoMap, DynamoUtil,
+        AUTO_FIELDS_CREATED_AT, AUTO_FIELDS_UPDATED_AT, COLLAPSE_DATA_RESERVED_KEY,
+        COLLAPSE_PLACEHOLDER_RESERVED_KEY,
     },
 };
 
@@ -461,6 +462,7 @@ fn util(backend: MockDynamoBackend) -> DynamoUtil {
     DynamoUtil {
         backend: Arc::new(backend),
         consistency_overlay: Arc::new(InMemoryDynamoConsistencyOverlay::default()),
+        write_observers: Arc::new(DynamoWriteObservers::default()),
         table: "table".into(),
     }
 }

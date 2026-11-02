@@ -9,6 +9,7 @@ define_ctx_view!(
     deps_overlay {
         dyn crate::util::backend::DynamoBackend,
         dyn crate::util::consistency_overlay::DynamoConsistencyOverlay,
+        crate::util::write_observer::DynamoWriteObservers,
     },
     req_impl {}
 );

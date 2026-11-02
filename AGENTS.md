@@ -22,8 +22,5 @@ materialization, `add_ons.rs`), `util.rs` + `util/` (one file per concern:
   against sandbox data before merging.
 - New generic operations are methods on `DynamoUtil` in `util/<concern>.rs`;
   object-graph behaviour goes to `ext/`, schema-level features to
-  `schema/`. `backend.rs` is the only place that calls the AWS SDK.
-- Unit tests live in `schema/identifiers/tests.rs` and
-  `ext/bundling/tests.rs`; add to them. `PLANS.md` lists known correctness
-  and optimisation work.
+  `schema/`. `PLANS.md` lists known correctness and optimisation work.
 - Commit / PR titles: `[util] …`, `[ext] …`, `[schema] …`.

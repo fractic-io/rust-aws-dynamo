@@ -26,4 +26,3 @@ materialization, `add_ons.rs`), `util.rs` + `util/` (one file per concern:
 - Unit tests live in `schema/identifiers/tests.rs` and
   `ext/bundling/tests.rs`; add to them. `PLANS.md` lists known correctness
   and optimisation work.
-- Commit / PR titles: `[util] …`, `[ext] …`, `[schema] …`.

@@ -13,7 +13,8 @@ parent / child graph operations, `ingress` ordered / unordered creates,
 `Coordinate`, `ForeignRef`, `Timestamp`, item (de)serialization,
 materialization, `add_ons.rs`), `util.rs` + `util/` (one file per concern:
 `query`, `query_execution`, `update_plan`, `calculate_sort`,
-`raw_batch_helpers`, `consistency_overlay`, `backend`, `test`), `ext/`
+`raw_batch_helpers`, `consistency_overlay`, `write_observer`, `counters`,
+`backend`, `test`), `ext/`
 (`crud.rs`, `ingress.rs`, `macros.rs`, `bundling/` with its own `tests.rs`).
 
 - Every stored object in storyengine and app-backend goes through this

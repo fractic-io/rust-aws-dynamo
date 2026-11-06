@@ -14,6 +14,7 @@ use consistency_overlay::DynamoConsistencyOverlay;
 use fractic_core::{collection, req_not_none};
 use fractic_server_error::{CriticalError, ServerError};
 use raw_batch_helpers::{unprocessed_delete_keys, unprocessed_put_items, wait_before_batch_retry};
+use write_observer::DynamoWriteObservers;
 
 use crate::{
     errors::{
@@ -53,6 +54,7 @@ pub mod backend;
 mod calculate_sort;
 pub(crate) mod collapse_helpers;
 pub mod consistency_overlay;
+mod counters;
 mod expand_helpers;
 mod id_relations;
 mod metadata_helpers;
@@ -62,6 +64,7 @@ mod raw_batch_helpers;
 mod rename_cleanup;
 mod test;
 mod update_plan;
+pub mod write_observer;
 
 // Constants.
 // ----------------------------------------------------------------------------
@@ -284,6 +287,7 @@ impl<T: DynamoObject> CreateOptions<T> {
 pub struct DynamoUtil {
     pub backend: Arc<dyn DynamoBackend>,
     pub consistency_overlay: Arc<dyn DynamoConsistencyOverlay>,
+    pub write_observers: Arc<DynamoWriteObservers>,
     pub table: String,
 }
 
@@ -298,6 +302,7 @@ impl DynamoUtil {
         Ok(Self {
             backend: ctx.dynamo_backend().await?,
             consistency_overlay: ctx.dynamo_consistency_overlay().await?,
+            write_observers: ctx.dynamo_write_observers().await?,
             table: table.into(),
         })
     }
@@ -442,7 +447,11 @@ impl DynamoUtil {
                 .await
                 .map_err(|e| DynamoCalloutError::with_debug(&e))?;
             self.consistency_overlay.record_put(&self.table, map);
-            Ok(T::new(PkSk { pk, sk }, data))
+            let id = PkSk { pk, sk };
+            self.write_observers
+                .notify(&self.table, std::slice::from_ref(&id))
+                .await?;
+            Ok(T::new(id, data))
         }
     }
 
@@ -670,7 +679,7 @@ impl DynamoUtil {
             return Err(DynamoInvalidOperation::new("sort value must be finite"));
         }
 
-        let updated_at = serialize_attribute_value(&Timestamp::now())?.ok_or_else(|| {
+        let updated_at = serialize_attribute_value(Timestamp::now())?.ok_or_else(|| {
             CriticalError::new("updated_at serialized to an absent DynamoDB attribute")
         })?;
         let mut update = AttributeUpdatePlan::with_condition(Self::ITEM_EXISTS_CONDITION);
@@ -855,7 +864,9 @@ impl DynamoUtil {
         if let Some(item) = response.attributes {
             self.consistency_overlay.record_put(&self.table, item);
         }
-        Ok(())
+        self.write_observers
+            .notify(&self.table, std::slice::from_ref(id))
+            .await
     }
 
     pub async fn delete_item<T: DynamoObject>(&self, id: PkSk) -> Result<(), ServerError> {
@@ -879,8 +890,10 @@ impl DynamoUtil {
                     other => DynamoCalloutError::with_debug(&other),
                 })?;
             self.consistency_overlay
-                .record_delete(&self.table, deleted_id);
-            Ok(())
+                .record_delete(&self.table, deleted_id.clone());
+            self.write_observers
+                .notify(&self.table, std::slice::from_ref(&deleted_id))
+                .await
         }
     }
 
@@ -1066,7 +1079,22 @@ impl DynamoUtil {
         if keys.is_empty() {
             return Ok(());
         }
+        let mut deleted = Vec::with_capacity(keys.len());
+        let result = self
+            .raw_batch_delete_ids_recording(keys, &mut deleted)
+            .await;
+        let notified = self.write_observers.notify(&self.table, &deleted).await;
+        result.and(notified)
+    }
 
+    /// `raw_batch_delete_ids`, appending every ID that was deleted to
+    /// `deleted` as the batches land, so a failure part-way still reports
+    /// what it changed.
+    async fn raw_batch_delete_ids_recording(
+        &self,
+        keys: Vec<PkSk>,
+        deleted: &mut Vec<PkSk>,
+    ) -> Result<(), ServerError> {
         // Deduplicate IDs: Track borrowed keys so deduplication neither clones
         // nor changes the order in which callers supplied the first occurrence.
         let keep = {
@@ -1112,7 +1140,9 @@ impl DynamoUtil {
                 for id in requested.iter().map(PkSk::from_map) {
                     let id = id?;
                     if !pending_ids.contains(&id) {
-                        self.consistency_overlay.record_delete(&self.table, id);
+                        self.consistency_overlay
+                            .record_delete(&self.table, id.clone());
+                        deleted.push(id);
                     }
                 }
                 if pending.is_empty() {
@@ -1184,7 +1214,19 @@ impl DynamoUtil {
         if items.is_empty() {
             return Ok(());
         }
+        let mut written = Vec::with_capacity(items.len());
+        let result = self.raw_batch_put_item_recording(items, &mut written).await;
+        let notified = self.write_observers.notify(&self.table, &written).await;
+        result.and(notified)
+    }
 
+    /// `raw_batch_put_item`, appending the ID of every item written to
+    /// `written` as the batches land.
+    async fn raw_batch_put_item_recording(
+        &self,
+        items: Vec<DynamoMap>,
+        written: &mut Vec<PkSk>,
+    ) -> Result<(), ServerError> {
         // Split into 25-item batches (max supported by DynamoDB).
         let mut items = items.into_iter();
         loop {
@@ -1205,8 +1247,10 @@ impl DynamoUtil {
                     .map(PkSk::from_map)
                     .collect::<Result<HashSet<_>, _>>()?;
                 for item in requested {
-                    if !pending_ids.contains(&PkSk::from_map(&item)?) {
+                    let id = PkSk::from_map(&item)?;
+                    if !pending_ids.contains(&id) {
                         self.consistency_overlay.record_put(&self.table, item);
+                        written.push(id);
                     }
                 }
                 if pending.is_empty() {

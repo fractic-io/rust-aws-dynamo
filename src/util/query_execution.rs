@@ -188,6 +188,7 @@ mod tests {
     use crate::util::{
         backend::MockDynamoBackend,
         consistency_overlay::{DynamoConsistencyOverlay, InMemoryDynamoConsistencyOverlay},
+        write_observer::DynamoWriteObservers,
         IndexConfig,
     };
 
@@ -213,6 +214,7 @@ mod tests {
         DynamoUtil {
             backend: Arc::new(backend),
             consistency_overlay: overlay,
+            write_observers: Arc::new(DynamoWriteObservers::default()),
             table: "table".into(),
         }
     }

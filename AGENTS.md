@@ -18,8 +18,8 @@ materialization, `add_ons.rs`), `util.rs` + `util/` (one file per concern:
 
 - Every stored object in storyengine and app-backend goes through this
   crate: a change to id generation, serialization or query semantics can
-  corrupt data. Title it `Breaking: …`, document the migration, verify
-  against sandbox data before merging.
+  corrupt data. Mark the PR `↯`, document the migration, verify against
+  sandbox data before merging.
 - New generic operations are methods on `DynamoUtil` in `util/<concern>.rs`;
   object-graph behaviour goes to `ext/`, schema-level features to
   `schema/`. `PLANS.md` lists known correctness and optimisation work.

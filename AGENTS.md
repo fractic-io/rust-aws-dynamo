@@ -16,9 +16,8 @@ materialization, `add_ons.rs`), `util.rs` + `util/` (one file per concern:
 (`crud.rs`, `ingress.rs`, `macros.rs`, `bundling/` with its own `tests.rs`).
 
 - Every stored object of its consumers goes through this crate: a change to
-  id generation, serialization or query semantics can corrupt data. Mark the
-  PR `↯`, document the migration, verify against sandbox data before
-  merging.
+  id generation, serialization or query semantics can corrupt data. Document
+  the migration and verify against sandbox data before merging.
 - New generic operations are methods on `DynamoUtil` in `util/<concern>.rs`;
   object-graph behaviour goes to `ext/`, schema-level features to
   `schema/`. `PLANS.md` lists known correctness and optimisation work.

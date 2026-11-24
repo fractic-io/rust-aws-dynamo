@@ -670,7 +670,7 @@ impl DynamoUtil {
             return Err(DynamoInvalidOperation::new("sort value must be finite"));
         }
 
-        let updated_at = serialize_attribute_value(&Timestamp::now())?.ok_or_else(|| {
+        let updated_at = serialize_attribute_value(Timestamp::now())?.ok_or_else(|| {
             CriticalError::new("updated_at serialized to an absent DynamoDB attribute")
         })?;
         let mut update = AttributeUpdatePlan::with_condition(Self::ITEM_EXISTS_CONDITION);

@@ -74,7 +74,7 @@ pub(crate) fn serde_value_to_attribute_value(
                 .into_iter()
                 .map(|value| {
                     serde_value_to_attribute_value(value)
-                        .map(|value| value.unwrap_or(AttributeValue::Null(true)))
+                        .map(|value| value.unwrap_or_else(|| AttributeValue::Null(true)))
                 })
                 .collect::<Result<Vec<_>, ServerError>>()?,
         ))),

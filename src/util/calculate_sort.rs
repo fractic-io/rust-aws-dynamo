@@ -114,12 +114,15 @@ pub(crate) async fn calculate_sort_values<T: DynamoObject>(
                 .collect()
         }
         DynamoInsertPosition::After(id) => {
-            let insert_after_index = existing_vals.iter().position(|item| item.id == &id).ok_or(
-                DynamoInvalidOperation::new(
-                    "the ID provided in DynamoInsertPosition::After(id) does not exist as a \
+            let insert_after_index = existing_vals
+                .iter()
+                .position(|item| item.id == &id)
+                .ok_or_else(|| {
+                    DynamoInvalidOperation::new(
+                        "the ID provided in DynamoInsertPosition::After(id) does not exist as a \
                      sorted item of type T in the database",
-                ),
-            )?;
+                    )
+                })?;
             let insert_after = &existing_vals[insert_after_index];
             let insert_before = existing_vals.get(insert_after_index + 1);
             match insert_before {

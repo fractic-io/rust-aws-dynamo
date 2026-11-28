@@ -266,7 +266,7 @@ impl<O: DynamoObject> CreateArgs<O> for UnorderedCreate<O> {
     }
 
     fn parent_id<'a>(&'a self, parent_id: Option<&'a PkSk>) -> &'a PkSk {
-        parent_id.unwrap_or(PkSk::root())
+        parent_id.unwrap_or_else(|| PkSk::root())
     }
 }
 
@@ -290,7 +290,7 @@ impl<O: DynamoObject> CreateArgs<O> for OrderedCreate<O> {
     }
 
     fn parent_id<'a>(&'a self, parent_id: Option<&'a PkSk>) -> &'a PkSk {
-        parent_id.unwrap_or(PkSk::root())
+        parent_id.unwrap_or_else(|| PkSk::root())
     }
 }
 
@@ -814,7 +814,7 @@ where
                             "RefFetchOrCreate::Create already attempted and cannot be retried",
                         )
                     })?;
-                    let parent_id = parent_id.as_ref().unwrap_or(PkSk::root());
+                    let parent_id = parent_id.as_ref().unwrap_or_else(|| PkSk::root());
                     *cached = Some(dynamo_util.create_item::<O>(parent_id, data).await?);
                 }
                 cached.as_ref().ok_or_else(DynamoNotFound::new)
@@ -848,7 +848,7 @@ where
                             "RefFetchOrCreate::Create already attempted and cannot be retried",
                         )
                     })?;
-                    let parent_id = parent_id.as_ref().unwrap_or(PkSk::root());
+                    let parent_id = parent_id.as_ref().unwrap_or_else(|| PkSk::root());
                     let insert_position = match after {
                         Some(a) => DynamoInsertPosition::After(a),
                         None => DynamoInsertPosition::Last,

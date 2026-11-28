@@ -45,7 +45,9 @@ impl fmt::Display for Coordinate {
         //   (12.34567, 89.01234) @ x2.0
         // Example output without zoom:
         //   (12.34567, 89.01234)
-        let zoom_str = self.zoom.map_or("".to_string(), |z| format!(" @ x{z:.1}"));
+        let zoom_str = self
+            .zoom
+            .map_or_else(String::new, |z| format!(" @ x{z:.1}"));
         write!(
             f,
             "({:.5}, {:.5}){}",

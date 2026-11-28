@@ -597,9 +597,7 @@ impl DynamoUtil {
         let sort_val = calculate_sort_values::<T>(self, parent_id, &data, insert_position, 1)
             .await?
             .pop()
-            .ok_or(DynamoInvalidOperation::new(
-                "failed to generate new ordered ID",
-            ))?;
+            .ok_or_else(|| DynamoInvalidOperation::new("failed to generate new ordered ID"))?;
         options.custom_sort = Some(sort_val);
         self.create_item_opt::<T>(parent_id, data, options).await
     }

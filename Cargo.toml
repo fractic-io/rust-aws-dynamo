@@ -24,3 +24,7 @@ uuid = { version = "^1.9.0", features = ["v4", "v7"] }
 
 [dev-dependencies]
 approx = "^0.5.1"
+
+[lints.clippy]
+# Constructing a ServerError reports it, so a fallback must be built only when it is taken.
+or_fun_call = "warn"

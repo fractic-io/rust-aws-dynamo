@@ -26,5 +26,5 @@ uuid = { version = "^1.9.0", features = ["v4", "v7"] }
 approx = "^0.5.1"
 
 [lints.clippy]
-# Constructing a ServerError reports it, so a fallback must be built only when it is taken.
+# This lint is on because a ServerError constructor writes an error record as it runs, not because the fallback is expensive.
 or_fun_call = "warn"
